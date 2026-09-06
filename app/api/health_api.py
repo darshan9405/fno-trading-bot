@@ -33,7 +33,7 @@ def health():
     for name, cadence in CADENCE_MINUTES.items():
         hb = health_service.last_heartbeat(name)
         if hb is None:
-            heartbeats[name] = {"status": "never_ran", "last_run_at": None, "stale": True}
+            heartbeats[name] = {"status": "never_ran", "last_run_at": None, "stale": True, "note": ""}
         else:
             stale = hb.last_run_at < now - timedelta(minutes=cadence)
             heartbeats[name] = {"status": hb.status, "last_run_at": hb.last_run_at, "stale": stale, "note": hb.note}

@@ -348,6 +348,8 @@ def test_health_and_config(env, monkeypatch):
     assert r.status_code == 200
     data = r.get_json()["data"]
     assert "heartbeats" in data and "market" in data and "errors" in data
+    for hb in data["heartbeats"].values():  # UI reads hb["note"] on every row
+        assert "note" in hb
     assert data["broker"]["configured"] is True
     assert data["broker"]["connected"] is True
     # Upstox token expiry surfaced (SSO in the fixture stored a token)
