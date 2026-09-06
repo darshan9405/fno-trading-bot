@@ -1,0 +1,6 @@
+[browser]
+gatherUsageStats = false
+
+[server]
+# Single-user local app: no CORS/CSRF friction.
+enableXsrfProtection = false

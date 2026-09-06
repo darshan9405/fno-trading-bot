@@ -1,0 +1,24 @@
+# Backend
+Flask>=3.0
+flask-cors>=4.0
+Flask-Limiter>=4.1
+SQLAlchemy>=2.0
+APScheduler>=3.10
+PyJWT>=2.8
+cryptography>=42.0
+python-dotenv>=1.0
+requests>=2.31
+gunicorn>=21.2
+
+# Broker SDK (pip install upstox-python-sdk, or local clone: pip install -e ../upstox-python)
+upstox-python-sdk>=2.28
+
+# Pattern engine / data
+pandas>=2.1
+numpy>=1.26
+
+# UI (Stages 8+). NOTE: Streamlit must be >=1.40 for st.context.cookies (cookie-first UI auth).
+streamlit>=1.40
+
+# Dev / test
+pytest>=8.0

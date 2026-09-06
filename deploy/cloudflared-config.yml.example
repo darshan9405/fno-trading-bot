@@ -1,0 +1,17 @@
+# Copy this to ~/.cloudflared/config.yml on the EC2 and fill in the tunnel id.
+# Steps (once):
+#   cloudflared tunnel login
+#   cloudflared tunnel create fno                 # -> ~/.cloudflared/<TUNNEL_ID>.json
+#   cloudflared tunnel route dns fno <HOSTNAME>   # trade.example.com -> <TUNNEL_ID>.cfargotunnel.com
+#   cp deploy/cloudflared-config.yml.example ~/.cloudflared/config.yml   # then edit below
+#
+# The docker-compose cloudflared service mounts ~/.cloudflared read-only and runs:
+#   tunnel --no-autoupdate run --config /etc/cloudflared/config.yml
+
+tunnel: <TUNNEL_ID>
+credentials-file: /etc/cloudflared/<TUNNEL_ID>.json
+
+ingress:
+  - hostname: <HOSTNAME>   # e.g. trade.example.com (must match FRONTEND_URL / UPSTOX_REDIRECT_URI)
+    service: http://nginx:80
+  - service: http_status:404
