@@ -16,6 +16,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from app.db import create_all  # noqa: E402
 from app.services import instrument_service  # noqa: E402
 
 
@@ -23,6 +24,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true", help="print the universe without touching the DB")
     args = parser.parse_args()
+
+    # Ensure the schema exists: this runs in the Docker entrypoint before
+    # gunicorn (create_app), so a fresh volume has no tables yet.
+    create_all()
 
     df = instrument_service.fetch_master()
     universe = instrument_service.build_universe(df)
