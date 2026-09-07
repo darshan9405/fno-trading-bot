@@ -67,6 +67,7 @@ def run_order_placer(broker=None, now=None):
     except Exception as e:
         log.exception("order_placer run failed")
         health_service.log_scheduler_error(source, e)
+        health_service.touch_heartbeat("order_placer", str(e)[:200], status="error")
 
 
 def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min_days: int, lots: int) -> None:

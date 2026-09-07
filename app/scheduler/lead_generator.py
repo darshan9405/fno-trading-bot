@@ -88,3 +88,4 @@ def run_lead_generator(broker=None, now=None):
     except Exception as e:
         log.exception("lead_generator run failed")
         health_service.log_scheduler_error(source, e)
+        health_service.touch_heartbeat("lead_generator", str(e)[:200], status="error")
