@@ -33,8 +33,16 @@ _FIXED_HOLIDAYS = {
 }
 
 
+def _parse_time(value: str) -> time:
+    """Parse a setting time, tolerating non-zero-padded hours like '9:30'."""
+    parts = str(value).split(":")
+    if len(parts) == 2 and parts[0].isdigit() and len(parts[0]) == 1:
+        value = f"0{value}"
+    return time.fromisoformat(value)
+
+
 def _default_window() -> tuple[time, time]:
-    return time.fromisoformat(get_setting("trading_start", "10:00")), time.fromisoformat(get_setting("sqoff_time", "14:00"))
+    return _parse_time(get_setting("trading_start", "10:00")), _parse_time(get_setting("sqoff_time", "14:00"))
 
 
 def trading_hours(day: date) -> tuple[time, time] | None:
@@ -46,7 +54,7 @@ def trading_hours(day: date) -> tuple[time, time] | None:
             return None
         special = session.get(SpecialSession, day)
         if special is not None:
-            return time.fromisoformat(special.start), time.fromisoformat(special.end)
+            return _parse_time(special.start), _parse_time(special.end)
     return _default_window()
 
 

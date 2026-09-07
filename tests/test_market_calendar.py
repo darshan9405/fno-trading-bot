@@ -70,6 +70,13 @@ def test_default_window_from_settings(env):
     assert market_calendar.session_end(_dt(10).date()).strftime("%H:%M") == "15:30"
 
 
+def test_non_padded_hour_is_accepted(env):
+    set_setting("trading_start", "9:30")
+    set_setting("sqoff_time", "9:45")
+    assert market_calendar.session_start(_dt(10).date()).strftime("%H:%M") == "09:30"
+    assert market_calendar.session_end(_dt(10).date()).strftime("%H:%M") == "09:45"
+
+
 def test_sync_from_broker_populates_holidays(env):
     class FakeCalendarBroker:
         def get_market_holidays(self):
