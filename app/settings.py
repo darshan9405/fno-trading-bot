@@ -3,6 +3,7 @@
 import json
 from typing import Any
 
+from app.config import Config
 from app.db import session_scope
 from app.models import Setting
 
@@ -40,6 +41,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 }
 
 
+ENV_OVERRIDE_SETTINGS = {
+    "trading_start": Config.TRADING_START,
+    "sqoff_time": Config.SQOFF_TIME,
+}
+
+
 def _encode(value: Any) -> str:
     return json.dumps(value) if not isinstance(value, str) else value
 
@@ -56,6 +63,12 @@ def seed_default_settings() -> None:
         for key, value in DEFAULT_SETTINGS.items():
             if session.get(Setting, key) is None:
                 session.add(Setting(key=key, value=_encode(value)))
+        for key, value in ENV_OVERRIDE_SETTINGS.items():
+            row = session.get(Setting, key)
+            if row is None:
+                session.add(Setting(key=key, value=_encode(value)))
+            else:
+                row.value = _encode(value)
 
 
 def get_setting(key: str, default: Any = None) -> Any:
