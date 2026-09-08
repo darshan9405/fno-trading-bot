@@ -665,6 +665,24 @@ def render_settings():
     vmult = st.number_input("Volume spike multiplier", min_value=1.0, max_value=10.0, value=float(cfg.get("breakout.volume_multiplier", 4.0)), step=0.5)
     vboost = st.slider("Volume confidence boost", 0.0, 0.4, float(cfg.get("breakout.volume_boost", 0.15)), 0.05)
 
+    st.markdown("##### Scheduler intervals (seconds)")
+    lead_sec = st.number_input(
+        "Lead generator", min_value=10, max_value=3600,
+        value=int(cfg.get("scheduler.lead_generator_seconds", 300)),
+        help="How often the lead generator scans for new setups.",
+    )
+    track_sec = st.number_input(
+        "Trade tracker", min_value=5, max_value=600,
+        value=int(cfg.get("scheduler.trade_tracker_seconds", 30)),
+        help="How often open trades are checked for SL/trailing updates.",
+    )
+    place_sec = st.number_input(
+        "Order placer", min_value=5, max_value=600,
+        value=int(cfg.get("scheduler.order_placer_seconds", 30)),
+        help="How often queued leads are turned into orders.",
+    )
+    st.caption("Changes take effect on the next backend restart.")
+
     if st.button("Save settings", type="primary", use_container_width=True):
         resp = api.update_config(
             {
@@ -684,6 +702,9 @@ def render_settings():
                 "breakout.require_volume_spike": bool(require_spike),
                 "breakout.volume_multiplier": float(vmult),
                 "breakout.volume_boost": float(vboost),
+                "scheduler.lead_generator_seconds": int(lead_sec),
+                "scheduler.trade_tracker_seconds": int(track_sec),
+                "scheduler.order_placer_seconds": int(place_sec),
             }
         )
         if resp.get("status") == "ok":
