@@ -280,7 +280,7 @@ Trading calendar (weekends are handled in code):
 | our table | Upstox SDK source |
 |---|---|
 | `instruments` | `InstrumentsApi.search_instrument` → `InstrumentData` |
-| `option_cache` | `ExpiredInstrumentApi.get_expiries` + `OptionsApi.get_option_contracts` → `InstrumentData` |
+| `option_cache` | `OptionsApi.get_option_contracts` → `InstrumentData` (live expiries derived from contract set; `ExpiredInstrumentApi` is past-expiries only and not used) |
 | `orders` | `OrderApiV3.place_order`/`modify_order` + `OrderApi.get_order_book` → `OrderData` |
 | `order_fills` | `OrderApi.get_trades_by_order` → `TradeData` |
 | `trades.pnl` (live) | `PortfolioApi.get_positions` → `PositionData` (`unrealised`, `realised`, `pnl`, `multiplier`) |

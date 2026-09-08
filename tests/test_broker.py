@@ -230,10 +230,30 @@ def test_get_order_book_and_fills(monkeypatch):
 
 def test_get_expiries_parses_dates(monkeypatch):
     broker = _broker()
-    fake = SimpleNamespace(get_expiries=lambda instrument_key: SimpleNamespace(data=["2026-09-10", "2026-09-17", "garbage"]))
-    broker._apis["expired"] = fake
+    fake = SimpleNamespace(
+        get_option_contracts=lambda instrument_key, **kwargs: SimpleNamespace(data=[
+            SimpleNamespace(instrument_key="K1", trading_symbol="T1", instrument_type="CE",
+                            lot_size=50, strike_price=26800.0, tick_size=0.0,
+                            expiry="2026-09-10"),
+            SimpleNamespace(instrument_key="K2", trading_symbol="T2", instrument_type="PE",
+                            lot_size=50, strike_price=26800.0, tick_size=0.0,
+                            expiry="2026-09-17"),
+            SimpleNamespace(instrument_key="K3", trading_symbol="T3", instrument_type="CE",
+                            lot_size=50, strike_price=26800.0, tick_size=0.0,
+                            expiry=None),
+        ])
+    )
+    broker._apis["options"] = fake
     expiries = broker.get_expiries("NSE_INDEX|Nifty 50")
     assert expiries == [date(2026, 9, 10), date(2026, 9, 17)]
+
+
+def test_get_expiries_raises_when_empty(monkeypatch):
+    broker = _broker()
+    fake = SimpleNamespace(get_option_contracts=lambda instrument_key, **kwargs: SimpleNamespace(data=[]))
+    broker._apis["options"] = fake
+    with pytest.raises(BrokerError):
+        broker.get_expiries("NSE_INDEX|Nifty 50")
 
 
 def test_get_option_contracts_passes_expiry(monkeypatch):

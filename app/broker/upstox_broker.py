@@ -1,8 +1,8 @@
 """Upstox broker implementation wrapping the official upstox_client SDK.
 
 Maps BrokerBase methods to the verified SDK surface (HistoryApi, MarketQuoteApi,
-PortfolioApi, UserApi, OrderApi, OrderApiV3, OptionsApi, ExpiredInstrumentApi,
-InstrumentsApi). No mock — this is the real integration.
+PortfolioApi, UserApi, OrderApi, OrderApiV3, OptionsApi, InstrumentsApi).
+No mock — this is the real integration.
 """
 
 import logging
@@ -341,25 +341,13 @@ class UpstoxBroker(BrokerBase):
     # --- options ----------------------------------------------------------
 
     def get_expiries(self, underlying_key: str) -> list[date]:
-        self._require_token()
-        api = self._api(upstox_client.ExpiredInstrumentApi, "expired")
-        try:
-            resp = api.get_expiries(underlying_key)
-        except ApiException as e:
-            log.warning("get_expiries unavailable (%s); deriving from option contracts", e)
-            return self._expiries_from_contracts(underlying_key)
-        out = []
-        for item in (getattr(resp, "data", None) or []):
-            try:
-                out.append(date.fromisoformat(item))
-            except (ValueError, TypeError):
-                continue
-        if not out:
-            return self._expiries_from_contracts(underlying_key)
-        return sorted(out)
+        """Live expiries for an underlying, derived from its option contracts.
 
-    def _expiries_from_contracts(self, underlying_key: str) -> list[date]:
-        """Fallback: derive available expiries from the option contracts."""
+        Upstox's `/v2/expired-instruments/expiries` endpoint returns past expiries
+        only, which is the wrong source for live trading. The option contract
+        universe is the canonical source of live future expiries.
+        """
+        self._require_token()
         contracts = self.get_option_contracts(underlying_key)
         expiries = {c.expiry for c in contracts if c.expiry is not None}
         if not expiries:
