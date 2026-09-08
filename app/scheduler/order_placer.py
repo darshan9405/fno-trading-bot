@@ -42,6 +42,15 @@ def run_order_placer(broker=None, now=None):
         max_div = float(get_setting("max_lead_price_divergence_pct", 0.5))
         min_days = int(get_setting("min_days_to_expiry", 5))
         lots = int(get_setting("qty_lots_per_trade", 1))
+        margin_check = bool(get_setting("margin_check_enabled", True))
+        max_depth = int(get_setting("margin_max_depth", get_setting("margin_strikes_below", 3)))
+
+        available_margin = None
+        if margin_check:
+            try:
+                available_margin = getattr(broker.get_funds(), "available_margin", None)
+            except Exception as e:
+                log.warning("order_placer: margin fetch failed (%s); margin check skipped", e)
 
         pending_errors = []
         with session_scope() as session:
@@ -52,7 +61,7 @@ def run_order_placer(broker=None, now=None):
             ).scalars())
             for lead in leads:
                 try:
-                    process_lead(session, broker, lead, sl_pct, max_div, min_days, lots)
+                    process_lead(session, broker, lead, sl_pct, max_div, min_days, lots, available_margin, max_depth)
                 except Exception as e:
                     log.exception("order_placer: lead %s failed", lead.id)
                     mark_lead(session, lead, "skipped", note=str(e))
@@ -69,11 +78,16 @@ def run_order_placer(broker=None, now=None):
         health_service.touch_heartbeat("order_placer", str(e)[:200], status="error")
 
 
-def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min_days: int, lots: int) -> None:
+def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min_days: int, lots: int,
+                 available_margin: float | None = None, max_depth: int = 3) -> None:
     mark_lead(session, lead, "picked", note="processing")
 
     if trade_service.has_open_trade_for_underlying(session, lead.underlying_key):
         mark_lead(session, lead, "skipped", note="open trade already exists for underlying")
+        return
+
+    if trade_service.has_traded_underlying_today(session, lead.underlying_key):
+        mark_lead(session, lead, "skipped", note="underlying already traded today")
         return
 
     ltp = (broker.get_ltp([lead.underlying_key]) or {}).get(lead.underlying_key)
@@ -88,9 +102,19 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
     if expiry is None:
         raise BrokerError(f"no expiry >= {min_days} days for {lead.underlying_key}")
 
-    contract = contract_service.resolve_option_contract(broker, lead.underlying_key, lead.direction, expiry, ltp)
+    # Margin-aware strike: prefer ATM; walk toward cheaper OTM until affordable.
+    contracts = broker.get_option_contracts(lead.underlying_key, expiry=expiry)
+    wanted = "CE" if lead.direction == "CALL" else "PE"
+    matches = [c for c in contracts if c.instrument_type == wanted]
+    candidates = list(contract_service.walk_candidates(matches, lead.direction, ltp, max_depth))
+    premiums = broker.get_ltp([c.instrument_key for c in candidates]) or {}
+    contract, cheapest_cost, evaluated = contract_service.select_affordable(candidates, premiums, available_margin, lots)
     if contract is None:
-        raise BrokerError(f"no {lead.direction} contract for {lead.underlying_key} @ {expiry}")
+        note = "no affordable contract within margin depth"
+        if evaluated and cheapest_cost is not None and available_margin is not None:
+            note = f"insufficient margin: need ≥ ₹{cheapest_cost:,.0f}, available ₹{available_margin:,.0f}"
+        mark_lead(session, lead, "skipped", note=note)
+        return
 
     quantity = contract.lot_size * lots
     tag = f"lead-{lead.id}"

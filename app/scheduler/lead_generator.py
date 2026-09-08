@@ -68,7 +68,7 @@ def run_lead_generator(broker=None, now=None, force: bool = False) -> dict | Non
         min_days = int(get_setting("min_days_to_expiry", 5))
         lots = int(get_setting("qty_lots_per_trade", 1))
         margin_check = bool(get_setting("margin_check_enabled", True))
-        strikes_below = int(get_setting("margin_strikes_below", 3))
+        max_depth = int(get_setting("margin_max_depth", get_setting("margin_strikes_below", 3)))
 
         # Snapshot available margin once so every lead in this run is judged
         # against the same number. Failure to fetch disables the check for the run.
@@ -98,7 +98,7 @@ def run_lead_generator(broker=None, now=None, force: bool = False) -> dict | Non
                     if created:
                         attach_lead_plans(
                             session, broker, created, min_days, lots,
-                            available_margin=available_margin, strikes_below=strikes_below,
+                            available_margin=available_margin, max_depth=max_depth,
                         )
                         created_total += len(created)
                         checked += 1

@@ -585,12 +585,12 @@ def render_settings():
     margin_check = st.checkbox(
         "Skip leads the margin can't afford",
         value=bool(cfg.get("margin_check_enabled", True)),
-        help="At lead generation, estimate the entry cost at the deepest ITM strike you'd trade and skip the lead if it exceeds available margin.",
+        help="Prefer the ATM strike; walk toward cheaper OTM (PUT down, CALL up) up to the depth below and pick the first contract the margin covers. Skip the lead if none fits.",
     )
-    strikes_below = st.number_input(
-        "Strikes below ATM for margin estimate", min_value=0, max_value=10,
-        value=int(cfg.get("margin_strikes_below", 3)),
-        help="Estimate cost using the premium of this many strikes in-the-money of the ATM strike (most expensive option you'd buy).",
+    max_depth = st.number_input(
+        "Max strikes from ATM for margin", min_value=0, max_value=10,
+        value=int(cfg.get("margin_max_depth", cfg.get("margin_strikes_below", 3))),
+        help="How many strikes away from ATM (toward cheaper OTM) the margin check may go. ATM is tried first.",
     )
 
     st.markdown("##### Strategy")
@@ -622,7 +622,7 @@ def render_settings():
                 "min_days_to_expiry": int(min_days),
                 "qty_lots_per_trade": int(lots),
                 "margin_check_enabled": bool(margin_check),
-                "margin_strikes_below": int(strikes_below),
+                "margin_max_depth": int(max_depth),
                 "breakout.patterns_enabled": patterns,
                 "breakout.min_confidence": float(min_conf),
                 "breakout.require_volume_spike": bool(require_spike),

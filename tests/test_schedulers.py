@@ -227,6 +227,7 @@ def test_lead_generator_attaches_fno_plan(env):
             "trading_symbol": "NIFTY 10 SEP 26 26800 CE",
             "lot_size": 50,
             "quantity": 100,
+            "spot": 100.0,
         }
         assert reliance.plan is None  # only a PE contract exists for RELIANCE
 
@@ -258,7 +259,7 @@ def test_lead_generator_skips_lead_when_margin_insufficient(env):
 
         assert nifty.status == "skipped"
         assert "insufficient margin" in (nifty.note or "")
-        assert nifty.plan is not None  # F&O instrument still shown alongside the reason
+        assert nifty.plan is None  # nothing affordable -> no contract to plan
         assert reliance.status == "queued"  # no CE contract -> plan not resolvable, untouched
 
 
@@ -275,62 +276,129 @@ def test_lead_generator_keeps_lead_with_enough_margin(env):
         assert "insufficient margin" not in (nifty.note or "")
 
 
-def _ce_strikes():
+def _option_chain(itype: str, strikes: list[float]):
     from datetime import date
 
+    prefix = "c" if itype == "CE" else "p"
     return [
-        InstrumentView(instrument_key=f"NSE_FO|{i}", trading_symbol=f"NIFTY CE {s}",
-                       instrument_type="CE", expiry=date(2026, 9, 10), strike_price=s,
+        InstrumentView(instrument_key=f"NSE_FO|{prefix}{i}", trading_symbol=f"NIFTY {itype} {s}",
+                       instrument_type=itype, expiry=date(2026, 9, 10), strike_price=s,
                        lot_size=50, underlying_key="NSE_INDEX|Nifty 50")
-        for i, s in enumerate([26800.0, 26750.0, 26700.0, 26650.0, 26600.0])
+        for i, s in enumerate(strikes)
     ]
 
 
-def test_deepest_itm_contract_selects_below_for_call_above_for_put():
-    from datetime import date
+def test_walk_candidates_put_goes_down_from_atm():
+    from app.services.contract_service import walk_candidates
 
-    from app.services.lead_service import _deepest_itm_contract
-
-    ce = _ce_strikes()
-    atm = next(c for c in ce if c.strike_price == 26800.0)
-    deep_call = _deepest_itm_contract(ce, atm, "CALL", 3)
-    assert deep_call.strike_price == 26650.0  # 3 strikes below ATM
-
-    pe = [
-        InstrumentView(instrument_key=f"NSE_FO|p{i}", trading_symbol=f"NIFTY PE {s}",
-                       instrument_type="PE", expiry=date(2026, 9, 10), strike_price=s,
-                       lot_size=50, underlying_key="NSE_INDEX|Nifty 50")
-        for i, s in enumerate([26800.0, 26850.0, 26900.0, 26950.0, 27000.0])
-    ]
-    atm_pe = next(c for c in pe if c.strike_price == 26800.0)
-    deep_put = _deepest_itm_contract(pe, atm_pe, "PUT", 3)
-    assert deep_put.strike_price == 26950.0  # 3 strikes above ATM (symmetric ITM)
+    pe = _option_chain("PE", [107.5, 110.0, 112.5, 115.0, 117.5, 120.0])
+    got = [c.strike_price for c in walk_candidates(pe, "PUT", 117.5, 3)]
+    assert got == [117.5, 115.0, 112.5, 110.0]
 
 
-def test_margin_check_uses_deepest_itm_strike(env):
+def test_walk_candidates_call_goes_up_from_atm():
+    from app.services.contract_service import walk_candidates
+
+    ce = _option_chain("CE", [110.0, 112.5, 115.0, 117.5, 120.0, 122.5, 125.0])
+    got = [c.strike_price for c in walk_candidates(ce, "CALL", 117.5, 3)]
+    assert got == [117.5, 120.0, 122.5, 125.0]
+
+
+def test_select_affordable_prefers_atm_then_walks_otm():
+    from app.services.contract_service import select_affordable, walk_candidates
+
+    ce = _option_chain("CE", [110.0, 112.5, 115.0, 117.5, 120.0, 122.5, 125.0])
+    candidates = list(walk_candidates(ce, "CALL", 117.5, 3))
+    # index 3=117.5(ATM), 4=120, 5=122.5, 6=125 — OTM calls get cheaper upward
+    premiums = {c.instrument_key: p for c, p in zip(ce, [30.0, 50.0, 80.0, 150.0, 115.0, 90.0, 60.0])}
+
+    chosen, _, evaluated = select_affordable(candidates, premiums, available_margin=1_000_000, lots=1)
+    assert chosen.strike_price == 117.5  # ATM wins when affordable
+    assert evaluated is True
+
+    chosen, _, evaluated = select_affordable(candidates, premiums, available_margin=6000, lots=1)
+    assert chosen.strike_price == 120.0  # ATM too pricey (150*50=7500) -> walked up one
+
+    chosen, cheapest, evaluated = select_affordable(candidates, premiums, available_margin=2000, lots=1)
+    assert chosen is None  # cheapest 60*50=3000 still doesn't fit
+    assert cheapest == 3000.0
+    assert evaluated is True
+
+
+def test_select_affordable_put_walks_down_not_up():
+    from app.services.contract_service import select_affordable, walk_candidates
+
+    pe = _option_chain("PE", [107.5, 110.0, 112.5, 115.0, 117.5, 120.0])
+    candidates = list(walk_candidates(pe, "PUT", 117.5, 3))
+    # index 4=117.5(ATM), 3=115, 2=112.5, 1=110 — OTM puts get cheaper downward
+    premiums = {c.instrument_key: p for c, p in zip(pe, [50.0, 80.0, 110.0, 120.0, 220.0, 300.0])}
+
+    chosen, _, _ = select_affordable(candidates, premiums, available_margin=6000, lots=1)
+    assert chosen.strike_price == 115.0  # 220*50=11000 > 6000; walked DOWN to 115 (120*50=6000)
+
+
+def test_margin_walk_put_117_5_goes_down(env):
     from datetime import date
 
     broker = _seed_broker(env)
-    broker.contracts = _ce_strikes()
-    broker.ltp_map = {"NSE_FO|3": 250.0}  # premium at 3-below strike (26650)
+    broker.contracts = _option_chain("PE", [107.5, 110.0, 112.5, 115.0, 117.5, 120.0])
+    broker.ltp_map = {
+        "NSE_INDEX|Nifty 50": 117.5,
+        "NSE_FO|p4": 150.0,  # ATM 117.5
+        "NSE_FO|p3": 120.0,  # 115
+        "NSE_FO|p2": 90.0,   # 112.5
+        "NSE_FO|p1": 60.0,   # 110
+    }
 
     with session_scope() as session:
         inst = session.execute(select(Instrument).where(Instrument.symbol == "NIFTY")).scalars().first()
-        lead = Lead(instrument_id=inst.id, underlying_key="NSE_INDEX|Nifty 50", direction="CALL",
-                    strategy="breakout", signal_type="test", signal_level=26800.0,
+        lead = Lead(instrument_id=inst.id, underlying_key="NSE_INDEX|Nifty 50", direction="PUT",
+                    strategy="breakout", signal_type="test", signal_level=117.5,
                     confidence=0.9, chart_interval="day", status="queued")
         session.add(lead)
         session.flush()
         lead_service.attach_lead_plans(
             session, broker, [lead], min_days=5, lots=1,
-            today=date(2026, 9, 4), available_margin=5000.0,
+            today=date(2026, 9, 4), available_margin=6000.0,
         )
 
     with session_scope() as session:
         lead = session.execute(select(Lead)).scalars().first()
-        # 250 (3-below premium) x 50 x 1 = 12500 > 5000 -> skipped
+        assert lead.status == "queued"
+        assert lead.plan["strike_price"] == 115.0  # ATM too pricey; walked DOWN, never up to 125
+        assert lead.plan["spot"] == 117.5
+
+
+def test_margin_walk_skips_when_nothing_affordable(env):
+    from datetime import date
+
+    broker = _seed_broker(env)
+    broker.contracts = _option_chain("PE", [107.5, 110.0, 112.5, 115.0, 117.5, 120.0])
+    broker.ltp_map = {
+        "NSE_INDEX|Nifty 50": 117.5,
+        "NSE_FO|p4": 150.0,
+        "NSE_FO|p3": 120.0,
+        "NSE_FO|p2": 90.0,
+        "NSE_FO|p1": 60.0,
+    }
+
+    with session_scope() as session:
+        inst = session.execute(select(Instrument).where(Instrument.symbol == "NIFTY")).scalars().first()
+        lead = Lead(instrument_id=inst.id, underlying_key="NSE_INDEX|Nifty 50", direction="PUT",
+                    strategy="breakout", signal_type="test", signal_level=117.5,
+                    confidence=0.9, chart_interval="day", status="queued")
+        session.add(lead)
+        session.flush()
+        lead_service.attach_lead_plans(
+            session, broker, [lead], min_days=5, lots=1,
+            today=date(2026, 9, 4), available_margin=2000.0,
+        )
+
+    with session_scope() as session:
+        lead = session.execute(select(Lead)).scalars().first()
         assert lead.status == "skipped"
         assert "insufficient margin" in (lead.note or "")
+        assert lead.plan is None
 
 
 def test_lead_generator_skips_outside_window(env):
@@ -397,7 +465,7 @@ def test_order_placer_opens_trade_with_sl(env):
     with session_scope() as session:
         skipped = session.execute(select(Lead).where(Lead.status == "skipped")).scalars().all()
         assert len(skipped) == 1
-        assert "no CALL contract" in skipped[0].note
+        assert "no affordable contract" in skipped[0].note
 
 
 def test_order_placer_skips_on_price_divergence(env):
@@ -420,6 +488,51 @@ def test_order_placer_halts_on_killswitch(env):
     with session_scope() as session:
         assert session.execute(select(Trade)).scalars().first() is None
     assert health_service.last_heartbeat("order_placer").note == "killswitch active"
+
+
+def test_order_placer_skips_when_underlying_already_traded_today(env):
+    broker = _seed_broker(env)
+    with session_scope() as session:
+        inst = session.execute(select(Instrument).where(Instrument.symbol == "NIFTY")).scalars().first()
+        lead = Lead(instrument_id=inst.id, underlying_key="NSE_INDEX|Nifty 50", direction="CALL",
+                    strategy="breakout", signal_type="test", signal_level=26800.0,
+                    confidence=0.9, chart_interval="day", status="queued")
+        session.add(lead)
+        session.flush()
+        session.add(Trade(lead_id=None, underlying_key="NSE_INDEX|Nifty 50",
+                          option_instrument_key="NSE_FO|84123", option_instrument_token="84123",
+                          tradingsymbol="NIFTY 10 SEP 26 26800 CE", lot_size=50, product="I",
+                          direction="CALL", entry_price=100.0, quantity=50,
+                          initial_sl=90.0, current_sl=90.0, trail_state="at_initial",
+                          status="closed", entry_order_id="o-x", sl_order_id="o-y"))
+
+    run_order_placer(broker=broker, now=_now(10, 35))
+    with session_scope() as session:
+        skipped = session.execute(select(Lead).where(Lead.status == "skipped")).scalars().first()
+        assert skipped is not None
+        assert "already traded today" in (skipped.note or "")
+        assert session.execute(select(Trade).where(Trade.status == "open")).scalars().first() is None
+
+
+def test_lead_generator_regenerates_after_skip(env):
+    """A margin-skipped lead re-qualifies later in the day once funds allow."""
+    broker = _seed_broker(env)
+    broker.get_funds = lambda: FundsView(available_margin=1000.0)
+    run_lead_generator(broker=broker, now=_now(10, 30))
+    with session_scope() as session:
+        nifty = session.execute(
+            select(Lead).where(Lead.underlying_key == "NSE_INDEX|Nifty 50")
+        ).scalars().first()
+        assert nifty.status == "skipped"
+
+    broker.get_funds = lambda: FundsView(available_margin=1_000_000.0)
+    run_lead_generator(broker=broker, now=_now(11, 0))
+    with session_scope() as session:
+        nifty = session.execute(
+            select(Lead).where(Lead.underlying_key == "NSE_INDEX|Nifty 50", Lead.status == "queued")
+        ).scalars().first()
+        assert nifty is not None
+        assert nifty.plan is not None
 
 
 # --- Scheduler 2: trade tracking -----------------------------------------

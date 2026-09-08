@@ -96,6 +96,16 @@ def has_open_trade_for_underlying(session, underlying_key: str) -> bool:
     ).scalars().first() is not None
 
 
+def has_traded_underlying_today(session, underlying_key: str) -> bool:
+    """True when the underlying already has any trade today (open or closed)."""
+    from datetime import datetime, time as dtime
+
+    day_start = datetime.combine(utcnow().date(), dtime.min)
+    return session.execute(
+        select(Trade).where(Trade.underlying_key == underlying_key, Trade.created_at >= day_start)
+    ).scalars().first() is not None
+
+
 def close_trade(session, trade: Trade, *, exit_price: float, exit_reason: str) -> None:
     trade.status = "closed"
     trade.exit_time = utcnow()

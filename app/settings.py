@@ -19,7 +19,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "strike_selection": "ATM",
     "qty_lots_per_trade": 1,
     "margin_check_enabled": True,
-    "margin_strikes_below": 3,
+    "margin_max_depth": 3,
     "breakout.patterns_enabled": ["volume_breakout"],
     "breakout.min_confidence": 0.7,
     "breakout.lookback_days": 60,

@@ -14,12 +14,21 @@ log = logging.getLogger(__name__)
 
 
 def create_leads_from_candidates(session, instrument: Instrument, candidates, now, strategy: str) -> list[Lead]:
-    """Insert candidate leads for one instrument, deduped to one batch per day."""
+    """Insert candidate leads for one instrument.
+
+    Leads can be generated throughout the day: only an active (queued/picked)
+    lead for the instrument today suppresses a new one, so skipped/placed/
+    expired leads do not block a later, better signal or a margin re-check.
+    """
     if not candidates:
         return []
     day_start = datetime.combine(utcnow().date(), time.min)
     existing = session.execute(
-        select(Lead).where(Lead.instrument_id == instrument.id, Lead.created_at >= day_start)
+        select(Lead).where(
+            Lead.instrument_id == instrument.id,
+            Lead.created_at >= day_start,
+            Lead.status.in_(("queued", "picked")),
+        )
     ).scalars().first()
     if existing:
         return []
@@ -67,21 +76,19 @@ def attach_lead_plans(
     lots: int,
     today: date | None = None,
     available_margin: float | None = None,
-    strikes_below: int = 3,
+    max_depth: int = 3,
 ) -> None:
-    """Resolve and persist the F&O contract each lead would trade (informational).
+    """Resolve and persist the F&O contract each lead would trade.
 
-    Groups broker calls by underlying (expiries + option contracts are fetched
-    once per underlying); the ATM strike is picked against the lead's own
-    signal_level. Failures are logged and skipped so lead creation is never
-    blocked — the order placer re-resolves at placement time anyway.
+    Groups broker calls by underlying (expiries + option contracts + live spot
+    are fetched once per underlying). The contract is chosen margin-aware: start
+    at the ATM strike (strike nearest the current price) and walk toward cheaper
+    OTM (PUT down, CALL up) up to `max_depth` steps, picking the first strike
+    whose premium x lot size x lots fits `available_margin`. A lead is skipped
+    (note "insufficient margin") when nothing within depth is affordable.
 
-    Margin affordability: a lead is skipped (note "insufficient margin") when the
-    estimated entry cost exceeds `available_margin`. The estimate uses the deepest
-    in-the-money strike within `strikes_below` of the ATM contract — the most
-    expensive option the trader would consider — priced at its live premium.
-    For a CALL that is `strikes_below` below ATM; for a PUT it is `strikes_below`
-    above (symmetric ITM). If `available_margin` is None the check is skipped.
+    If `available_margin` is None the check is disabled and the ATM contract is
+    used. Failures are logged and skipped so lead creation is never blocked.
     """
     if available_margin is None:
         try:
@@ -105,59 +112,39 @@ def attach_lead_plans(
             log.warning("attach_lead_plans: skip %s (%s)", underlying_key, e)
             continue
 
+        spot = getattr(group[0], "signal_level", None)
+        try:
+            spot = (broker.get_ltp([underlying_key]) or {}).get(underlying_key) or spot
+        except Exception as e:
+            log.warning("attach_lead_plans: live spot for %s unavailable (%s)", underlying_key, e)
+
         for lead in group:
             wanted = "CE" if lead.direction == "CALL" else "PE"
             matches = [c for c in contracts if c.instrument_type == wanted]
             if not matches:
                 continue
             try:
-                contract = min(matches, key=lambda c: abs(c.strike_price - lead.signal_level))
-                lead.plan = {
-                    "expiry": expiry.isoformat(),
-                    "strike_price": contract.strike_price,
-                    "option_type": contract.instrument_type,
-                    "trading_symbol": contract.trading_symbol,
-                    "lot_size": contract.lot_size,
-                    "quantity": contract.lot_size * lots,
-                }
-                if available_margin is not None:
-                    _check_margin(session, broker, lead, matches, contract, lots, available_margin, strikes_below)
+                candidates = list(contract_service.walk_candidates(matches, lead.direction, spot, max_depth))
+                premiums = broker.get_ltp([c.instrument_key for c in candidates]) or {}
             except Exception as e:
-                log.warning("attach_lead_plans: lead %s skip (%s)", lead.id, e)
-
-
-def _deepest_itm_contract(matches, contract, direction: str, strikes_below: int):
-    """Deepest in-the-money contract within `strikes_below` of the ATM contract.
-
-    For a CALL that is `strikes_below` strikes below the ATM; for a PUT it is
-    `strikes_below` above (the symmetric ITM side). Clamps to the boundary when
-    fewer strikes are available.
-    """
-    by_strike = sorted(matches, key=lambda c: c.strike_price)
-    try:
-        idx = next(i for i, c in enumerate(by_strike) if c.strike_price == contract.strike_price)
-    except StopIteration:
-        return None
-    if direction == "CALL":
-        return by_strike[max(0, idx - strikes_below)]
-    return by_strike[min(len(by_strike) - 1, idx + strikes_below)]
-
-
-def _check_margin(session, broker, lead: Lead, matches, contract, lots: int, available_margin: float, strikes_below: int) -> None:
-    """Skip the lead when the deepest-tradable entry cost exceeds available margin."""
-    deep = _deepest_itm_contract(matches, contract, lead.direction, strikes_below)
-    if deep is None:
-        return
-    try:
-        premium = (broker.get_ltp([deep.instrument_key]) or {}).get(deep.instrument_key)
-    except Exception as e:
-        log.warning("attach_lead_plans: margin premium for %s unavailable (%s)", deep.instrument_key, e)
-        return
-    if premium is None:
-        return
-    need = premium * deep.lot_size * lots
-    if need > available_margin:
-        mark_lead(
-            session, lead, "skipped",
-            note=f"insufficient margin: need ₹{need:,.0f}, available ₹{available_margin:,.0f}",
-        )
+                log.warning("attach_lead_plans: premiums for %s unavailable (%s)", underlying_key, e)
+                premiums = {}
+            chosen, cheapest_cost, evaluated = contract_service.select_affordable(
+                candidates, premiums, available_margin, lots
+            )
+            if chosen is None:
+                if evaluated and cheapest_cost is not None:
+                    mark_lead(
+                        session, lead, "skipped",
+                        note=f"insufficient margin: need ≥ ₹{cheapest_cost:,.0f}, available ₹{available_margin:,.0f}",
+                    )
+                continue
+            lead.plan = {
+                "expiry": expiry.isoformat(),
+                "strike_price": chosen.strike_price,
+                "option_type": chosen.instrument_type,
+                "trading_symbol": chosen.trading_symbol,
+                "lot_size": chosen.lot_size,
+                "quantity": chosen.lot_size * lots,
+                "spot": spot,
+            }
