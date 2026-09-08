@@ -32,13 +32,14 @@ def run_trade_tracker(broker=None, now=None):
         sl_pct = float(get_setting("initial_sl_pct", 10.0))
         activate_pct = float(get_setting("trail_activate_pct", 5.0))
         gap_pct = float(get_setting("trail_gap_pct", 5.0))
+        market_protection = int(get_setting("market_protection_pct", 2))
 
         pending_errors = []
         with session_scope() as session:
             trades = session.execute(select(Trade).where(Trade.status == "open").order_by(Trade.entry_time)).scalars().all()
             for trade in trades:
                 try:
-                    process_trade(session, broker, trade, sl_pct, activate_pct, gap_pct, now)
+                    process_trade(session, broker, trade, sl_pct, activate_pct, gap_pct, now, market_protection)
                 except Exception as e:
                     log.exception("trade_tracker: trade %s failed", trade.id)
                     pending_errors.append((str(e), traceback.format_exc()))
@@ -61,7 +62,8 @@ def run_trade_tracker(broker=None, now=None):
         health_service.touch_heartbeat("trade_tracker", str(e)[:200], status="error")
 
 
-def process_trade(session, broker, trade: Trade, sl_pct: float, activate_pct: float, gap_pct: float, now) -> None:
+def process_trade(session, broker, trade: Trade, sl_pct: float, activate_pct: float, gap_pct: float, now,
+                  market_protection: int = 0) -> None:
     # Auto square-off at the day's session end (respects special/half-day sessions).
     if now.time() >= market_calendar.session_end(now.date()):
         trade_service.square_off(session, broker, trade, reason="sqoff")
@@ -80,12 +82,12 @@ def process_trade(session, broker, trade: Trade, sl_pct: float, activate_pct: fl
 
     # Fallback: ensure an SL order exists (e.g. if initial SL placement failed).
     if trade.sl_order_id is None:
-        place_initial_sl(session, broker, trade, sl_pct)
+        place_initial_sl(session, broker, trade, sl_pct, market_protection)
 
     # Trailing rule.
     new_sl, new_state = trade_service.compute_trailing_sl(trade, ltp, activate_pct, gap_pct)
     if new_sl != trade.current_sl:
-        move_sl(broker, trade, new_sl, new_state)
+        move_sl(broker, trade, new_sl, new_state, market_protection)
 
     # SL hit (the broker SL order should already be closing the position).
     if trade_service.is_sl_hit(trade, ltp):
@@ -95,7 +97,7 @@ def process_trade(session, broker, trade: Trade, sl_pct: float, activate_pct: fl
         log.info("trade_tracker: closed trade %s (%s) at %.2f", trade.id, reason, exit_price)
 
 
-def place_initial_sl(session, broker, trade: Trade, sl_pct: float) -> None:
+def place_initial_sl(session, broker, trade: Trade, sl_pct: float, market_protection: int = 0) -> None:
     if trade.sl_order_id is not None:
         return
     sl = trade_service.initial_sl_for(trade.entry_price, trade.direction, sl_pct)
@@ -108,6 +110,7 @@ def place_initial_sl(session, broker, trade: Trade, sl_pct: float) -> None:
             order_type="SL-M",
             trigger_price=sl,
             tag=f"trade-{trade.id}",
+            market_protection=market_protection,
         )
     )
     trade.sl_order_id = order_id
@@ -119,7 +122,7 @@ def place_initial_sl(session, broker, trade: Trade, sl_pct: float) -> None:
     )
 
 
-def move_sl(broker, trade: Trade, new_sl: float, new_state: str) -> None:
+def move_sl(broker, trade: Trade, new_sl: float, new_state: str, market_protection: int = 0) -> None:
     if trade.sl_order_id is None:
         return
     broker.modify_order(
@@ -130,6 +133,7 @@ def move_sl(broker, trade: Trade, new_sl: float, new_state: str) -> None:
             order_type="SL-M",
             price=0.0,
             validity="DAY",
+            market_protection=market_protection,
         )
     )
     trade.current_sl = new_sl

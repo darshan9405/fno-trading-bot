@@ -20,6 +20,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "qty_lots_per_trade": 1,
     "margin_check_enabled": True,
     "margin_max_depth": 3,
+    "market_protection_pct": 2,
     "breakout.patterns_enabled": ["volume_breakout"],
     "breakout.min_confidence": 0.7,
     "breakout.lookback_days": 60,

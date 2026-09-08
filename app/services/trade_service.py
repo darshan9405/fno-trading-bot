@@ -6,6 +6,7 @@ from app.broker.base import InstrumentView, OrderRequest
 from app.db import session_scope
 from app.models import Lead, Order, OrderFill, Trade
 from app.services.health_service import utcnow
+from app.settings import get_setting
 
 PRODUCT = "I"  # intraday
 
@@ -124,6 +125,7 @@ def square_off(session, broker, trade: Trade, reason: str = "sqoff") -> float:
             product=PRODUCT,
             order_type="MARKET",
             tag=f"trade-{trade.id}",
+            market_protection=int(get_setting("market_protection_pct", 2)),
         )
     )
     exit_price = avg_fill_price(broker.get_trades_by_order(order_id))
