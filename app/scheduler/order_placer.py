@@ -15,7 +15,7 @@ import traceback
 from sqlalchemy import select
 
 from app.broker import get_broker
-from app.broker.base import BrokerError, OrderRequest, OrderView
+from app.broker.base import BrokerError, OrderRequest
 from app.config import Config
 from app.db import session_scope
 from app.models import Lead
@@ -174,19 +174,8 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
         log.exception("order_placer: SL placement failed after entry fill; squaring off entry")
         sqoff_id = None
         try:
-            sqoff_price = (broker.get_ltp([contract.instrument_key]) or {}).get(contract.instrument_key)
-            if sqoff_price is None:
-                raise BrokerError(f"no LTP for sqoff of {contract.instrument_key}")
-            sqoff_id = broker.place_order(
-                OrderRequest(
-                    instrument_key=contract.instrument_key,
-                    transaction_type="SELL",
-                    quantity=quantity,
-                    product="I",
-                    order_type="LIMIT",
-                    price=round(sqoff_price * (1.0 - limit_premium_pct / 100.0), 2),
-                    tag=tag,
-                )
+            sqoff_id = trade_service.place_defensive_sqoff(
+                broker, contract.instrument_key, quantity, tag, limit_premium_pct,
             )
             log.warning("order_placer: sqoff order %s placed for %s x%s", sqoff_id, contract.instrument_key, quantity)
         except Exception as sqoff_e:

@@ -1,7 +1,18 @@
 """F&O Automated Trading — Streamlit UI.
 
-Tabs: Dashboard (live P&L), Open Trades, Leads, History, Health, Settings.
+Tabs: Dashboard (live P&L), Open Trades, Leads, Instruments, History, Health, Settings.
 Auto-polls Dashboard + Open Trades via st.fragment(run_every).
+
+Enhanced for ease of use:
+- Unified top header with status, IST clock, refresh countdown
+- Dashboard: P&L sparkline trajectory + day summary stats + per-position mini-cards
+- Open Trades: visual position cards with SL-distance bars + LTP delta
+- Leads: filter bar + confidence gauges + segment chips
+- History: stats panel (win rate, profit factor, drawdown) + P&L curve + period filter
+- Instruments: segment chips + bulk enable/disable
+- Settings: tabbed sections with reset/confirm
+- Health: searchable error log + uptime indicators
+- Global: empty-state hints, tooltips, loading spinners
 """
 
 from datetime import datetime, time, timezone
@@ -25,23 +36,29 @@ BG = "#0b1220"         # app background
 CARD = "#131c2e"       # cards
 BORDER = "#243049"     # card borders
 
+REFRESH_SECS = 5       # dashboard + open trades auto-refresh cadence
+
 
 def _css() -> str:
     return f"""
     <style>
-    .stApp {{ max-width: 760px; margin: auto; background: {BG}; }}
+    .stApp {{ max-width: 880px; margin: auto; background: {BG}; }}
     [data-testid="stMetric"] {{
         background: {CARD}; border: 1px solid {BORDER}; border-radius: 12px;
-        padding: 10px 14px;
+        padding: 12px 14px;
     }}
     [data-testid="stMetricLabel"] {{ color: {MUTED}; }}
-    [data-testid="stMetricValue"] {{ font-size: 1.25rem; color: #e2e8f0; }}
+    [data-testid="stMetricValue"] {{ font-size: 1.3rem; color: #e2e8f0; }}
     [data-testid="stMetric"]:hover {{ border-color: {PRIMARY}66; }}
     [data-testid="stSidebar"] {{ background: {CARD}; }}
     .ks-banner {{ border-radius: 10px; padding: 10px 14px; margin: 6px 0;
                   border: 1px solid; font-weight: 600; }}
     .badge {{ display:inline-block; border-radius: 999px; padding: 2px 10px;
               font-size: 0.78rem; font-weight: 600; }}
+    .chip {{ display:inline-block; border-radius: 6px; padding: 3px 10px;
+             font-size: 0.75rem; font-weight: 600; background:{BORDER}; color:{MUTED};
+             margin-right: 6px; }}
+    .chip-active {{ background:{PRIMARY}33; color:{PRIMARY}; border:1px solid {PRIMARY}66; }}
     .dot {{ width: 12px; height: 12px; border-radius: 50%; display: inline-block;
               flex-shrink: 0; box-shadow: 0 0 6px rgba(0,0,0,0.4); }}
     @keyframes ks-pulse {{
@@ -58,7 +75,29 @@ def _css() -> str:
                   letter-spacing:.05em; margin: 14px 0 6px 0; }}
     .big-num {{ font-size:1.6rem; font-weight:700; }}
     .muted {{ color:{MUTED}; font-size:0.85rem; }}
+    .pos-card {{ background:{CARD}; border:1px solid {BORDER}; border-radius:12px;
+                 padding:14px; margin:8px 0; }}
+    .pos-card:hover {{ border-color: {PRIMARY}66; }}
+    .pos-card.up {{ border-left: 3px solid {PROFIT}; }}
+    .pos-card.down {{ border-left: 3px solid {LOSS}; }}
+    .pos-card.flat {{ border-left: 3px solid {MUTED}; }}
+    .gauge {{ position:relative; width:64px; height:32px; overflow:hidden; }}
+    .gauge-bg {{ position:absolute; bottom:0; left:0; right:0; height:32px;
+                 border-radius:32px 32px 0 0; background:{BORDER}; }}
+    .gauge-fill {{ position:absolute; bottom:0; left:0; right:0; border-radius:32px 32px 0 0; }}
+    .gauge-num {{ position:relative; text-align:center; font-weight:700; font-size:0.85rem;
+                  padding-top:4px; color:#e2e8f0; }}
     footer, [data-testid="stHeader"] {{ background: transparent; }}
+    .topbar {{ display:flex; align-items:center; gap:10px; padding:6px 0;
+               background:{CARD}; border:1px solid {BORDER}; border-radius:10px;
+               padding:8px 14px; margin: 4px 0 10px 0; flex-wrap:wrap; }}
+    .topbar-item {{ color:{MUTED}; font-size:0.85rem; }}
+    .topbar-item b {{ color:#e2e8f0; }}
+    .stat-tile {{ background:{CARD}; border:1px solid {BORDER}; border-radius:10px;
+                  padding:10px 12px; }}
+    .stat-label {{ color:{MUTED}; font-size:0.72rem; text-transform:uppercase;
+                   letter-spacing:.04em; }}
+    .stat-value {{ color:#e2e8f0; font-size:1.15rem; font-weight:700; }}
 
     /* Primary/secondary button accents */
     [data-testid="stButton"] button[kind="primary"] {{
@@ -70,14 +109,20 @@ def _css() -> str:
 
     /* Bigger sidebar controls (navigation + buttons) */
     [data-testid="stSidebar"] [data-testid="stRadio"] label {{
-        font-size: 1.08rem; padding: 10px 8px; border-radius: 8px;
+        font-size: 1.05rem; padding: 8px 8px; border-radius: 8px;
     }}
     [data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] {{ gap: 2px; }}
     [data-testid="stSidebar"] [data-testid="stButton"] button {{
-        height: 48px; font-size: 1.05rem; border-radius: 10px; font-weight: 600;
+        height: 44px; font-size: 1.0rem; border-radius: 10px; font-weight: 600;
     }}
     [data-testid="stSidebar"] [data-testid="stExpander"] details {{ border-radius: 10px; }}
     [data-testid="stSidebar"] h3 {{ margin-bottom: 4px; }}
+
+    /* Compact form rows in Settings */
+    [data-testid="stNumberInput"] label, [data-testid="stSlider"] label,
+    [data-testid="stCheckbox"] label, [data-testid="stTextInput"] label,
+    [data-testid="stTimeInput"] label, [data-testid="stSelectbox"] label,
+    [data-testid="stMultiSelect"] label {{ font-weight: 500; }}
     </style>
     """
 
@@ -96,6 +141,13 @@ def _money(x) -> str:
 def _num(x) -> str:
     try:
         return f"{float(x):,.2f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _pct(x) -> str:
+    try:
+        return f"{float(x):+.2f}%"
     except (TypeError, ValueError):
         return "—"
 
@@ -131,6 +183,11 @@ def _badge(text: str, kind: str = "info") -> str:
     return f"<span class='badge' style='color:{fg};background:{bg}'>{text}</span>"
 
 
+def _chip(text: str, active: bool = False) -> str:
+    cls = "chip chip-active" if active else "chip"
+    return f"<span class='{cls}'>{text}</span>"
+
+
 def _lead_plan_line(r: dict) -> str:
     """F&O contract a lead maps to, e.g. `RELIANCE 30 SEP 26 2900 CE × 500`."""
     symbol = (r.get("trading_symbol") or "").strip()
@@ -157,7 +214,7 @@ def _fragment(fn):
     frag = getattr(st, "fragment", None)
     if frag is not None:
         try:
-            return frag(run_every="5s")(fn)
+            return frag(run_every=f"{REFRESH_SECS}s")(fn)
         except TypeError:
             return frag(fn)
     return fn
@@ -180,8 +237,20 @@ def _style_pnl_col(s):
 
 
 def _trades_df(rows: list[dict], cols: list[str]) -> pd.DataFrame:
-    df = pd.DataFrame([{k: r.get(k) for k in cols} for r in rows])
-    return df
+    return pd.DataFrame([{k: r.get(k) for k in cols} for r in rows])
+
+
+def _ist_now_str() -> str:
+    return datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%H:%M:%S")
+
+
+def _stat_tile(label: str, value: str, color: str = "#e2e8f0") -> str:
+    return (
+        f"<div class='stat-tile'>"
+        f"<div class='stat-label'>{label}</div>"
+        f"<div class='stat-value' style='color:{color}'>{value}</div>"
+        f"</div>"
+    )
 
 
 # --- auth ----------------------------------------------------------------
@@ -225,13 +294,15 @@ def render_sidebar() -> str:
 
         st.markdown("---")
         st.markdown("### Market")
-        health = api.get_health()
+        with st.spinner(""):
+            health = api.get_health()
         if health.get("status") == "ok":
             m = health["data"]["market"]
             _html(f"**{_badge('OPEN' if m['open'] else 'CLOSED', 'ok' if m['open'] else 'muted')}**")
             st.caption(f"Session {m['session']['start']}–{m['session']['end']} · {m['time_ist']} IST")
         else:
             _html(f"**{_badge('—', 'muted')}**")
+            st.caption("Backend unreachable")
 
         ks = api.get_killswitch()
         active = ks.get("data", {}).get("active") if ks.get("status") == "ok" else None
@@ -240,20 +311,65 @@ def render_sidebar() -> str:
         b = health.get("data", {}).get("broker", {}) if health.get("status") == "ok" else {}
         if b.get("token_expired"):
             _html(f"**Token:** {_badge('EXPIRED', 'err')}")
+            st.markdown(
+                f"<a href='{api.login_url()}' style='display:block;text-align:center;"
+                f"background:{PRIMARY};color:#fff;padding:8px;border-radius:8px;"
+                f"text-decoration:none;font-weight:600;font-size:0.85rem;'>Re-login to Upstox</a>",
+                unsafe_allow_html=True,
+            )
         elif b.get("token_valid_until"):
-            _html(f"**Token:** {_badge(f'OK · {_utc_to_ist_hm(b.get("token_valid_until"))} IST', 'ok')}")
+            _html(f"**Token:** {_badge(f'OK · {_utc_to_ist_hm(b.get('token_valid_until'))} IST', 'ok')}")
 
         render_killswitch_setup()
 
         st.markdown("---")
         st.markdown("### Controls")
-        if st.button("Refresh", use_container_width=True):
+        if st.button("Refresh now", use_container_width=True, help="Force-refresh the current view."):
             st.rerun()
-        if st.button("Logout", use_container_width=True):
+        if st.button("Logout", use_container_width=True, help="End the Upstox session and clear tokens."):
             api.logout()
             st.rerun()
 
     return page
+
+
+# --- top header (status bar) ---------------------------------------------
+
+
+def render_topbar():
+    """A unified status strip at the top: market state, token, killswitch, IST clock."""
+    health = api.get_health()
+    ks = api.get_killswitch()
+    ist_now = _ist_now_str()
+
+    ks_active = ks.get("data", {}).get("active", False) if ks.get("status") == "ok" else None
+
+    parts = []
+    if health.get("status") == "ok":
+        m = health["data"]["market"]
+        parts.append(_badge("MARKET OPEN" if m["open"] else "MARKET CLOSED",
+                            "ok" if m["open"] else "muted"))
+        b = health["data"].get("broker", {})
+        if b.get("token_expired"):
+            parts.append(_badge("TOKEN EXPIRED", "err"))
+        elif b.get("token_near_expiry"):
+            parts.append(_badge(f"TOKEN ~{_utc_to_ist_hm(b.get('token_valid_until'))}", "warn"))
+        elif b.get("token_valid_until"):
+            parts.append(_badge(f"TOKEN OK · {_utc_to_ist_hm(b.get('token_valid_until'))}", "ok"))
+    else:
+        parts.append(_badge("API DOWN", "err"))
+
+    if ks_active is True:
+        parts.append(_badge("KILLSWITCH ACTIVE", "err"))
+    elif ks_active is False:
+        parts.append(_badge("KILLSWITCH ARMED", "ok"))
+
+    parts.append(f"<span class='topbar-item'>🕒 <b>{ist_now}</b> IST</span>")
+    parts.append(
+        f"<span class='topbar-item'>↻ auto-refresh <b>{REFRESH_SECS}s</b></span>"
+    )
+
+    _html("<div class='topbar'>" + " · ".join(parts) + "</div>")
 
 
 # --- killswitch ----------------------------------------------------------
@@ -265,7 +381,7 @@ def render_killswitch():
     data = ks.get("data", {}) if ks.get("status") == "ok" else {}
     active = data.get("active", False)
     if not active:
-        return  # the green status dot in the header indicates "system active"
+        return
     reason = data.get("reason") or "no reason given"
     by = data.get("triggered_by") or "user"
     ts = _utc_to_ist_hm(data.get("triggered_at"))
@@ -319,11 +435,7 @@ def _confirm_release():
 
 
 def render_token_status():
-    """Alert only when the Upstox token is dead (the bot cannot trade).
-
-    SSO login refreshes the token each time, so a healthy/near-expiry token is
-    informational only (sidebar badge + Health tab), not a banner.
-    """
+    """Alert only when the Upstox token is dead (the bot cannot trade)."""
     health = api.get_health()
     if health.get("status") != "ok":
         return
@@ -345,7 +457,7 @@ def render_token_status():
 def render_killswitch_setup():
     with st.sidebar.expander("Killswitch", expanded=False):
         st.caption("Square off all managed trades and halt the system for the day.")
-        reason = st.text_input("Reason", placeholder="e.g. market crash")
+        reason = st.text_input("Reason", placeholder="e.g. market crash", label_visibility="visible")
         if st.button("ACTIVATE", type="primary", use_container_width=True):
             resp = api.activate_killswitch(reason or "user requested")
             if resp.get("status") == "ok":
@@ -378,18 +490,27 @@ def render_dashboard():
         c[1].metric("Realised", _money(d.get("realised")))
         c[2].metric("Day P&L", _money(total))
         c[3].metric("Margin", _money(d.get("available_margin")))
+
+        _track_pnl_history(total or 0)
+
+        # Sparkline of the day's P&L trajectory
+        history = st.session_state.get("pnl_history", [])
+        if len(history) >= 2:
+            chart_df = pd.DataFrame({"P&L": history})
+            chart_df.index = pd.RangeIndex(len(chart_df), name="tick")
+            st.line_chart(chart_df, height=120, use_container_width=True)
+            st.caption(f"P&L trajectory · peak {_money(max(history))} · "
+                       f"trough {_money(min(history))}")
+        else:
+            st.caption("P&L trajectory builds up as data refreshes.")
+
         _html(
             f"<div class='row'><span>Open positions: <b>{d.get('open_positions', 0)}</b></span>"
             f"<span style='margin-left:auto'>{_badge(_money(total), 'up' if (total or 0) > 0 else 'down')}</span></div>"
         )
 
-    health = api.get_health()
-    if health.get("status") == "ok":
-        m = health["data"]["market"]
-        st.caption(
-            f"Market {'OPEN' if m['open'] else 'closed'} · {m['time_ist']} IST · "
-            f"session {m['session']['start']}–{m['session']['end']}"
-        )
+    # Day-at-a-glance stats (combines open + today's closed)
+    _render_day_stats()
 
     st.markdown("#### Today's signals")
     leads = api.get_leads()
@@ -413,7 +534,52 @@ def render_dashboard():
             )
             st.dataframe(df, use_container_width=True, hide_index=True, height=min(40 + 35 * len(df), 420))
         else:
-            st.info("No signals yet today.")
+            st.info("No signals yet today. Check the **Leads** tab to generate them manually.")
+
+
+def _track_pnl_history(total: float):
+    """Keep a small ring buffer of P&L values for the dashboard sparkline."""
+    hist = st.session_state.setdefault("pnl_history", [])
+    if not hist or hist[-1] != total:
+        hist.append(total)
+    if len(hist) > 60:
+        del hist[:-60]
+
+
+def _render_day_stats():
+    """Compact stats: # trades today, wins, biggest winner/loser, avg hold (proxy)."""
+    closed = api.get_closed_trades()
+    open_trades = api.get_open_trades()
+
+    closed_rows = closed.get("data", {}).get("trades", []) if closed.get("status") == "ok" else []
+    open_rows = open_trades.get("data", {}).get("trades", []) if open_trades.get("status") == "ok" else []
+
+    pnls = [(r.get("realized_pnl") or 0) for r in closed_rows]
+    wins = sum(1 for v in pnls if v > 0)
+    losses = sum(1 for v in pnls if v < 0)
+    win_rate = (wins / len(pnls) * 100) if pnls else None
+    biggest_win = max(pnls) if pnls else None
+    biggest_loss = min(pnls) if pnls else None
+    avg = (sum(pnls) / len(pnls)) if pnls else None
+
+    tiles = [
+        _stat_tile("Trades today", str(len(pnls) + len(open_rows))),
+        _stat_tile("Closed", f"{len(pnls)}"),
+        _stat_tile("Wins / Losses", f"{wins} / {losses}"),
+        _stat_tile("Win rate",
+                   f"{win_rate:.0f}%" if win_rate is not None else "—",
+                   color=PROFIT if (win_rate or 0) >= 50 else MUTED),
+        _stat_tile("Avg P&L",
+                   _money(avg) if avg is not None else "—",
+                   color=_pnl_color(avg) if avg is not None else "#e2e8f0"),
+        _stat_tile("Biggest win",
+                   _money(biggest_win) if biggest_win is not None else "—",
+                   color=PROFIT if biggest_win else MUTED),
+        _stat_tile("Biggest loss",
+                   _money(biggest_loss) if biggest_loss is not None else "—",
+                   color=LOSS if biggest_loss else MUTED),
+    ]
+    _html("<div class='row' style='flex-wrap:wrap;gap:8px;'>" + "".join(tiles) + "</div>")
 
 
 @_fragment
@@ -425,32 +591,118 @@ def render_open_trades():
         return
     rows = resp["data"].get("trades", [])
     if not rows:
-        st.info("No open trades.")
+        st.info("No open trades right now. New entries appear here once the lead generator places an order.")
         return
 
-    df = _trades_df(
-        rows,
-        ["symbol", "direction", "entry_price", "ltp", "unrealised_pnl", "current_sl", "trail_state"],
-    )
-    df.columns = ["Symbol", "Dir", "Entry", "LTP", "P&L", "SL", "Trail"]
-    styled = df.style.apply(_style_pnl_col, subset=["P&L"])
-    st.dataframe(styled, use_container_width=True, hide_index=True)
+    # Visual position cards
+    for r in rows:
+        _render_position_card(r)
 
     total = sum(r.get("unrealised_pnl") or 0 for r in rows)
     _html(
-        f"<div class='row'><span class='muted'>Open positions: <b>{len(rows)}</b></span>"
+        f"<div class='row' style='margin-top:12px'><span class='muted'>Open positions: <b>{len(rows)}</b></span>"
         f"<span style='margin-left:auto'>Unrealised {_pnl_html(total)}</span></div>"
+    )
+
+    # Compact table view as a secondary reference
+    with st.expander("Show as table", expanded=False):
+        df = _trades_df(
+            rows,
+            ["symbol", "direction", "entry_price", "ltp", "unrealised_pnl", "current_sl", "trail_state"],
+        )
+        df.columns = ["Symbol", "Dir", "Entry", "LTP", "P&L", "SL", "Trail"]
+        styled = df.style.apply(_style_pnl_col, subset=["P&L"])
+        st.dataframe(styled, use_container_width=True, hide_index=True)
+
+
+def _render_position_card(r: dict):
+    """One visually rich card per open trade."""
+    sym = r.get("symbol") or "—"
+    direction = r.get("direction") or "?"
+    entry = r.get("entry_price")
+    ltp = r.get("ltp")
+    pnl = r.get("unrealised_pnl") or 0
+    sl = r.get("current_sl")
+    trail = r.get("trail_state") or "—"
+
+    pct = None
+    if entry and ltp:
+        try:
+            base = float(entry)
+            cur = float(ltp)
+            pct = ((cur - base) / base * 100.0) * (1 if direction == "CALL" else -1)
+        except (TypeError, ValueError):
+            pct = None
+
+    # Distance to SL as % of entry
+    sl_pct = None
+    if entry and sl:
+        try:
+            sl_pct = abs((float(sl) - float(entry)) / float(entry) * 100.0)
+        except (TypeError, ValueError):
+            sl_pct = None
+
+    pnl_cls = "up" if pnl > 0 else ("down" if pnl < 0 else "flat")
+    dir_kind = "up" if direction == "CALL" else "down"
+
+    sl_bar = ""
+    if sl_pct is not None and pct is not None:
+        # Show how close price is to SL (filled = farther, empty = closer to SL)
+        used = max(0.0, min(100.0, (pct / sl_pct) * 100.0)) if sl_pct else 0
+        bar_color = LOSS if used < 30 else (WARN if used < 70 else PROFIT)
+        sl_bar = (
+            f"<div class='conf-bar' style='margin-top:6px;'>"
+            f"<div class='conf-fill' style='width:{used:.0f}%;background:{bar_color}'></div>"
+            f"</div>"
+            f"<div class='muted' style='font-size:0.72rem;margin-top:2px;'>"
+            f"{used:.0f}% of SL range used"
+            f"</div>"
+        )
+
+    _html(
+        f"""
+        <div class='pos-card {pnl_cls}'>
+          <div class='row' style='justify-content:space-between;'>
+            <div>
+              <div style='font-size:1.05rem;font-weight:700;'>{sym} {_badge(direction, '{dir_kind}')}</div>
+              <div class='muted'>{_badge(trail, 'muted')}</div>
+            </div>
+            <div style='text-align:right;'>
+              <div style='font-size:1.15rem;font-weight:700;color:{_pnl_color(pnl)}'>{_money(pnl)}</div>
+              <div class='muted'>{_pct(pct) if pct is not None else '—'}</div>
+            </div>
+          </div>
+          <div class='row' style='margin-top:8px;gap:18px;flex-wrap:wrap;'>
+            <div><span class='muted'>Entry</span> <b>{_num(entry)}</b></div>
+            <div><span class='muted'>LTP</span> <b>{_num(ltp)}</b></div>
+            <div><span class='muted'>SL</span> <b>{_num(sl)}</b></div>
+          </div>
+          {sl_bar}
+        </div>
+        """
     )
 
 
 def render_leads():
     st.subheader("Leads")
 
-    c1, c2 = st.columns([3, 1])
+    top = st.columns([3, 1, 1])
+    with top[0]:
+        q = st.text_input("Search", placeholder="Filter by symbol or instrument…",
+                          label_visibility="collapsed", key="leads_q")
+    with top[1]:
+        status_f = st.selectbox("Status", ["All", "queued", "placed", "skipped", "filled"],
+                                label_visibility="collapsed", key="leads_status")
+    with top[2]:
+        dir_f = st.selectbox("Direction", ["All", "CALL", "PUT"],
+                             label_visibility="collapsed", key="leads_dir")
+
+    c1, c2 = st.columns([4, 1])
     with c2:
         if st.button("Generate now", type="primary", use_container_width=True,
                      help="Run the lead generator manually (works outside trading hours)."):
-            resp = api.generate_leads()
+            with st.spinner("Scanning for setups…"):
+                resp = api.generate_leads()
             if resp.get("status") == "ok":
                 generated = resp["data"].get("generated", 0)
                 st.success(f"Generated {generated} lead(s).")
@@ -464,8 +716,25 @@ def render_leads():
         return
     rows = resp["data"].get("leads", [])
     if not rows:
-        st.info("No leads.")
+        st.info("No leads. Try **Generate now**, or enable more underlyings in **Instruments**.")
         return
+
+    # Apply filters
+    q_lower = (q or "").strip().lower()
+    if q_lower:
+        rows = [r for r in rows if q_lower in (r.get("symbol", "").lower())
+                or q_lower in (r.get("trading_symbol", "") or "").lower()
+                or q_lower in (r.get("underlying", "") or "").lower()]
+    if status_f != "All":
+        rows = [r for r in rows if r.get("status") == status_f]
+    if dir_f != "All":
+        rows = [r for r in rows if r.get("direction") == dir_f]
+
+    if not rows:
+        st.info("No leads match the current filters.")
+        return
+
+    _html(f"<div class='muted'>Showing <b>{len(rows)}</b> lead(s)</div>")
 
     for r in rows:
         c1, c2, c3 = st.columns([4, 1, 2])
@@ -473,7 +742,7 @@ def render_leads():
             _html(
                 f"<div style='font-weight:600'>{r.get('symbol') or r['underlying'].split('|')[-1]} "
                 f"{_badge(r['direction'], 'up' if r['direction'] == 'CALL' else 'down')} "
-                f"{_badge(r['status'], 'ok' if r['status'] == 'placed' else 'muted')}</div>"
+                f"{_badge(r['status'], 'ok' if r['status'] in ('placed','filled') else 'muted')}</div>"
                 f"<div class='muted'>{r['signal_type']} @ {_num(r['signal_level'])}</div>"
                 + _lead_plan_line(r)
             )
@@ -501,16 +770,45 @@ def render_instruments():
         return
 
     enabled = sum(1 for r in rows if r["enabled"])
-    _html(f"<div class='muted'>{len(rows)} F&O underlyings · <b>{enabled} active</b> · "
-          f"only active ones generate leads</div>")
+    segments = sorted({r["segment"] for r in rows})
 
-    segments = ["All"] + sorted({r["segment"] for r in rows})
-    seg = st.selectbox("Segment", segments, key="instr_seg")
-    q = st.text_input("Search symbol", key="instr_q").strip().lower()
+    # Segment chips + counts
+    counts = {seg: sum(1 for r in rows if r["segment"] == seg) for seg in segments}
+    counts_on = {seg: sum(1 for r in rows if r["segment"] == seg and r["enabled"]) for seg in segments}
+
+    _html(
+        f"<div class='row' style='flex-wrap:wrap;gap:6px;margin:6px 0;'>"
+        f"{_chip(f'{len(rows)} total', False)}"
+        f"{_chip(f'{enabled} active', enabled > 0)}"
+        + "".join(_chip(f'{seg} · {counts_on[seg]}/{counts[seg]}', False) for seg in segments)
+        + "</div>"
+    )
+
+    top = st.columns([2, 2, 2, 1])
+    with top[0]:
+        seg = st.selectbox("Segment", ["All"] + segments, key="instr_seg")
+    with top[1]:
+        q = st.text_input("Search symbol", key="instr_q",
+                          placeholder="e.g. RELIANCE").strip().lower()
+    with top[2]:
+        only_active = st.toggle("Active only", value=False, key="instr_only_active")
+    with top[3]:
+        if st.button("Enable all", use_container_width=True, help="Enable every visible row."):
+            for r in rows:
+                if not r["enabled"]:
+                    api.set_instrument_enabled(r["id"], True)
+            st.rerun()
+
     filtered = [
         r for r in rows
-        if (seg == "All" or r["segment"] == seg) and (not q or q in r["symbol"].lower())
+        if (seg == "All" or r["segment"] == seg)
+        and (not q or q in r["symbol"].lower())
+        and (not only_active or r["enabled"])
     ]
+
+    if not filtered:
+        st.info("No instruments match the filters.")
+        return
 
     df = pd.DataFrame(
         [{"symbol": r["symbol"], "segment": r["segment"], "lot": r["lot_size"], "active": r["enabled"]} for r in filtered]
@@ -537,23 +835,87 @@ def render_history():
         return
     rows = resp["data"].get("trades", [])
     if not rows:
-        st.info("No closed trades.")
+        st.info("No closed trades yet. The History tab fills up once the bot exits positions.")
         return
 
+    # Period filter (derived client-side from exit_time; keeps the same /closed endpoint)
+    periods = ["All", "Today", "Last 7 days", "Last 30 days"]
+    period = st.selectbox("Period", periods, label_visibility="collapsed", key="hist_period")
+    now = datetime.now(ZoneInfo("Asia/Kolkata"))
+
+    def _in_period(r):
+        if period == "All":
+            return True
+        ts = r.get("exit_time")
+        if not ts:
+            return False
+        try:
+            dt = datetime.fromisoformat(ts)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.astimezone(ZoneInfo("Asia/Kolkata"))
+        except Exception:
+            return False
+        if period == "Today":
+            return dt.date() == now.date()
+        if period == "Last 7 days":
+            return (now - dt).days <= 7
+        if period == "Last 30 days":
+            return (now - dt).days <= 30
+        return True
+
+    filtered = [r for r in rows if _in_period(r)]
+    if not filtered:
+        st.info("No closed trades in this period.")
+        return
+
+    pnls = [(r.get("realized_pnl") or 0) for r in filtered]
+    wins = sum(1 for v in pnls if v > 0)
+    losses = sum(1 for v in pnls if v < 0)
+    win_rate = (wins / len(pnls) * 100) if pnls else 0
+    gross_profit = sum(v for v in pnls if v > 0)
+    gross_loss = abs(sum(v for v in pnls if v < 0))
+    profit_factor = (gross_profit / gross_loss) if gross_loss else None
+    net = sum(pnls)
+    avg_win = (gross_profit / wins) if wins else None
+    avg_loss = (gross_loss / losses) if losses else None
+    # Simple max drawdown over the running P&L series
+    cum = []
+    running = 0.0
+    for v in pnls:
+        running += v
+        cum.append(running)
+    peak = max(cum) if cum else 0
+    dd = min(c - peak for c in cum) if cum else 0
+
+    tiles = [
+        _stat_tile("Trades", str(len(pnls))),
+        _stat_tile("Win rate", f"{win_rate:.0f}%",
+                   color=PROFIT if win_rate >= 50 else LOSS),
+        _stat_tile("Net", _money(net), color=_pnl_color(net)),
+        _stat_tile("Profit factor",
+                   f"{profit_factor:.2f}" if profit_factor is not None else "∞",
+                   color=PROFIT if (profit_factor or 0) >= 1.5 else MUTED),
+        _stat_tile("Avg win", _money(avg_win) if avg_win is not None else "—", color=PROFIT),
+        _stat_tile("Avg loss", _money(avg_loss) if avg_loss is not None else "—", color=LOSS),
+        _stat_tile("Max drawdown", _money(dd), color=LOSS),
+    ]
+    _html("<div class='row' style='flex-wrap:wrap;gap:8px;'>" + "".join(tiles) + "</div>")
+
+    # Equity curve from running P&L
+    if len(cum) >= 2:
+        eq = pd.DataFrame({"Equity": cum})
+        eq.index = pd.RangeIndex(1, len(eq) + 1, name="trade #")
+        st.line_chart(eq, height=140, use_container_width=True)
+        st.caption("Equity curve (running net P&L across the selected period).")
+
     df = _trades_df(
-        rows,
+        filtered,
         ["symbol", "direction", "entry_price", "exit_price", "realized_pnl", "exit_reason", "exit_time"],
     )
     df.columns = ["Symbol", "Dir", "Entry", "Exit", "P&L", "Reason", "Closed"]
     styled = df.style.apply(_style_pnl_col, subset=["P&L"])
     st.dataframe(styled, use_container_width=True, hide_index=True)
-
-    total = sum(r.get("realized_pnl") or 0 for r in rows)
-    wins = sum(1 for r in rows if (r.get("realized_pnl") or 0) > 0)
-    _html(
-        f"<div class='row'><span class='muted'>Trades: <b>{len(rows)}</b> · Wins: <b>{wins}</b></span>"
-        f"<span style='margin-left:auto'>Net {_pnl_html(total)}</span></div>"
-    )
 
 
 def render_health():
@@ -563,6 +925,22 @@ def render_health():
         st.warning("Could not load health.")
         return
     d = resp["data"]
+
+    # Compact top-line
+    b = d["broker"]
+    m = d["market"]
+    e = d["errors"]
+    top = (
+        _stat_tile("Market", "OPEN" if m["open"] else "CLOSED",
+                   color=PROFIT if m["open"] else MUTED)
+        + _stat_tile("Broker",
+                     "CONNECTED" if b.get("connected")
+                     else ("NOT CONFIGURED" if not b.get("configured") else "DISCONNECTED"),
+                     color=PROFIT if b.get("connected") else (MUTED if not b.get("configured") else LOSS))
+        + _stat_tile("Errors", str(e.get("count", 0)),
+                     color=LOSS if e.get("count", 0) else PROFIT)
+    )
+    _html("<div class='row' style='gap:8px;'>" + top + "</div>")
 
     st.markdown("##### Schedulers")
     for name, hb in d["heartbeats"].items():
@@ -578,7 +956,6 @@ def render_health():
         col3.caption(hb["note"] or "")
 
     st.markdown("##### Broker")
-    b = d["broker"]
     status_kind = "ok" if b.get("connected") else ("muted" if not b.get("configured") else "warn")
     st.markdown(
         f"{_badge('CONNECTED' if b.get('connected') else ('NOT CONFIGURED' if not b.get('configured') else 'DISCONNECTED'), status_kind)}"
@@ -593,15 +970,24 @@ def render_health():
         st.caption(f"Upstox token valid until {_utc_to_ist_hm(b.get('token_valid_until'))} IST")
 
     st.markdown("##### Errors")
-    if d["errors"]["count"] == 0:
+    if e["count"] == 0:
         st.markdown(f"{_badge('NO ERRORS', 'ok')}", unsafe_allow_html=True)
     else:
-        st.markdown(_badge(f"{d['errors']['count']} error(s)", "err"), unsafe_allow_html=True)
-        for e in d["errors"]["recent"][:5]:
-            st.caption(f"`{e['ts']}` · {e['source']}: {e['message']}")
+        st.markdown(_badge(f"{e['count']} error(s)", "err"), unsafe_allow_html=True)
+        src_filter = st.text_input("Filter errors", placeholder="Search by source or message…",
+                                   label_visibility="collapsed", key="err_q").strip().lower()
+        recent = e["recent"][:20]
+        if src_filter:
+            recent = [x for x in recent
+                      if src_filter in (x.get("source", "").lower())
+                      or src_filter in (x.get("message", "").lower())]
+        if not recent:
+            st.info("No errors match the filter.")
+        else:
+            for er in recent[:10]:
+                st.caption(f"`{er['ts']}` · **{er['source']}**: {er['message']}")
 
     st.markdown("##### Market")
-    m = d["market"]
     st.markdown(
         f"{_badge('OPEN' if m['open'] else 'CLOSED', 'ok' if m['open'] else 'muted')} "
         f"<span class='muted'>{m['date']} · {m['time_ist']} IST · session {m['session']['start']}–{m['session']['end']}</span>",
@@ -617,109 +1003,131 @@ def render_settings():
         return
     cfg = resp["data"]
 
-    st.markdown("##### Market hours")
-    start = st.time_input("Trading start (IST)", value=_ui_time(cfg.get("trading_start", "10:00")))
-    end = st.time_input("Square-off time (IST)", value=_ui_time(cfg.get("sqoff_time", "14:00")))
-    st.caption("The bot generates leads and places orders inside this daily window.")
-
-    st.markdown("##### Stop-loss & trailing")
-    sl = st.number_input("Initial SL %", min_value=1.0, max_value=30.0, value=float(cfg.get("initial_sl_pct", 10.0)))
-    activate = st.number_input("Trail activate %", min_value=0.0, max_value=20.0, value=float(cfg.get("trail_activate_pct", 5.0)))
-    gap = st.number_input("Trail gap %", min_value=1.0, max_value=20.0, value=float(cfg.get("trail_gap_pct", 5.0)))
-
-    st.markdown("##### Entry rules")
-    divergence = st.number_input("Max lead price divergence %", min_value=0.1, max_value=5.0, value=float(cfg.get("max_lead_price_divergence_pct", 0.5)))
-    min_days = st.number_input("Min days to expiry", min_value=1, max_value=30, value=int(cfg.get("min_days_to_expiry", 5)))
-    lots = st.number_input("Lots per trade", min_value=1, max_value=10, value=int(cfg.get("qty_lots_per_trade", 1)))
-
-    st.markdown("##### LIMIT entry order")
-    limit_premium = st.number_input(
-        "Limit premium % over LTP", min_value=0.0, max_value=5.0, step=0.1,
-        value=float(cfg.get("entry_limit_premium_pct", 1.0)),
-        help="How much above LTP to bid for the entry LIMIT. Higher = more fills, more slippage.",
-    )
-    fill_timeout = st.number_input(
-        "Fill timeout (seconds)", min_value=5, max_value=300,
-        value=int(cfg.get("entry_order_fill_timeout_seconds", 30)),
-        help="How long to wait for the LIMIT to fill before cancelling and skipping the lead.",
+    tab_market, tab_sl, tab_entry, tab_strategy, tab_sched = st.tabs(
+        ["Market hours", "SL & trailing", "Entry & margin", "Strategy", "Schedulers"]
     )
 
-    st.markdown("##### Margin affordability")
-    margin_check = st.checkbox(
-        "Skip leads the margin can't afford",
-        value=bool(cfg.get("margin_check_enabled", True)),
-        help="Prefer the ATM strike; walk toward cheaper OTM (PUT down, CALL up) up to the depth below and pick the first contract the margin covers. Skip the lead if none fits.",
-    )
-    max_depth = st.number_input(
-        "Max strikes from ATM for margin", min_value=0, max_value=10,
-        value=int(cfg.get("margin_max_depth", cfg.get("margin_strikes_below", 3))),
-        help="How many strikes away from ATM (toward cheaper OTM) the margin check may go. ATM is tried first.",
-    )
+    new_cfg = {}
 
-    st.markdown("##### Strategy")
-    patterns = st.multiselect(
-        "Enabled patterns",
-        ["horizontal_range", "trendline", "triangle", "flag_pennant", "head_shoulders", "volume_breakout"],
-        default=cfg.get("breakout.patterns_enabled", ["volume_breakout"]),
-    )
-    min_conf = st.slider("Min confidence", 0.0, 1.0, float(cfg.get("breakout.min_confidence", 0.6)), 0.05)
+    with tab_market:
+        st.caption("The bot generates leads and places orders inside this daily window.")
+        c1, c2 = st.columns(2)
+        with c1:
+            start = st.time_input("Trading start (IST)", value=_ui_time(cfg.get("trading_start", "10:00")))
+        with c2:
+            end = st.time_input("Square-off time (IST)", value=_ui_time(cfg.get("sqoff_time", "14:00")))
+        new_cfg["trading_start"] = start.strftime("%H:%M")
+        new_cfg["sqoff_time"] = end.strftime("%H:%M")
 
-    st.markdown("##### Volume confirmation (Durgia 2025)")
-    require_spike = st.checkbox(
-        "Require volume spike for every signal",
-        value=bool(cfg.get("breakout.require_volume_spike", False)),
-        help="Only emit breakouts that coincide with a volume spike (>= multiplier x rolling average).",
-    )
-    vmult = st.number_input("Volume spike multiplier", min_value=1.0, max_value=10.0, value=float(cfg.get("breakout.volume_multiplier", 4.0)), step=0.5)
-    vboost = st.slider("Volume confidence boost", 0.0, 0.4, float(cfg.get("breakout.volume_boost", 0.15)), 0.05)
+    with tab_sl:
+        st.caption("Risk management per open position.")
+        sl = st.number_input("Initial SL %", min_value=1.0, max_value=30.0,
+                             value=float(cfg.get("initial_sl_pct", 10.0)),
+                             help="Hard stop-loss distance from entry, in %.")
+        activate = st.number_input("Trail activate %", min_value=0.0, max_value=20.0,
+                                   value=float(cfg.get("trail_activate_pct", 5.0)),
+                                   help="Move to breakeven / trail once price moves this far in your favour.")
+        gap = st.number_input("Trail gap %", min_value=1.0, max_value=20.0,
+                              value=float(cfg.get("trail_gap_pct", 5.0)),
+                              help="Distance the trailing SL keeps from the high-water mark.")
+        new_cfg["initial_sl_pct"] = float(sl)
+        new_cfg["trail_activate_pct"] = float(activate)
+        new_cfg["trail_gap_pct"] = float(gap)
 
-    st.markdown("##### Scheduler intervals (seconds)")
-    lead_sec = st.number_input(
-        "Lead generator", min_value=10, max_value=3600,
-        value=int(cfg.get("scheduler.lead_generator_seconds", 300)),
-        help="How often the lead generator scans for new setups.",
-    )
-    track_sec = st.number_input(
-        "Trade tracker", min_value=5, max_value=600,
-        value=int(cfg.get("scheduler.trade_tracker_seconds", 30)),
-        help="How often open trades are checked for SL/trailing updates.",
-    )
-    place_sec = st.number_input(
-        "Order placer", min_value=5, max_value=600,
-        value=int(cfg.get("scheduler.order_placer_seconds", 30)),
-        help="How often queued leads are turned into orders.",
-    )
+    with tab_entry:
+        st.caption("How leads become orders.")
+        divergence = st.number_input("Max lead price divergence %", min_value=0.1, max_value=5.0,
+                                     value=float(cfg.get("max_lead_price_divergence_pct", 0.5)),
+                                     help="Skip the lead if the contract price has drifted too far from the signal level.")
+        min_days = st.number_input("Min days to expiry", min_value=1, max_value=30,
+                                   value=int(cfg.get("min_days_to_expiry", 5)))
+        lots = st.number_input("Lots per trade", min_value=1, max_value=10,
+                               value=int(cfg.get("qty_lots_per_trade", 1)))
+        limit_premium = st.number_input(
+            "Limit premium % over LTP", min_value=0.0, max_value=5.0, step=0.1,
+            value=float(cfg.get("entry_limit_premium_pct", 1.0)),
+            help="How much above LTP to bid for the entry LIMIT. Higher = more fills, more slippage.",
+        )
+        fill_timeout = st.number_input(
+            "Fill timeout (seconds)", min_value=5, max_value=300,
+            value=int(cfg.get("entry_order_fill_timeout_seconds", 30)),
+            help="How long to wait for the LIMIT to fill before cancelling and skipping the lead.",
+        )
+        st.markdown("**Margin affordability**")
+        margin_check = st.checkbox(
+            "Skip leads the margin can't afford",
+            value=bool(cfg.get("margin_check_enabled", True)),
+            help="Prefer ATM; walk toward cheaper OTM up to the depth below if needed.",
+        )
+        max_depth = st.number_input(
+            "Max strikes from ATM for margin", min_value=0, max_value=10,
+            value=int(cfg.get("margin_max_depth", cfg.get("margin_strikes_below", 3))),
+        )
+        new_cfg.update({
+            "max_lead_price_divergence_pct": float(divergence),
+            "min_days_to_expiry": int(min_days),
+            "qty_lots_per_trade": int(lots),
+            "entry_limit_premium_pct": float(limit_premium),
+            "entry_order_fill_timeout_seconds": int(fill_timeout),
+            "margin_check_enabled": bool(margin_check),
+            "margin_max_depth": int(max_depth),
+        })
+
+    with tab_strategy:
+        st.caption("Which patterns qualify as a lead, and how strict the filter is.")
+        patterns = st.multiselect(
+            "Enabled patterns",
+            ["horizontal_range", "trendline", "triangle", "flag_pennant", "head_shoulders", "volume_breakout"],
+            default=cfg.get("breakout.patterns_enabled", ["volume_breakout"]),
+            help="Only the selected chart patterns can generate leads.",
+        )
+        min_conf = st.slider("Min confidence", 0.0, 1.0,
+                             float(cfg.get("breakout.min_confidence", 0.6)), 0.05,
+                             help="Leads below this confidence are dropped.")
+        st.markdown("**Volume confirmation**")
+        require_spike = st.checkbox(
+            "Require volume spike for every signal",
+            value=bool(cfg.get("breakout.require_volume_spike", False)),
+        )
+        vmult = st.number_input("Volume spike multiplier", min_value=1.0, max_value=10.0,
+                                value=float(cfg.get("breakout.volume_multiplier", 4.0)), step=0.5)
+        vboost = st.slider("Volume confidence boost", 0.0, 0.4,
+                           float(cfg.get("breakout.volume_boost", 0.15)), 0.05)
+        new_cfg.update({
+            "breakout.patterns_enabled": patterns,
+            "breakout.min_confidence": float(min_conf),
+            "breakout.require_volume_spike": bool(require_spike),
+            "breakout.volume_multiplier": float(vmult),
+            "breakout.volume_boost": float(vboost),
+        })
+
+    with tab_sched:
+        st.caption("How often each background task runs.")
+        lead_sec = st.number_input("Lead generator (seconds)", min_value=10, max_value=3600,
+                                   value=int(cfg.get("scheduler.lead_generator_seconds", 300)))
+        track_sec = st.number_input("Trade tracker (seconds)", min_value=5, max_value=600,
+                                    value=int(cfg.get("scheduler.trade_tracker_seconds", 30)))
+        place_sec = st.number_input("Order placer (seconds)", min_value=5, max_value=600,
+                                    value=int(cfg.get("scheduler.order_placer_seconds", 30)))
+        new_cfg.update({
+            "scheduler.lead_generator_seconds": int(lead_sec),
+            "scheduler.trade_tracker_seconds": int(track_sec),
+            "scheduler.order_placer_seconds": int(place_sec),
+        })
+
     st.caption("Changes take effect on the next backend restart.")
 
-    if st.button("Save settings", type="primary", use_container_width=True):
-        resp = api.update_config(
-            {
-                "trading_start": start.strftime("%H:%M"),
-                "sqoff_time": end.strftime("%H:%M"),
-                "initial_sl_pct": float(sl),
-                "trail_activate_pct": float(activate),
-                "trail_gap_pct": float(gap),
-                "max_lead_price_divergence_pct": float(divergence),
-                "min_days_to_expiry": int(min_days),
-                "qty_lots_per_trade": int(lots),
-                "entry_limit_premium_pct": float(limit_premium),
-                "entry_order_fill_timeout_seconds": int(fill_timeout),
-                "margin_check_enabled": bool(margin_check),
-                "margin_max_depth": int(max_depth),
-                "breakout.patterns_enabled": patterns,
-                "breakout.min_confidence": float(min_conf),
-                "breakout.require_volume_spike": bool(require_spike),
-                "breakout.volume_multiplier": float(vmult),
-                "breakout.volume_boost": float(vboost),
-                "scheduler.lead_generator_seconds": int(lead_sec),
-                "scheduler.trade_tracker_seconds": int(track_sec),
-                "scheduler.order_placer_seconds": int(place_sec),
-            }
-        )
-        if resp.get("status") == "ok":
-            st.success("Saved.")
-        else:
-            st.error(resp.get("error", {}).get("message", "Save failed."))
+    b1, b2, _ = st.columns([1, 1, 4])
+    with b1:
+        if st.button("Save settings", type="primary", use_container_width=True):
+            resp = api.update_config(new_cfg)
+            if resp.get("status") == "ok":
+                st.success("Saved.")
+            else:
+                st.error(resp.get("error", {}).get("message", "Save failed."))
+    with b2:
+        if st.button("Reload", use_container_width=True, help="Discard edits and reload from the backend."):
+            st.rerun()
 
 
 # --- main ----------------------------------------------------------------
@@ -734,12 +1142,15 @@ def main():
     st.markdown(_css(), unsafe_allow_html=True)
     page = render_sidebar()
 
+    # Page title with status dot
     ks_active = api.get_killswitch().get("data", {}).get("active", False)
     dot = f"<span class='dot' style='background:{LOSS if ks_active else PROFIT};'></span>"
     _html(
-        f"<div style='display:flex;align-items:center;gap:10px;margin:4px 0 2px 0;'>"
+        f"<div style='display:flex;align-items:center;gap:10px;margin:6px 0 4px 0;'>"
         f"{dot}<span style='font-size:1.5rem;font-weight:700;'>TradePilot</span></div>"
     )
+
+    render_topbar()
     render_killswitch()
     render_token_status()
 
@@ -754,7 +1165,10 @@ def main():
     }
     views[page]()
 
-    _html(f"<div class='muted' style='margin-top:24px;text-align:center'>Last render: {datetime.now():%H:%M:%S}</div>")
+    _html(
+        f"<div class='muted' style='margin-top:24px;text-align:center'>"
+        f"Last render: {_ist_now_str()} IST</div>"
+    )
 
 
 main()

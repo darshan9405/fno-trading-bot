@@ -60,7 +60,14 @@ class FakeBroker(BrokerBase):
         self.placed.append(order)
         oid = f"o-{len(self.placed)}"
         avg = self.ltp_map.get(order.instrument_key, 100.0)
-        status = self.fill_status_override.get(oid) or self.fill_status_override.get("*") or "complete"
+        # Mirrors broker behaviour: LIMIT/MARKET fill immediately, SL orders sit
+        # open until their trigger fires. Tests can override per-order via
+        # fill_status_override (e.g. to simulate a filled SL or a rejected order).
+        if order.order_type in ("SL", "SL-M"):
+            default_status = "open"
+        else:
+            default_status = "complete"
+        status = self.fill_status_override.get(oid) or self.fill_status_override.get("*") or default_status
         self._order_book.append(OrderView(
             order_id=oid, status=status, average_price=avg if status == "complete" else None,
             quantity=order.quantity, filled_quantity=order.quantity if status == "complete" else 0,
@@ -73,6 +80,11 @@ class FakeBroker(BrokerBase):
 
     def modify_order(self, params):
         self.modified.append(params)
+        # Real broker keeps an open SL in "open" status after a modify; the
+        # trailing rule just changes trigger/price, not lifecycle.
+        for o in self._order_book:
+            if o.order_id == params.order_id and o.status == "open":
+                break
 
     def cancel_order(self, order_id):
         pass
@@ -694,6 +706,10 @@ def test_trade_tracker_closes_on_sl_hit(env):
         FillView(trade_id="t-sl", order_id=trade.sl_order_id, quantity=trade.quantity,
                  average_price=89.0, transaction_type="SELL")
     ]
+    for o in broker._order_book:
+        if o.order_id == trade.sl_order_id:
+            o.status = "complete"
+            o.average_price = 89.0
     run_trade_tracker(broker=broker, now=_now(11, 0))
     with session_scope() as session:
         t = session.get(Trade, trade.id)
@@ -714,6 +730,61 @@ def test_trade_tracker_squares_off_at_window_end(env):
         assert t.exit_reason == "sqoff"
 
 
+def test_trade_tracker_replaces_cancelled_sl(env):
+    """If the broker reports the SL as cancelled (e.g. user intervention or a
+    broker-side cancel), trade_tracker must re-place a fresh SL instead of
+    trailing a non-existent order."""
+    broker = _seed_broker(env)
+    trade = _open_nifty_trade(env, broker)
+
+    old_sl = trade.sl_order_id
+    # Simulate broker-side cancel: flip the SL order's status in the fake order book.
+    for o in broker._order_book:
+        if o.order_id == old_sl:
+            o.status = "cancelled"
+    placed_before = len(broker.placed)
+
+    run_trade_tracker(broker=broker, now=_now(11, 0))
+    with session_scope() as session:
+        t = session.get(Trade, trade.id)
+        assert t.status == "open"
+        assert t.sl_order_id is not None and t.sl_order_id != old_sl
+        assert t.current_sl == t.initial_sl
+
+    # Exactly one new SL was placed (the replacement).
+    assert len(broker.placed) == placed_before + 1
+    assert broker.placed[-1].order_type == "SL"
+    assert broker.placed[-1].transaction_type == "SELL"
+
+
+def test_trade_tracker_closes_when_sl_status_complete(env):
+    """When the broker reports the SL order as complete (it filled), trade_tracker
+    must close the trade using the SL fill price — without placing another SL."""
+    broker = _seed_broker(env)
+    trade = _open_nifty_trade(env, broker)
+
+    placed_before = len(broker.placed)
+    # Mark SL complete at the broker + add a fill so exit price can be derived.
+    for o in broker._order_book:
+        if o.order_id == trade.sl_order_id:
+            o.status = "complete"
+            o.average_price = 89.0
+    broker.fills[trade.sl_order_id] = [
+        FillView(trade_id="t-sl", order_id=trade.sl_order_id, quantity=trade.quantity,
+                 average_price=89.0, transaction_type="SELL")
+    ]
+
+    run_trade_tracker(broker=broker, now=_now(11, 0))
+    with session_scope() as session:
+        t = session.get(Trade, trade.id)
+        assert t.status == "closed"
+        assert t.exit_reason == "sl_hit"
+        assert t.exit_price == 89.0
+
+    # No new SL placed — the existing one already filled at the broker.
+    assert len(broker.placed) == placed_before
+
+
 def test_trade_tracker_respects_special_session_end(env):
     broker = _seed_broker(env)
     with session_scope() as session:
@@ -729,6 +800,63 @@ def test_trade_tracker_respects_special_session_end(env):
         t = session.get(Trade, trade.id)
         assert t.status == "closed"
         assert t.exit_reason == "sqoff"
+
+
+def test_trade_tracker_squares_off_when_no_sl_and_replacement_fails(env):
+    """If a trade has no SL order and the bot can't place one (broker rejection,
+    network error, etc.), the tracker sqoffs the trade with a LIMIT SELL — same
+    defensive pattern as order_placer."""
+    broker = _seed_broker(env)
+    trade = _open_nifty_trade(env, broker)
+
+    with session_scope() as session:
+        t = session.get(Trade, trade.id)
+        t.sl_order_id = None  # simulate SL was never placed / lost
+    real_place = broker.place_order
+    calls = []
+
+    def selective_place(order):
+        calls.append(order)
+        if order.order_type == "SL":
+            raise BrokerError("SL rejected")
+        return real_place(order)
+
+    broker.place_order = selective_place
+    placed_before = len(calls)
+
+    run_trade_tracker(broker=broker, now=_now(11, 0))
+    with session_scope() as session:
+        t = session.get(Trade, trade.id)
+        assert t.status == "closed"
+        assert t.exit_reason == "no_sl_sqoff"
+
+    # SL attempted (failed), then LIMIT SELL sqoff placed.
+    assert [o.order_type for o in calls[placed_before:]] == ["SL", "LIMIT"]
+    assert calls[-1].transaction_type == "SELL"
+    # Sqoff priced at LTP - premium%: 100 * (1 - 0.01) = 99.0.
+    assert calls[-1].price == 99.0
+
+
+def test_trade_tracker_logs_critical_when_no_sl_and_sqoff_also_fails(env):
+    """If the tracker can't place an SL AND the defensive sqoff also fails,
+    the trade stays open and a CRITICAL log fires for manual intervention."""
+    broker = _seed_broker(env)
+    trade = _open_nifty_trade(env, broker)
+
+    with session_scope() as session:
+        t = session.get(Trade, trade.id)
+        t.sl_order_id = None
+
+    def fail_all(order):
+        raise BrokerError("everything rejected")
+
+    broker.place_order = fail_all
+    run_trade_tracker(broker=broker, now=_now(11, 0))
+    with session_scope() as session:
+        t = session.get(Trade, trade.id)
+        # Trade stays open so manual intervention can find and close it.
+        assert t.status == "open"
+        assert t.sl_order_id is None
 
 
 # --- trailing math unit ---------------------------------------------------

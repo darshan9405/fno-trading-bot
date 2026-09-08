@@ -2,7 +2,7 @@
 
 from sqlalchemy import select
 
-from app.broker.base import InstrumentView, OrderRequest
+from app.broker.base import BrokerError, InstrumentView, OrderRequest
 from app.db import session_scope
 from app.models import Lead, Order, OrderFill, Trade
 from app.services.health_service import utcnow
@@ -12,6 +12,50 @@ PRODUCT = "I"  # intraday (Upstox auto-square-off at session end)
 
 def _token_from_key(instrument_key: str) -> str:
     return instrument_key.split("|")[-1]
+
+
+def place_defensive_sqoff(
+    broker,
+    instrument_key: str,
+    quantity: int,
+    tag: str,
+    limit_premium_pct: float,
+) -> str:
+    """Place a defensive LIMIT SELL at LTP minus `limit_premium_pct`%.
+
+    Used as a fallback when the bot cannot place or maintain a protective SL —
+    shared by `order_placer.process_lead` (after entry fill + SL placement failure)
+    and `trade_tracker._ensure_sl_or_sqoff` (when an open trade has no SL).
+
+    Returns the sqoff order_id. Raises `BrokerError` if there is no LTP or the
+    broker rejects the order; callers wrap in their own try/except for logging
+    and policy.
+    """
+    sqoff_price = (broker.get_ltp([instrument_key]) or {}).get(instrument_key)
+    if sqoff_price is None:
+        raise BrokerError(f"no LTP for sqoff of {instrument_key}")
+    return broker.place_order(
+        OrderRequest(
+            instrument_key=instrument_key,
+            transaction_type="SELL",
+            quantity=quantity,
+            product=PRODUCT,
+            order_type="LIMIT",
+            price=round(sqoff_price * (1.0 - limit_premium_pct / 100.0), 2),
+            tag=tag,
+        )
+    )
+
+
+def derive_exit_price(broker, trade: Trade, sqoff_id: str | None = None) -> float:
+    """Best-effort exit price after a sqoff/close: prefer fills, fall back to LTP,
+    then `current_sl`. Used by the defensive sqoff paths in order_placer and trade_tracker."""
+    if sqoff_id:
+        filled = avg_fill_price(broker.get_trades_by_order(sqoff_id))
+        if filled is not None:
+            return filled
+    ltp = (broker.get_ltp([trade.option_instrument_key]) or {}).get(trade.option_instrument_key)
+    return ltp or trade.current_sl
 
 
 def create_trade(session, *, lead: Lead, contract: InstrumentView, direction: str, entry_price: float,
@@ -126,10 +170,7 @@ def square_off(session, broker, trade: Trade, reason: str = "sqoff") -> float:
             tag=f"trade-{trade.id}",
         )
     )
-    exit_price = avg_fill_price(broker.get_trades_by_order(order_id))
-    if exit_price is None:
-        exit_price = (broker.get_ltp([trade.option_instrument_key]) or {}).get(trade.option_instrument_key)
-    exit_price = exit_price or trade.current_sl
+    exit_price = derive_exit_price(broker, trade, sqoff_id=order_id)
     record_order(
         session, order_id=order_id, trade_id=trade.id, order_type="MARKET", transaction_type="SELL",
         instrument_token=trade.option_instrument_key, quantity=trade.quantity, tag=f"trade-{trade.id}",
