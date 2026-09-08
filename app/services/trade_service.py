@@ -125,7 +125,7 @@ def square_off(session, broker, trade: Trade, reason: str = "sqoff") -> float:
             product=PRODUCT,
             order_type="MARKET",
             tag=f"trade-{trade.id}",
-            market_protection=int(get_setting("market_protection_pct", 2)),
+            market_protection=float(get_setting("market_protection_pct", 0.5)),
         )
     )
     exit_price = avg_fill_price(broker.get_trades_by_order(order_id))

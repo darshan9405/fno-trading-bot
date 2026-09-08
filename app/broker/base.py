@@ -35,7 +35,7 @@ class OrderRequest:
     trigger_price: float = 0.0
     tag: str | None = None
     validity: str = "DAY"
-    market_protection: int = 0
+    market_protection: float = 0.0
     is_amo: bool = False
 
 
@@ -50,7 +50,7 @@ class ModifyOrderParams:
     price: float = 0.0
     validity: str = "DAY"
     disclosed_quantity: int = 0
-    market_protection: int = 0
+    market_protection: float = 0.0
 
 
 @dataclass

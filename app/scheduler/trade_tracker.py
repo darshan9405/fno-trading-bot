@@ -32,7 +32,7 @@ def run_trade_tracker(broker=None, now=None):
         sl_pct = float(get_setting("initial_sl_pct", 10.0))
         activate_pct = float(get_setting("trail_activate_pct", 5.0))
         gap_pct = float(get_setting("trail_gap_pct", 5.0))
-        market_protection = int(get_setting("market_protection_pct", 2))
+        market_protection = float(get_setting("market_protection_pct", 0.5))
 
         pending_errors = []
         with session_scope() as session:
@@ -63,7 +63,7 @@ def run_trade_tracker(broker=None, now=None):
 
 
 def process_trade(session, broker, trade: Trade, sl_pct: float, activate_pct: float, gap_pct: float, now,
-                  market_protection: int = 0) -> None:
+                  market_protection: float = 0.0) -> None:
     # Auto square-off at the day's session end (respects special/half-day sessions).
     if now.time() >= market_calendar.session_end(now.date()):
         trade_service.square_off(session, broker, trade, reason="sqoff")
@@ -97,7 +97,7 @@ def process_trade(session, broker, trade: Trade, sl_pct: float, activate_pct: fl
         log.info("trade_tracker: closed trade %s (%s) at %.2f", trade.id, reason, exit_price)
 
 
-def place_initial_sl(session, broker, trade: Trade, sl_pct: float, market_protection: int = 0) -> None:
+def place_initial_sl(session, broker, trade: Trade, sl_pct: float, market_protection: float = 0.0) -> None:
     if trade.sl_order_id is not None:
         return
     sl = trade_service.initial_sl_for(trade.entry_price, trade.direction, sl_pct)
@@ -122,7 +122,7 @@ def place_initial_sl(session, broker, trade: Trade, sl_pct: float, market_protec
     )
 
 
-def move_sl(broker, trade: Trade, new_sl: float, new_state: str, market_protection: int = 0) -> None:
+def move_sl(broker, trade: Trade, new_sl: float, new_state: str, market_protection: float = 0.0) -> None:
     if trade.sl_order_id is None:
         return
     broker.modify_order(
