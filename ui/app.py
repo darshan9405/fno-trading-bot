@@ -433,7 +433,7 @@ def render_open_trades():
         ["symbol", "direction", "entry_price", "ltp", "unrealised_pnl", "current_sl", "trail_state"],
     )
     df.columns = ["Symbol", "Dir", "Entry", "LTP", "P&L", "SL", "Trail"]
-    styled = df.style.map(_style_pnl_col, subset=["P&L"])
+    styled = df.style.apply(_style_pnl_col, subset=["P&L"])
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
     total = sum(r.get("unrealised_pnl") or 0 for r in rows)
@@ -545,7 +545,7 @@ def render_history():
         ["symbol", "direction", "entry_price", "exit_price", "realized_pnl", "exit_reason", "exit_time"],
     )
     df.columns = ["Symbol", "Dir", "Entry", "Exit", "P&L", "Reason", "Closed"]
-    styled = df.style.map(_style_pnl_col, subset=["P&L"])
+    styled = df.style.apply(_style_pnl_col, subset=["P&L"])
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
     total = sum(r.get("realized_pnl") or 0 for r in rows)
