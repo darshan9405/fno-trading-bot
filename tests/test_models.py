@@ -2,7 +2,7 @@ import pytest
 from datetime import date
 
 from sqlalchemy import select
-from app.db import Base, create_engine, init_db, sessionmaker
+from app.db import Base, _run_sqlite_migrations, create_engine, init_db, sessionmaker
 from app.models import (
     AuthToken,
     ErrorLog,
@@ -246,6 +246,38 @@ def test_orders_and_fills_audit(seed, db):
     assert len(o.fills) == 1
     assert o.fills[0].upstox_trade_id == "t-5001"
     assert o.fills[0].average_price == 245.00
+
+
+def test_sqlite_migration_adds_plan_column():
+    from sqlalchemy import text
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE leads (id INTEGER PRIMARY KEY, "
+                "instrument_id INTEGER, underlying_key VARCHAR(64), direction VARCHAR(8), "
+                "strategy VARCHAR(32), signal_type VARCHAR(32), signal_level FLOAT, "
+                "confidence FLOAT, chart_interval VARCHAR(16), status VARCHAR(16), "
+                "note TEXT, created_at DATETIME, processed_at DATETIME)"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO leads (id, instrument_id, underlying_key, direction, signal_level) "
+                "VALUES (1, 1, 'NSE_INDEX|Nifty 50', 'CALL', 26800.0)"
+            )
+        )
+
+    _run_sqlite_migrations(engine)
+
+    with engine.connect() as conn:
+        cols = {r[1] for r in conn.exec_driver_sql("PRAGMA table_info(leads)")}
+        assert "plan" in cols
+        row = conn.execute(text("SELECT plan FROM leads WHERE id = 1")).fetchone()
+        assert row[0] is None  # pre-existing rows get NULL
+
+    engine.dispose()
 
 
 def test_option_cache_unique(seed, db):

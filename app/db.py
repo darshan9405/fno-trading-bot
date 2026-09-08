@@ -43,6 +43,20 @@ def init_db(url: str | None = None):
 def create_all():
     init_db()
     Base.metadata.create_all(_engine)
+    _run_sqlite_migrations(_engine)
+
+_MIGRATIONS = [
+    ("leads", "plan", "TEXT"),
+]
+
+def _run_sqlite_migrations(engine):
+    if engine is None or not engine.url.drivername.startswith("sqlite"):
+        return
+    with engine.begin() as conn:
+        for table, column, coltype in _MIGRATIONS:
+            cols = {r[1] for r in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
+            if column not in cols:
+                conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
 
 
 def drop_all():

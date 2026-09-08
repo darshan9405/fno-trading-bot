@@ -4,7 +4,7 @@ Tabs: Dashboard (live P&L), Open Trades, Leads, History, Health, Settings.
 Auto-polls Dashboard + Open Trades via st.fragment(run_every).
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -93,6 +93,15 @@ def _num(x) -> str:
         return "—"
 
 
+def _ui_time(value) -> time:
+    """Parse a "HH:MM" (or "H:MM") setting into a time for st.time_input."""
+    try:
+        parts = str(value).split(":")
+        return time(int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
+    except Exception:
+        return time(10, 0)
+
+
 def _pnl_color(x) -> str:
     try:
         v = float(x)
@@ -113,6 +122,21 @@ def _badge(text: str, kind: str = "info") -> str:
     }
     fg, bg = colors.get(kind, colors["info"])
     return f"<span class='badge' style='color:{fg};background:{bg}'>{text}</span>"
+
+
+def _lead_plan_line(r: dict) -> str:
+    """F&O contract a lead maps to, e.g. `RELIANCE 30 SEP 26 2900 CE × 500`."""
+    symbol = (r.get("trading_symbol") or "").strip()
+    if not symbol:
+        return ""
+    parts = [symbol]
+    qty = r.get("quantity")
+    if qty:
+        parts.append(f"× {qty}")
+    expiry = r.get("expiry")
+    if expiry:
+        parts.append(f"exp {expiry}")
+    return f"<div class='muted'>F&O: {' · '.join(parts)}</div>"
 
 
 def _pnl_html(x) -> str:
@@ -326,6 +350,7 @@ def render_dashboard():
                 [
                     {
                         "Symbol": r["underlying"].split("|")[-1],
+                        "Instrument": r.get("trading_symbol") or "—",
                         "Dir": r["direction"],
                         "Pattern": r["signal_type"],
                         "Level": r["signal_level"],
@@ -369,6 +394,19 @@ def render_open_trades():
 
 def render_leads():
     st.subheader("Leads")
+
+    c1, c2 = st.columns([3, 1])
+    with c2:
+        if st.button("Generate now", type="primary", use_container_width=True,
+                     help="Run the lead generator manually (works outside trading hours)."):
+            resp = api.generate_leads()
+            if resp.get("status") == "ok":
+                generated = resp["data"].get("generated", 0)
+                st.success(f"Generated {generated} lead(s).")
+            else:
+                st.error(resp.get("error", {}).get("message", "Generation failed."))
+            st.rerun()
+
     resp = api.get_leads()
     if resp.get("status") != "ok":
         st.warning("Could not load leads.")
@@ -386,6 +424,7 @@ def render_leads():
                 f"{_badge(r['direction'], 'up' if r['direction'] == 'CALL' else 'down')} "
                 f"{_badge(r['status'], 'ok' if r['status'] == 'placed' else 'muted')}</div>"
                 f"<div class='muted'>{r['signal_type']} @ {_num(r['signal_level'])}</div>"
+                + _lead_plan_line(r)
             )
         with c2:
             pct = int((r.get("confidence") or 0) * 100)
@@ -527,6 +566,11 @@ def render_settings():
         return
     cfg = resp["data"]
 
+    st.markdown("##### Market hours")
+    start = st.time_input("Trading start (IST)", value=_ui_time(cfg.get("trading_start", "10:00")))
+    end = st.time_input("Square-off time (IST)", value=_ui_time(cfg.get("sqoff_time", "14:00")))
+    st.caption("The bot generates leads and places orders inside this daily window.")
+
     st.markdown("##### Stop-loss & trailing")
     sl = st.number_input("Initial SL %", min_value=1.0, max_value=30.0, value=float(cfg.get("initial_sl_pct", 10.0)))
     activate = st.number_input("Trail activate %", min_value=0.0, max_value=20.0, value=float(cfg.get("trail_activate_pct", 5.0)))
@@ -536,6 +580,18 @@ def render_settings():
     divergence = st.number_input("Max lead price divergence %", min_value=0.1, max_value=5.0, value=float(cfg.get("max_lead_price_divergence_pct", 0.5)))
     min_days = st.number_input("Min days to expiry", min_value=1, max_value=30, value=int(cfg.get("min_days_to_expiry", 5)))
     lots = st.number_input("Lots per trade", min_value=1, max_value=10, value=int(cfg.get("qty_lots_per_trade", 1)))
+
+    st.markdown("##### Margin affordability")
+    margin_check = st.checkbox(
+        "Skip leads the margin can't afford",
+        value=bool(cfg.get("margin_check_enabled", True)),
+        help="At lead generation, estimate the entry cost at the deepest ITM strike you'd trade and skip the lead if it exceeds available margin.",
+    )
+    strikes_below = st.number_input(
+        "Strikes below ATM for margin estimate", min_value=0, max_value=10,
+        value=int(cfg.get("margin_strikes_below", 3)),
+        help="Estimate cost using the premium of this many strikes in-the-money of the ATM strike (most expensive option you'd buy).",
+    )
 
     st.markdown("##### Strategy")
     patterns = st.multiselect(
@@ -557,12 +613,16 @@ def render_settings():
     if st.button("Save settings", type="primary", use_container_width=True):
         resp = api.update_config(
             {
+                "trading_start": start.strftime("%H:%M"),
+                "sqoff_time": end.strftime("%H:%M"),
                 "initial_sl_pct": float(sl),
                 "trail_activate_pct": float(activate),
                 "trail_gap_pct": float(gap),
                 "max_lead_price_divergence_pct": float(divergence),
                 "min_days_to_expiry": int(min_days),
                 "qty_lots_per_trade": int(lots),
+                "margin_check_enabled": bool(margin_check),
+                "margin_strikes_below": int(strikes_below),
                 "breakout.patterns_enabled": patterns,
                 "breakout.min_confidence": float(min_conf),
                 "breakout.require_volume_spike": bool(require_spike),

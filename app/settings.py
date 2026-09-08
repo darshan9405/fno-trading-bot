@@ -18,10 +18,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "min_days_to_expiry": 5,
     "strike_selection": "ATM",
     "qty_lots_per_trade": 1,
-    # Namespaced per-strategy config (Stage 9 breakout engine).
-    # Backtest evidence: volume_breakout is the only robustly positive pattern
-    # after costs; the price-only patterns (trendline/horizontal/flag/HS/triangle)
-    # dilute it. Trade volume-confirmed breakouts only by default.
+    "margin_check_enabled": True,
+    "margin_strikes_below": 3,
     "breakout.patterns_enabled": ["volume_breakout"],
     "breakout.min_confidence": 0.7,
     "breakout.lookback_days": 60,
@@ -64,11 +62,8 @@ def seed_default_settings() -> None:
             if session.get(Setting, key) is None:
                 session.add(Setting(key=key, value=_encode(value)))
         for key, value in ENV_OVERRIDE_SETTINGS.items():
-            row = session.get(Setting, key)
-            if row is None:
+            if session.get(Setting, key) is None:
                 session.add(Setting(key=key, value=_encode(value)))
-            else:
-                row.value = _encode(value)
 
 
 def get_setting(key: str, default: Any = None) -> Any:

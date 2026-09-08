@@ -7,6 +7,7 @@ Timestamps are stored in UTC; trading window fields are IST wall-clock strings.
 from datetime import date, datetime, timezone
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     Date,
     DateTime,
@@ -108,6 +109,7 @@ class Lead(Base):
     chart_interval: Mapped[str] = mapped_column(String(16), default="day")
     status: Mapped[str] = mapped_column(String(16), default="queued")  # queued | picked | placed | skipped | expired
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    plan: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 

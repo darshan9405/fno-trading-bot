@@ -115,22 +115,46 @@ def leads():
         if date_filter:
             q = q.where(Lead.created_at.like(f"{date_filter}%"))
         rows = list(session.execute(q).scalars())
-        data = [
-            {
-                "id": l.id,
-                "underlying": l.underlying_key,
-                "direction": l.direction,
-                "strategy": l.strategy,
-                "signal_type": l.signal_type,
-                "signal_level": l.signal_level,
-                "confidence": l.confidence,
-                "status": l.status,
-                "note": l.note,
-                "created_at": l.created_at,
-            }
-            for l in rows
-        ]
+        data = [_lead_dict(l) for l in rows]
     return ok({"count": len(data), "leads": data})
+
+
+@bp.post("/leads/generate")
+@jwt_required
+def generate_leads():
+    """Manually run the lead generator (bypasses the trading-window gate).
+
+    Historical candles and option chains are available off-hours, so leads can
+    be generated on demand from the UI even when the market is closed.
+    """
+    from app.scheduler.lead_generator import run_lead_generator
+
+    result = run_lead_generator(force=True) or {}
+    if result.get("error"):
+        return error("lead_generation_failed", result["error"], 502)
+    return ok({"generated": result.get("created", 0), "checked": result.get("checked", 0)})
+
+
+def _lead_dict(l: Lead) -> dict:
+    plan = l.plan or {}
+    return {
+        "id": l.id,
+        "underlying": l.underlying_key,
+        "direction": l.direction,
+        "strategy": l.strategy,
+        "signal_type": l.signal_type,
+        "signal_level": l.signal_level,
+        "confidence": l.confidence,
+        "status": l.status,
+        "note": l.note,
+        "created_at": l.created_at,
+        "expiry": plan.get("expiry"),
+        "strike_price": plan.get("strike_price"),
+        "option_type": plan.get("option_type"),
+        "trading_symbol": plan.get("trading_symbol"),
+        "quantity": plan.get("quantity"),
+        "lot_size": plan.get("lot_size"),
+    }
 
 
 @bp.post("/recon")

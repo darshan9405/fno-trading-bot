@@ -336,6 +336,72 @@ def test_pnl_requires_upstox_token(env):
     assert r.status_code == 502  # no Upstox token stored -> BrokerError
 
 
+def test_leads_generate_endpoint(env, monkeypatch):
+    client, token, cfg = env
+    from app.scheduler import lead_generator as lg
+
+    monkeypatch.setattr(
+        lg, "run_lead_generator",
+        lambda broker=None, now=None, force=False: {"created": 3, "checked": 1},
+    )
+    r = client.post("/api/trades/leads/generate", headers=_headers(token))
+    assert r.status_code == 200
+    assert r.get_json()["data"] == {"generated": 3, "checked": 1}
+
+    monkeypatch.setattr(
+        lg, "run_lead_generator",
+        lambda broker=None, now=None, force=False: {"error": "boom"},
+    )
+    r = client.post("/api/trades/leads/generate", headers=_headers(token))
+    assert r.status_code == 502
+    assert r.get_json()["error"]["code"] == "lead_generation_failed"
+
+
+def test_leads_include_fno_plan(env):
+    client, token, cfg = env
+    from app.models import Instrument, Lead
+
+    with session_scope() as session:
+        inst = Instrument(symbol="NIFTY", exchange="NSE", segment="NSE_INDEX",
+                          spot_instrument_key="NSE_INDEX|Nifty 50", instrument_token="26000",
+                          trading_symbol="NIFTY", lot_size=50, enabled=True)
+        session.add(inst)
+        session.flush()
+        session.add(
+            Lead(
+                instrument_id=inst.id,
+                underlying_key="NSE_INDEX|Nifty 50",
+                direction="CALL",
+                strategy="breakout",
+                signal_type="horizontal_range",
+                signal_level=26800.0,
+                confidence=0.9,
+                chart_interval="day",
+                status="queued",
+                plan={
+                    "expiry": "2026-09-10",
+                    "strike_price": 26800.0,
+                    "option_type": "CE",
+                    "trading_symbol": "NIFTY 10 SEP 26 26800 CE",
+                    "lot_size": 50,
+                    "quantity": 50,
+                },
+            )
+        )
+
+    r = client.get("/api/trades/leads", headers=_headers(token))
+    assert r.status_code == 200
+    leads = r.get_json()["data"]["leads"]
+    assert len(leads) == 1
+    row = leads[0]
+    assert row["trading_symbol"] == "NIFTY 10 SEP 26 26800 CE"
+    assert row["expiry"] == "2026-09-10"
+    assert row["strike_price"] == 26800.0
+    assert row["option_type"] == "CE"
+    assert row["quantity"] == 50
+    assert row["lot_size"] == 50
+
+
 # --- health + config -----------------------------------------------------
 
 

@@ -6,7 +6,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from app.auth import UpstoxTokenStore, configure as configure_auth
 from app.config import Config
-from app.db import Base, init_db
+from app.db import Base, _run_sqlite_migrations, init_db
 from app.extensions import limiter
 from app.services import market_calendar
 from app.settings import seed_default_settings
@@ -30,6 +30,7 @@ def create_app(config: Config | None = None) -> Flask:
 
     engine = init_db(config.DATABASE_URL)
     Base.metadata.create_all(engine)
+    _run_sqlite_migrations(engine)
     seed_default_settings()
     market_calendar.seed_defaults()
 

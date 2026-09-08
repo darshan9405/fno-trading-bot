@@ -77,6 +77,19 @@ def test_non_padded_hour_is_accepted(env):
     assert market_calendar.session_end(_dt(10).date()).strftime("%H:%M") == "09:45"
 
 
+def test_settings_persist_across_reboot(env):
+    """UI-configured market hours must survive app re-boot (env only seeds once)."""
+    from app.settings import get_setting, seed_default_settings
+
+    set_setting("trading_start", "11:30")
+    set_setting("sqoff_time", "15:00")
+    seed_default_settings()  # simulates create_app on next boot
+    assert get_setting("trading_start") == "11:30"
+    assert get_setting("sqoff_time") == "15:00"
+    assert market_calendar.session_start(_dt(10).date()).strftime("%H:%M") == "11:30"
+    assert market_calendar.session_end(_dt(10).date()).strftime("%H:%M") == "15:00"
+
+
 def test_sync_from_broker_populates_holidays(env):
     class FakeCalendarBroker:
         def get_market_holidays(self):

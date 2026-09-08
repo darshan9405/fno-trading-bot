@@ -153,6 +153,10 @@ def get_leads():
     return api("GET", "/api/trades/leads")
 
 
+def generate_leads():
+    return api("POST", "/api/trades/leads/generate")
+
+
 def get_instruments():
     return api("GET", "/api/instruments")
 

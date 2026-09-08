@@ -8,7 +8,6 @@ validate (killswitch / no open trade / price divergence / option expiry >= N day
 
 import logging
 import traceback
-from datetime import date
 
 from sqlalchemy import select
 
@@ -17,7 +16,7 @@ from app.broker.base import BrokerError, OrderRequest
 from app.config import Config
 from app.db import session_scope
 from app.models import Lead
-from app.services import health_service, market_calendar, trade_service
+from app.services import contract_service, health_service, market_calendar, trade_service
 from app.services.killswitch_service import is_killswitch_active
 from app.services.lead_service import mark_lead
 from app.settings import get_setting
@@ -85,11 +84,11 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
         mark_lead(session, lead, "skipped", note=f"price diverged {divergence:.2f}% from signal")
         return
 
-    expiry = next_expiry(broker, lead.underlying_key, min_days)
+    expiry = contract_service.next_expiry(broker, lead.underlying_key, min_days)
     if expiry is None:
         raise BrokerError(f"no expiry >= {min_days} days for {lead.underlying_key}")
 
-    contract = resolve_option_contract(broker, lead.underlying_key, lead.direction, expiry, ltp)
+    contract = contract_service.resolve_option_contract(broker, lead.underlying_key, lead.direction, expiry, ltp)
     if contract is None:
         raise BrokerError(f"no {lead.direction} contract for {lead.underlying_key} @ {expiry}")
 
@@ -152,19 +151,3 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
     mark_lead(session, lead, "placed", note=f"trade={trade.id}")
 
     log.info("order_placer: opened trade %s for %s entry=%.2f sl=%.2f", trade.id, lead.underlying_key, entry_price, initial_sl)
-
-
-def next_expiry(broker, underlying_key: str, min_days: int) -> date | None:
-    today = date.today()
-    for exp in broker.get_expiries(underlying_key):
-        if (exp - today).days >= min_days:
-            return exp
-    return None
-
-
-def resolve_option_contract(broker, underlying_key: str, direction: str, expiry: date, spot: float):
-    wanted = "CE" if direction == "CALL" else "PE"
-    matches = [c for c in broker.get_option_contracts(underlying_key, expiry=expiry) if c.instrument_type == wanted]
-    if not matches:
-        return None
-    return min(matches, key=lambda c: abs(c.strike_price - spot))

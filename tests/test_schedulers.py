@@ -200,11 +200,153 @@ def test_lead_generator_writes_queued_leads_and_dedups(env):
     assert len(lead_service.get_queued_leads()) == 2
 
 
+def test_lead_generator_attaches_fno_plan(env):
+    from datetime import date
+
+    broker = _seed_broker(env)
+    run_lead_generator(broker=broker, now=_now(10, 30))
+
+    with session_scope() as session:
+        nifty = session.execute(
+            select(Lead).where(Lead.underlying_key == "NSE_INDEX|Nifty 50")
+        ).scalars().first()
+        reliance = session.execute(
+            select(Lead).where(Lead.underlying_key == "NSE_EQ|INE002A01018")
+        ).scalars().first()
+
+        # Deterministic check: resolve plans with a fixed reference date.
+        from app.services import lead_service
+
+        leads = [nifty, reliance]
+        lead_service.attach_lead_plans(session, broker, leads, min_days=5, lots=2, today=date(2026, 9, 4))
+
+        assert nifty.plan == {
+            "expiry": "2026-09-10",
+            "strike_price": 26800.0,
+            "option_type": "CE",
+            "trading_symbol": "NIFTY 10 SEP 26 26800 CE",
+            "lot_size": 50,
+            "quantity": 100,
+        }
+        assert reliance.plan is None  # only a PE contract exists for RELIANCE
+
+
+def test_lead_generator_persists_plan_without_blocking(env):
+    """Plan resolution failures (e.g. no broker data) must not drop leads."""
+    broker = _seed_broker(env)
+    broker.contracts = []  # no option contracts -> plans stay None
+    broker.expiries = []
+    run_lead_generator(broker=broker, now=_now(10, 30))
+
+    leads = lead_service.get_queued_leads()
+    assert len(leads) == 2
+    assert all(l.plan is None for l in leads)
+
+
+def test_lead_generator_skips_lead_when_margin_insufficient(env):
+    broker = _seed_broker(env)
+    broker.get_funds = lambda: FundsView(available_margin=1000.0)  # can't afford a 5000 lot
+    run_lead_generator(broker=broker, now=_now(10, 30))
+
+    with session_scope() as session:
+        nifty = session.execute(
+            select(Lead).where(Lead.underlying_key == "NSE_INDEX|Nifty 50")
+        ).scalars().first()
+        reliance = session.execute(
+            select(Lead).where(Lead.underlying_key == "NSE_EQ|INE002A01018")
+        ).scalars().first()
+
+        assert nifty.status == "skipped"
+        assert "insufficient margin" in (nifty.note or "")
+        assert nifty.plan is not None  # F&O instrument still shown alongside the reason
+        assert reliance.status == "queued"  # no CE contract -> plan not resolvable, untouched
+
+
+def test_lead_generator_keeps_lead_with_enough_margin(env):
+    broker = _seed_broker(env)
+    broker.get_funds = lambda: FundsView(available_margin=1_000_000.0)
+    run_lead_generator(broker=broker, now=_now(10, 30))
+
+    with session_scope() as session:
+        nifty = session.execute(
+            select(Lead).where(Lead.underlying_key == "NSE_INDEX|Nifty 50")
+        ).scalars().first()
+        assert nifty.status == "queued"
+        assert "insufficient margin" not in (nifty.note or "")
+
+
+def _ce_strikes():
+    from datetime import date
+
+    return [
+        InstrumentView(instrument_key=f"NSE_FO|{i}", trading_symbol=f"NIFTY CE {s}",
+                       instrument_type="CE", expiry=date(2026, 9, 10), strike_price=s,
+                       lot_size=50, underlying_key="NSE_INDEX|Nifty 50")
+        for i, s in enumerate([26800.0, 26750.0, 26700.0, 26650.0, 26600.0])
+    ]
+
+
+def test_deepest_itm_contract_selects_below_for_call_above_for_put():
+    from datetime import date
+
+    from app.services.lead_service import _deepest_itm_contract
+
+    ce = _ce_strikes()
+    atm = next(c for c in ce if c.strike_price == 26800.0)
+    deep_call = _deepest_itm_contract(ce, atm, "CALL", 3)
+    assert deep_call.strike_price == 26650.0  # 3 strikes below ATM
+
+    pe = [
+        InstrumentView(instrument_key=f"NSE_FO|p{i}", trading_symbol=f"NIFTY PE {s}",
+                       instrument_type="PE", expiry=date(2026, 9, 10), strike_price=s,
+                       lot_size=50, underlying_key="NSE_INDEX|Nifty 50")
+        for i, s in enumerate([26800.0, 26850.0, 26900.0, 26950.0, 27000.0])
+    ]
+    atm_pe = next(c for c in pe if c.strike_price == 26800.0)
+    deep_put = _deepest_itm_contract(pe, atm_pe, "PUT", 3)
+    assert deep_put.strike_price == 26950.0  # 3 strikes above ATM (symmetric ITM)
+
+
+def test_margin_check_uses_deepest_itm_strike(env):
+    from datetime import date
+
+    broker = _seed_broker(env)
+    broker.contracts = _ce_strikes()
+    broker.ltp_map = {"NSE_FO|3": 250.0}  # premium at 3-below strike (26650)
+
+    with session_scope() as session:
+        inst = session.execute(select(Instrument).where(Instrument.symbol == "NIFTY")).scalars().first()
+        lead = Lead(instrument_id=inst.id, underlying_key="NSE_INDEX|Nifty 50", direction="CALL",
+                    strategy="breakout", signal_type="test", signal_level=26800.0,
+                    confidence=0.9, chart_interval="day", status="queued")
+        session.add(lead)
+        session.flush()
+        lead_service.attach_lead_plans(
+            session, broker, [lead], min_days=5, lots=1,
+            today=date(2026, 9, 4), available_margin=5000.0,
+        )
+
+    with session_scope() as session:
+        lead = session.execute(select(Lead)).scalars().first()
+        # 250 (3-below premium) x 50 x 1 = 12500 > 5000 -> skipped
+        assert lead.status == "skipped"
+        assert "insufficient margin" in (lead.note or "")
+
+
 def test_lead_generator_skips_outside_window(env):
     broker = _seed_broker(env)
     run_lead_generator(broker=broker, now=_now(9, 0))
     run_lead_generator(broker=broker, now=_now(14, 30))
     assert lead_service.get_queued_leads() == []
+
+
+def test_lead_generator_force_runs_outside_window(env):
+    broker = _seed_broker(env)
+    result = run_lead_generator(broker=broker, now=_now(9, 0), force=True)
+    assert result == {"created": 2, "checked": 2}
+    leads = lead_service.get_queued_leads()
+    assert len(leads) == 2
+    assert all(l.status == "queued" for l in leads)
 
 
 def test_lead_generator_touches_heartbeat(env):
