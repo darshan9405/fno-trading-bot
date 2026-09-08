@@ -224,7 +224,12 @@ class UpstoxBroker(BrokerBase):
         except ApiException as e:
             raise self._to_broker_error("get_ltp", e)
         data = getattr(resp, "data", None) or {}
-        return {k: float(v.last_price) for k, v in data.items() if getattr(v, "last_price", None) is not None}
+        out: dict[str, float] = {}
+        for key, quote in data.items():
+            if getattr(quote, "last_price", None) is None:
+                continue
+            out[getattr(quote, "instrument_token", None) or key] = float(quote.last_price)
+        return out
 
     # --- portfolio --------------------------------------------------------
 

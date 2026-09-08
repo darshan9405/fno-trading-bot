@@ -106,13 +106,26 @@ def test_get_historical_candles_rejects_bad_interval():
         broker.get_historical_candles("NSE_INDEX|Nifty 50", "nanosecond", date(2026, 9, 1), date(2026, 9, 4))
 
 
-def test_get_ltp(monkeypatch):
+def test_get_ltp_keys_by_instrument_token(monkeypatch):
     broker = _broker()
     fake = SimpleNamespace(ltp=lambda symbol, api_version: SimpleNamespace(
-        data={"NSE_FO|1": SimpleNamespace(last_price=100.5), "NSE_FO|2": SimpleNamespace(last_price=None)}
+        data={
+            "NSE_EQ:NHPC": SimpleNamespace(last_price=52.05, instrument_token="NSE_EQ|INE848E01016"),
+            "NSE_EQ:MISSING": SimpleNamespace(last_price=None, instrument_token="NSE_EQ|INE669E01016"),
+        }
     ))
     broker._apis["quote"] = fake
-    result = broker.get_ltp(["NSE_FO|1", "NSE_FO|2"])
+    result = broker.get_ltp(["NSE_EQ|INE848E01016", "NSE_EQ|INE669E01016"])
+    assert result == {"NSE_EQ|INE848E01016": 52.05}
+
+
+def test_get_ltp_falls_back_to_response_key(monkeypatch):
+    broker = _broker()
+    fake = SimpleNamespace(ltp=lambda symbol, api_version: SimpleNamespace(
+        data={"NSE_FO|1": SimpleNamespace(last_price=100.5)}
+    ))
+    broker._apis["quote"] = fake
+    result = broker.get_ltp(["NSE_FO|1"])
     assert result == {"NSE_FO|1": 100.5}
 
 
