@@ -10,6 +10,7 @@ from sqlalchemy import select
 from app import create_app
 from app.broker.base import (
     BrokerBase,
+    BrokerError,
     FillView,
     FundsView,
     HolidayView,
@@ -188,7 +189,7 @@ def _open_nifty_trade(env, broker, entry=100.0):
 # --- Scheduler 1: lead generation ----------------------------------------
 
 
-def test_lead_generator_writes_queued_leads_and_dedups(env):
+def test_lead_generator_writes_queued_leads_and_does_not_dedup(env):
     broker = _seed_broker(env)
     run_lead_generator(broker=broker, now=_now(10, 30))
     leads = lead_service.get_queued_leads()
@@ -196,8 +197,9 @@ def test_lead_generator_writes_queued_leads_and_dedups(env):
     assert all(l.status == "queued" for l in leads)
     assert all(l.strategy == "test_breakout" for l in leads)
 
-    run_lead_generator(broker=broker, now=_now(10, 45))  # dedup: same day
-    assert len(lead_service.get_queued_leads()) == 2
+    # A second pass on the same day generates again — dedup happens at order placement.
+    run_lead_generator(broker=broker, now=_now(10, 45))
+    assert len(lead_service.get_queued_leads()) == 4
 
 
 def test_lead_generator_attaches_fno_plan(env):
@@ -470,6 +472,48 @@ def test_order_placer_opens_trade_with_sl(env):
         skipped = session.execute(select(Lead).where(Lead.status == "skipped")).scalars().all()
         assert len(skipped) == 1
         assert "no affordable contract" in skipped[0].note
+
+
+def test_order_placer_places_no_sl_when_entry_fails(env):
+    broker = _seed_broker(env)
+
+    def fail_entry(order):
+        raise BrokerError("entry rejected")
+
+    broker.place_order = fail_entry
+    run_lead_generator(broker=broker, now=_now(10, 30))
+    run_order_placer(broker=broker, now=_now(10, 35))
+
+    with session_scope() as session:
+        assert session.execute(select(Trade)).scalars().first() is None
+        skipped = session.execute(select(Lead).where(Lead.status == "skipped")).scalars().all()
+        assert len(skipped) == 2
+        assert "entry rejected" in skipped[0].note
+    assert broker.placed == []  # no SELL / SL order was placed after the failed BUY
+
+
+def test_order_placer_unfilled_entry_does_not_block_retry(env):
+    """An entry that is placed but never fills must not leave a phantom trade
+    that blocks the underlying ("already traded today") for the rest of the day."""
+    broker = _seed_broker(env)
+    broker.get_trades_by_order = lambda order_id: []  # entry never fills
+    broker.get_order_book = lambda: []
+    run_lead_generator(broker=broker, now=_now(10, 30))
+    run_order_placer(broker=broker, now=_now(10, 35))
+
+    with session_scope() as session:
+        assert session.execute(select(Trade)).scalars().first() is None
+        skipped = session.execute(select(Lead).where(Lead.status == "skipped")).scalars().all()
+        assert any("did not fill" in (s.note or "") for s in skipped)
+
+    # Same day, leads regenerate and the broker fills -> the underlying trades.
+    broker2 = _seed_broker(env)
+    run_lead_generator(broker=broker2, now=_now(10, 40))
+    run_order_placer(broker=broker2, now=_now(10, 45))
+    with session_scope() as session:
+        trades = session.execute(select(Trade)).scalars().all()
+        assert len(trades) == 1
+        assert trades[0].entry_order_id and trades[0].sl_order_id
 
 
 def test_order_placer_skips_on_price_divergence(env):

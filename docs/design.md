@@ -357,7 +357,7 @@ interface for every registered strategy.
 3. current price within `max_lead_price_divergence_pct` of `signal_level`
 4. option expiry ≥ `min_days_to_expiry` days away (`get_expiries`)
 5. strike selection: `ATM` (default) or `ITM_0.5` config; contract from `option_cache`
-6. place entry (`MARKET`) + initial SL (`SL-M`, trigger = `entry ± initial_sl_pct`), `product='I'`, `tag='trade-<id>'`
+6. place entry (`MARKET`) first; only if it fills does it place the protective SL (`SL-M`, trigger = `entry ± initial_sl_pct`), `product='D'`, `tag='trade-<id>'`
 7. on failure: mark lead `skipped` + log `errors`
 
 ### 7.2 Trailing SL rule (S2) — configurable

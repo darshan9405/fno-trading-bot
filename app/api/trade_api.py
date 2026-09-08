@@ -140,6 +140,7 @@ def _lead_dict(l: Lead) -> dict:
     return {
         "id": l.id,
         "underlying": l.underlying_key,
+        "symbol": l.instrument.symbol if l.instrument else None,
         "direction": l.direction,
         "strategy": l.strategy,
         "signal_type": l.signal_type,

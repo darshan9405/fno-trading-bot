@@ -1,7 +1,12 @@
-"""Lead persistence: candidates -> queued leads, dedup (1 per instrument/day)."""
+"""Lead persistence: candidates -> queued leads.
+
+Deduplication is intentionally NOT done here: every candidate is persisted so a
+later, better signal (or a re-check after a skipped lead) is never dropped.
+Duplicate handling for the same option is left to the order placer.
+"""
 
 import logging
-from datetime import date, datetime, time
+from datetime import date
 
 from sqlalchemy import select
 
@@ -16,21 +21,11 @@ log = logging.getLogger(__name__)
 def create_leads_from_candidates(session, instrument: Instrument, candidates, now, strategy: str) -> list[Lead]:
     """Insert candidate leads for one instrument.
 
-    Leads can be generated throughout the day: only an active (queued/picked)
-    lead for the instrument today suppresses a new one, so skipped/placed/
-    expired leads do not block a later, better signal or a margin re-check.
+    Always persists candidates. Dedup against an already-queued/picked/placed
+    lead for the same option is handled at order-placement time, so generation
+    never suppresses a lead.
     """
     if not candidates:
-        return []
-    day_start = datetime.combine(utcnow().date(), time.min)
-    existing = session.execute(
-        select(Lead).where(
-            Lead.instrument_id == instrument.id,
-            Lead.created_at >= day_start,
-            Lead.status.in_(("queued", "picked")),
-        )
-    ).scalars().first()
-    if existing:
         return []
 
     rows = [

@@ -106,7 +106,7 @@ def place_initial_sl(session, broker, trade: Trade, sl_pct: float, market_protec
             instrument_key=trade.option_instrument_key,
             transaction_type="SELL",
             quantity=trade.quantity,
-            product="I",
+            product="D",
             order_type="SL-M",
             trigger_price=sl,
             tag=f"trade-{trade.id}",

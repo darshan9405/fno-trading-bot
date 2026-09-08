@@ -20,7 +20,7 @@ def init_scheduler() -> BackgroundScheduler:
         return _scheduler
 
     scheduler = BackgroundScheduler(timezone="Asia/Kolkata", daemon=True)
-    scheduler.add_job(run_lead_generator, "interval", minutes=15, id="lead_generator",
+    scheduler.add_job(run_lead_generator, "interval", minutes=5, id="lead_generator",
                       max_instances=1, coalesce=True)
     scheduler.add_job(run_trade_tracker, "interval", seconds=30, id="trade_tracker",
                       max_instances=1, coalesce=True)

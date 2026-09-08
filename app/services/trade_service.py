@@ -8,7 +8,7 @@ from app.models import Lead, Order, OrderFill, Trade
 from app.services.health_service import utcnow
 from app.settings import get_setting
 
-PRODUCT = "I"  # intraday
+PRODUCT = "D"  # delivery
 
 
 def _token_from_key(instrument_key: str) -> str:

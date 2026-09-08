@@ -3,7 +3,7 @@
 Picks queued leads and turns them into trades:
 validate (killswitch / no open trade / price divergence / option expiry >= N days)
 -> resolve the option contract (ATM strike, correct CE/PE) -> place entry (market)
--> place initial SL (SL-M) -> persist trade + order audit.
+-> only if the entry filled does it place the protective SL (SL-M) -> persist trade + order audit.
 """
 
 import logging
@@ -126,7 +126,7 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
             instrument_key=contract.instrument_key,
             transaction_type="BUY",
             quantity=quantity,
-            product="I",
+            product="D",
             order_type="MARKET",
             tag=tag,
             market_protection=market_protection,
@@ -135,9 +135,19 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
 
     entry_price = trade_service.avg_fill_price(broker.get_trades_by_order(entry_order_id))
     if entry_price is None:
-        entry_price = (broker.get_ltp([contract.instrument_key]) or {}).get(contract.instrument_key)
+        order = next((o for o in broker.get_order_book() if o.order_id == entry_order_id), None)
+        status = order.status if order else None
+        if status in ("complete", "traded") and order.average_price:
+            entry_price = order.average_price
     if entry_price is None:
-        raise BrokerError(f"could not determine entry price for {contract.instrument_key}")
+        try:
+            broker.cancel_order(entry_order_id)
+        except Exception as e:
+            log.warning("order_placer: could not cancel unfilled entry %s: %s", entry_order_id, e)
+        raise BrokerError(
+            f"entry order {entry_order_id} for {contract.instrument_key} did not fill"
+            f" (status={status or 'unknown'}); entry cancelled, no trade opened"
+        )
 
     initial_sl = trade_service.initial_sl_for(entry_price, lead.direction, sl_pct)
 
@@ -146,7 +156,7 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
             instrument_key=contract.instrument_key,
             transaction_type="SELL",
             quantity=quantity,
-            product="I",
+            product="D",
             order_type="SL-M",
             trigger_price=initial_sl,
             tag=tag,

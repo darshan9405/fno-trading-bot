@@ -399,7 +399,7 @@ def render_dashboard():
             df = pd.DataFrame(
                 [
                     {
-                        "Symbol": r["underlying"].split("|")[-1],
+                        "Symbol": r.get("symbol") or r["underlying"].split("|")[-1],
                         "Instrument": r.get("trading_symbol") or "—",
                         "Dir": r["direction"],
                         "Pattern": r["signal_type"],
@@ -471,7 +471,7 @@ def render_leads():
         c1, c2, c3 = st.columns([4, 1, 2])
         with c1:
             _html(
-                f"<div style='font-weight:600'>{r['underlying'].split('|')[-1]} "
+                f"<div style='font-weight:600'>{r.get('symbol') or r['underlying'].split('|')[-1]} "
                 f"{_badge(r['direction'], 'up' if r['direction'] == 'CALL' else 'down')} "
                 f"{_badge(r['status'], 'ok' if r['status'] == 'placed' else 'muted')}</div>"
                 f"<div class='muted'>{r['signal_type']} @ {_num(r['signal_level'])}</div>"
