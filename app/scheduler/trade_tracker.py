@@ -105,7 +105,8 @@ def place_initial_sl(session, broker, trade: Trade, sl_pct: float) -> None:
             transaction_type="SELL",
             quantity=trade.quantity,
             product="I",
-            order_type="SL-M",
+            order_type="SL",
+            price=sl,
             trigger_price=sl,
             tag=f"trade-{trade.id}",
         )
@@ -113,7 +114,7 @@ def place_initial_sl(session, broker, trade: Trade, sl_pct: float) -> None:
     trade.sl_order_id = order_id
     trade.current_sl = sl
     trade_service.record_order(
-        session, order_id=order_id, trade_id=trade.id, order_type="SL-M", transaction_type="SELL",
+        session, order_id=order_id, trade_id=trade.id, order_type="SL", transaction_type="SELL",
         instrument_token=trade.option_instrument_key, quantity=trade.quantity, tag=f"trade-{trade.id}",
         trigger_price=sl, tradingsymbol=trade.tradingsymbol,
     )
@@ -127,8 +128,8 @@ def move_sl(broker, trade: Trade, new_sl: float, new_state: str) -> None:
             order_id=trade.sl_order_id,
             quantity=trade.quantity,
             trigger_price=new_sl,
-            order_type="SL-M",
-            price=0.0,
+            order_type="SL",
+            price=new_sl,
             validity="DAY",
         )
     )

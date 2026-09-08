@@ -2,17 +2,20 @@
 
 Picks queued leads and turns them into trades:
 validate (killswitch / no open trade / price divergence / option expiry >= N days)
--> resolve the option contract (ATM strike, correct CE/PE) -> place entry (market)
--> only if the entry filled does it place the protective SL (SL-M) -> persist trade + order audit.
+-> resolve the option contract (ATM strike, correct CE/PE) -> place entry (LIMIT)
+-> poll for fill up to `entry_order_fill_timeout_seconds` -> only if it filled does
+it place the protective SL (SL, since NSE rejects SL-M for options per circular
+NSE/FAOP/49677 effective 27-Sep-2021) -> persist trade + order audit.
 """
 
 import logging
+import time
 import traceback
 
 from sqlalchemy import select
 
 from app.broker import get_broker
-from app.broker.base import BrokerError, OrderRequest
+from app.broker.base import BrokerError, OrderRequest, OrderView
 from app.config import Config
 from app.db import session_scope
 from app.models import Lead
@@ -44,6 +47,8 @@ def run_order_placer(broker=None, now=None):
         lots = int(get_setting("qty_lots_per_trade", 1))
         margin_check = bool(get_setting("margin_check_enabled", True))
         max_depth = int(get_setting("margin_max_depth", get_setting("margin_strikes_below", 3)))
+        fill_timeout = int(get_setting("entry_order_fill_timeout_seconds", 30))
+        limit_premium_pct = float(get_setting("entry_limit_premium_pct", 1.0))
 
         available_margin = None
         if margin_check:
@@ -61,7 +66,8 @@ def run_order_placer(broker=None, now=None):
             ).scalars())
             for lead in leads:
                 try:
-                    process_lead(session, broker, lead, sl_pct, max_div, min_days, lots, available_margin, max_depth)
+                    process_lead(session, broker, lead, sl_pct, max_div, min_days, lots, available_margin,
+                                 max_depth, fill_timeout, limit_premium_pct)
                 except Exception as e:
                     log.exception("order_placer: lead %s failed", lead.id)
                     mark_lead(session, lead, "skipped", note=str(e))
@@ -79,7 +85,8 @@ def run_order_placer(broker=None, now=None):
 
 
 def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min_days: int, lots: int,
-                 available_margin: float | None = None, max_depth: int = 3) -> None:
+                 available_margin: float | None = None, max_depth: int = 3,
+                 fill_timeout: int = 30, limit_premium_pct: float = 1.0) -> None:
     mark_lead(session, lead, "picked", note="processing")
 
     if trade_service.has_open_trade_for_underlying(session, lead.underlying_key):
@@ -119,46 +126,79 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
     quantity = contract.lot_size * lots
     tag = f"lead-{lead.id}"
 
+    # LIMIT entry: pay up to LTP + premium so a slightly stale LTP still fills.
+    contract_ltp = (broker.get_ltp([contract.instrument_key]) or {}).get(contract.instrument_key)
+    if contract_ltp is None:
+        raise BrokerError(f"no LTP for option {contract.instrument_key}")
+    limit_price = round(contract_ltp * (1.0 + limit_premium_pct / 100.0), 2)
+
     entry_order_id = broker.place_order(
         OrderRequest(
             instrument_key=contract.instrument_key,
             transaction_type="BUY",
             quantity=quantity,
             product="I",
-            order_type="MARKET",
+            order_type="LIMIT",
+            price=limit_price,
             tag=tag,
         )
     )
 
-    entry_price = trade_service.avg_fill_price(broker.get_trades_by_order(entry_order_id))
-    if entry_price is None:
-        order = next((o for o in broker.get_order_book() if o.order_id == entry_order_id), None)
-        status = order.status if order else None
-        if status in ("complete", "traded") and order.average_price:
-            entry_price = order.average_price
+    entry_price, status = _wait_for_fill(broker, entry_order_id, fill_timeout)
     if entry_price is None:
         try:
             broker.cancel_order(entry_order_id)
         except Exception as e:
             log.warning("order_placer: could not cancel unfilled entry %s: %s", entry_order_id, e)
         raise BrokerError(
-            f"entry order {entry_order_id} for {contract.instrument_key} did not fill"
-            f" (status={status or 'unknown'}); entry cancelled, no trade opened"
+            f"entry LIMIT {entry_order_id} for {contract.instrument_key} did not fill"
+            f" within {fill_timeout}s (status={status or 'unknown'}); cancelled, no trade opened"
         )
 
     initial_sl = trade_service.initial_sl_for(entry_price, lead.direction, sl_pct)
 
-    sl_order_id = broker.place_order(
-        OrderRequest(
-            instrument_key=contract.instrument_key,
-            transaction_type="SELL",
-            quantity=quantity,
-            product="I",
-            order_type="SL-M",
-            trigger_price=initial_sl,
-            tag=tag,
+    try:
+        sl_order_id = broker.place_order(
+            OrderRequest(
+                instrument_key=contract.instrument_key,
+                transaction_type="SELL",
+                quantity=quantity,
+                product="I",
+                order_type="SL",
+                price=initial_sl,
+                trigger_price=initial_sl,
+                tag=tag,
+            )
         )
-    )
+    except Exception as e:
+        log.exception("order_placer: SL placement failed after entry fill; squaring off entry")
+        sqoff_id = None
+        try:
+            sqoff_price = (broker.get_ltp([contract.instrument_key]) or {}).get(contract.instrument_key)
+            if sqoff_price is None:
+                raise BrokerError(f"no LTP for sqoff of {contract.instrument_key}")
+            sqoff_id = broker.place_order(
+                OrderRequest(
+                    instrument_key=contract.instrument_key,
+                    transaction_type="SELL",
+                    quantity=quantity,
+                    product="I",
+                    order_type="LIMIT",
+                    price=round(sqoff_price * (1.0 - limit_premium_pct / 100.0), 2),
+                    tag=tag,
+                )
+            )
+            log.warning("order_placer: sqoff order %s placed for %s x%s", sqoff_id, contract.instrument_key, quantity)
+        except Exception as sqoff_e:
+            log.error(
+                "order_placer: CRITICAL — entry %s filled but SL placement (%s) AND sqoff (%s) both failed. "
+                "Manual intervention required to close %s x%s. Entry order_id=%s",
+                entry_order_id, e, sqoff_e, contract.instrument_key, quantity, entry_order_id,
+            )
+        raise BrokerError(
+            f"SL placement failed for {contract.instrument_key}: {e}; "
+            f"sqoff={'placed ' + sqoff_id if sqoff_id else 'FAILED — manual intervention required'}"
+        )
 
     trade = trade_service.create_trade(
         session,
@@ -173,15 +213,37 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
     )
 
     trade_service.record_order(
-        session, order_id=entry_order_id, trade_id=trade.id, order_type="MARKET", transaction_type="BUY",
+        session, order_id=entry_order_id, trade_id=trade.id, order_type="LIMIT", transaction_type="BUY",
         instrument_token=contract.instrument_key, quantity=quantity, tag=tag, average_price=entry_price,
         tradingsymbol=contract.trading_symbol,
     )
     trade_service.record_order(
-        session, order_id=sl_order_id, trade_id=trade.id, order_type="SL-M", transaction_type="SELL",
+        session, order_id=sl_order_id, trade_id=trade.id, order_type="SL", transaction_type="SELL",
         instrument_token=contract.instrument_key, quantity=quantity, tag=tag, trigger_price=initial_sl,
         tradingsymbol=contract.trading_symbol,
     )
     mark_lead(session, lead, "placed", note=f"trade={trade.id}")
 
-    log.info("order_placer: opened trade %s for %s entry=%.2f sl=%.2f", trade.id, lead.underlying_key, entry_price, initial_sl)
+    log.info("order_placer: opened trade %s for %s entry=%.2f sl=%.2f (LIMIT @ %.2f)",
+             trade.id, lead.underlying_key, entry_price, initial_sl, limit_price)
+
+
+def _wait_for_fill(broker, order_id: str, timeout_seconds: int) -> tuple[float | None, str | None]:
+    """Poll `broker.get_order_book()` until the order fills, rejects, or `timeout_seconds` elapses.
+
+    Returns `(avg_fill_price, status)`. `avg_fill_price is None` on non-fill.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    status: str | None = None
+    while time.monotonic() < deadline:
+        order = next((o for o in broker.get_order_book() if o.order_id == order_id), None)
+        status = order.status if order else None
+        if status in ("complete", "traded"):
+            entry_price = trade_service.avg_fill_price(broker.get_trades_by_order(order_id))
+            if entry_price is None and order and order.average_price:
+                entry_price = order.average_price
+            return entry_price, status
+        if status in ("rejected", "cancelled"):
+            return None, status
+        time.sleep(1)
+    return None, status

@@ -165,7 +165,7 @@ def test_place_order_builds_v3_request(monkeypatch):
     broker._apis["order_v3"] = FakeOrderV3()
     order_id = broker.place_order(OrderRequest(
         instrument_key="NSE_FO|84123", transaction_type="BUY", quantity=50,
-        product="I", order_type="MARKET", tag="trade-201",
+        product="I", order_type="LIMIT", price=101.0, tag="trade-201",
     ))
     assert order_id == "o-22014"
     body = received["body"]
@@ -175,6 +175,8 @@ def test_place_order_builds_v3_request(monkeypatch):
     assert body.quantity == 50
     assert body.product == "I"
     assert body.tag == "trade-201"
+    assert body.order_type == "LIMIT"
+    assert body.price == 101.0
     assert body.market_protection == -1  # Upstox sentinel for standard guidelines
 
 
@@ -189,13 +191,15 @@ def test_modify_order_sets_trigger_price(monkeypatch):
 
     broker._apis["order_v3"] = FakeOrderV3()
     broker.modify_order(ModifyOrderParams(
-        order_id="o-22017", quantity=50, trigger_price=273.6, order_type="SL-M", price=0.0, validity="DAY",
+        order_id="o-22017", quantity=50, trigger_price=273.6, order_type="SL", price=273.6, validity="DAY",
     ))
     body = received["body"]
     assert isinstance(body, upstox_client.ModifyOrderRequest)
     assert body.order_id == "o-22017"
     assert body.trigger_price == 273.6
-    assert body.order_type == "SL-M"
+    # NSE rejects SL-M for options (NSE/FAOP/49677); bot uses SL with limit=trigger.
+    assert body.order_type == "SL"
+    assert body.price == 273.6
     assert body.quantity == 50
     assert body.validity == "DAY"
     assert body.market_protection == -1

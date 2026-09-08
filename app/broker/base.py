@@ -40,12 +40,16 @@ class OrderRequest:
 
 @dataclass
 class ModifyOrderParams:
-    """Full spec for modifying an order (v3 ModifyOrderRequest requires all)."""
+    """Full spec for modifying an order (v3 ModifyOrderRequest requires all).
+
+    Note: this bot trades only F&O options, where NSE rejects SL-M orders
+    (circular NSE/FAOP/49677, eff. 27-Sep-2021). Default is therefore `SL`.
+    """
 
     order_id: str
     quantity: int
     trigger_price: float
-    order_type: str = "SL-M"
+    order_type: str = "SL"
     price: float = 0.0
     validity: str = "DAY"
     disclosed_quantity: int = 0

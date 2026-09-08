@@ -632,6 +632,18 @@ def render_settings():
     min_days = st.number_input("Min days to expiry", min_value=1, max_value=30, value=int(cfg.get("min_days_to_expiry", 5)))
     lots = st.number_input("Lots per trade", min_value=1, max_value=10, value=int(cfg.get("qty_lots_per_trade", 1)))
 
+    st.markdown("##### LIMIT entry order")
+    limit_premium = st.number_input(
+        "Limit premium % over LTP", min_value=0.0, max_value=5.0, step=0.1,
+        value=float(cfg.get("entry_limit_premium_pct", 1.0)),
+        help="How much above LTP to bid for the entry LIMIT. Higher = more fills, more slippage.",
+    )
+    fill_timeout = st.number_input(
+        "Fill timeout (seconds)", min_value=5, max_value=300,
+        value=int(cfg.get("entry_order_fill_timeout_seconds", 30)),
+        help="How long to wait for the LIMIT to fill before cancelling and skipping the lead.",
+    )
+
     st.markdown("##### Margin affordability")
     margin_check = st.checkbox(
         "Skip leads the margin can't afford",
@@ -690,6 +702,8 @@ def render_settings():
                 "max_lead_price_divergence_pct": float(divergence),
                 "min_days_to_expiry": int(min_days),
                 "qty_lots_per_trade": int(lots),
+                "entry_limit_premium_pct": float(limit_premium),
+                "entry_order_fill_timeout_seconds": int(fill_timeout),
                 "margin_check_enabled": bool(margin_check),
                 "margin_max_depth": int(max_depth),
                 "breakout.patterns_enabled": patterns,

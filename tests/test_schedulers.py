@@ -15,6 +15,7 @@ from app.broker.base import (
     FundsView,
     HolidayView,
     InstrumentView,
+    OrderView,
     ProfileView,
 )
 from app.config import Config
@@ -39,6 +40,11 @@ class FakeBroker(BrokerBase):
         self.contracts = []
         self.fills = {}
         self.holidays = []
+        # Order book mirrors Upstox OrderView: order_id, status, average_price, quantity.
+        self._order_book: list = []
+        # Tests can opt a specific order id (or '*' for all) into a non-fill status
+        # (e.g. "open" / "rejected") to exercise the LIMIT-poll path.
+        self.fill_status_override: dict[str, str] = {}
 
     def get_historical_candles(self, instrument_key, interval, from_date, to_date):
         idx = pd.date_range(start="2026-01-01", periods=60, freq="D")
@@ -54,6 +60,11 @@ class FakeBroker(BrokerBase):
         self.placed.append(order)
         oid = f"o-{len(self.placed)}"
         avg = self.ltp_map.get(order.instrument_key, 100.0)
+        status = self.fill_status_override.get(oid) or self.fill_status_override.get("*") or "complete"
+        self._order_book.append(OrderView(
+            order_id=oid, status=status, average_price=avg if status == "complete" else None,
+            quantity=order.quantity, filled_quantity=order.quantity if status == "complete" else 0,
+        ))
         self.fills[oid] = [
             FillView(trade_id=f"t-{len(self.placed)}", order_id=oid, quantity=order.quantity,
                      average_price=avg, transaction_type=order.transaction_type)
@@ -76,7 +87,7 @@ class FakeBroker(BrokerBase):
         return FundsView(available_margin=100000.0)
 
     def get_order_book(self):
-        return []
+        return list(self._order_book)
 
     def get_trades_by_order(self, order_id):
         return self.fills.get(order_id, [])
@@ -176,6 +187,12 @@ def _seed_broker(env):
                        instrument_type="PE", expiry=__import__("datetime").date(2026, 9, 10),
                        strike_price=3000.0, lot_size=1250, underlying_key="NSE_EQ|INE002A01018"),
     ]
+    # Spot LTP for divergence check; contract LTP for LIMIT pricing.
+    broker.ltp_map = {
+        "NSE_INDEX|Nifty 50": 100.0,
+        "NSE_FO|84123": 100.0,
+        "NSE_FO|90111": 100.0,
+    }
     return broker
 
 
@@ -463,9 +480,16 @@ def test_order_placer_opens_trade_with_sl(env):
         assert lead.status == "placed"
 
         orders = session.execute(select(Order)).scalars().all()
-        assert sorted(o.order_type for o in orders) == ["MARKET", "SL-M"]
+        assert sorted(o.order_type for o in orders) == ["LIMIT", "SL"]
 
-    assert [o.product for o in broker.placed] == ["I", "I"]  # intraday: MARKET + SL-M both
+    assert [o.product for o in broker.placed] == ["I", "I"]  # intraday: LIMIT + SL both
+    assert [o.order_type for o in broker.placed] == ["LIMIT", "SL"]
+    # LIMIT entry priced at LTP + 1% (default premium): 100.0 * 1.01 = 101.0.
+    assert broker.placed[0].price == 101.0
+    # SL: limit price = trigger price (sell at trigger or better).
+    assert broker.placed[1].order_type == "SL"
+    assert broker.placed[1].price == 90.0  # = trigger_price
+    assert broker.placed[1].trigger_price == 90.0
 
     # RELIANCE lead skipped (no CE contract for a CALL)
     with session_scope() as session:
@@ -492,9 +516,54 @@ def test_order_placer_places_no_sl_when_entry_fails(env):
     assert broker.placed == []  # no SELL / SL order was placed after the failed BUY
 
 
-def test_order_placer_unfilled_entry_does_not_block_retry(env):
+def test_order_placer_squares_off_when_sl_placement_fails(env):
+    """If SL placement fails after entry fills, bot must not leave an unprotected
+    long position. It places a LIMIT SELL (market orders are restricted on options)
+    instead of cancelling (which Upstox rejects on a filled order)."""
+    broker = _seed_broker(env)
+    real_place = broker.place_order
+    calls = []
+
+    def selective_place(order):
+        calls.append(order)
+        if order.order_type == "SL":
+            raise BrokerError("SL rejected by broker")
+        return real_place(order)
+
+    broker.place_order = selective_place
+    run_lead_generator(broker=broker, now=_now(10, 30))
+    run_order_placer(broker=broker, now=_now(10, 35))
+
+    with session_scope() as session:
+        assert session.execute(select(Trade)).scalars().first() is None
+        skipped = session.execute(select(Lead).where(Lead.status == "skipped")).scalars().all()
+        assert any("sqoff=placed" in (s.note or "") for s in skipped)
+
+    # Order sequence: LIMIT (entry), SL (failed), LIMIT SELL (sqoff at LTP - 1%).
+    assert [o.order_type for o in calls] == ["LIMIT", "SL", "LIMIT"]
+    assert calls[2].transaction_type == "SELL"
+    assert calls[2].product == "I"
+    # LTP=100, premium=1% -> sqoff price = 99.0 (slightly below LTP for fast fill).
+    assert calls[2].price == 99.0
+
+
+def test_order_placer_unfilled_entry_does_not_block_retry(env, monkeypatch):
     """An entry that is placed but never fills must not leave a phantom trade
     that blocks the underlying ("already traded today") for the rest of the day."""
+    from app.scheduler import order_placer as op
+    real_wait = op._wait_for_fill
+    call_count = {"n": 0}
+
+    def fake_wait(broker, order_id, timeout):
+        call_count["n"] += 1
+        # First call (LIMIT that doesn't fill): bail immediately.
+        if call_count["n"] == 1:
+            return None, "open"
+        # Subsequent calls (the retry after regeneration): use the real poll.
+        return real_wait(broker, order_id, timeout)
+
+    monkeypatch.setattr(op, "_wait_for_fill", fake_wait)
+
     broker = _seed_broker(env)
     broker.get_trades_by_order = lambda order_id: []  # entry never fills
     broker.get_order_book = lambda: []
@@ -612,7 +681,7 @@ def test_trade_tracker_trails_stop_loss(env):
         assert t.trail_state == "trailing"
 
     assert [m.trigger_price for m in broker.modified] == [100.0, 104.5]
-    assert all(m.order_type == "SL-M" for m in broker.modified)
+    assert all(m.order_type == "SL" for m in broker.modified)
 
 
 def test_trade_tracker_closes_on_sl_hit(env):

@@ -20,6 +20,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "qty_lots_per_trade": 1,
     "margin_check_enabled": True,
     "margin_max_depth": 3,
+    # Entry order (LIMIT) placement & fill polling.
+    "entry_order_fill_timeout_seconds": 30,
+    "entry_limit_premium_pct": 1.0,
     # Scheduler intervals (seconds). Read at startup by app.scheduler.manager.
     "scheduler.lead_generator_seconds": 300,
     "scheduler.trade_tracker_seconds": 30,

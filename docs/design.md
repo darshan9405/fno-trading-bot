@@ -357,8 +357,9 @@ interface for every registered strategy.
 3. current price within `max_lead_price_divergence_pct` of `signal_level`
 4. option expiry ≥ `min_days_to_expiry` days away (`get_expiries`)
 5. strike selection: `ATM` (default) or `ITM_0.5` config; contract from `option_cache`
-6. place entry (`MARKET`) first; only if it fills does it place the protective SL (`SL-M`, trigger = `entry ± initial_sl_pct`), `product='D'`, `tag='trade-<id>'`
-7. on failure: mark lead `skipped` + log `errors`
+6. place entry (`LIMIT` at `LTP × (1 + entry_limit_premium_pct/100)`) and poll `get_order_book` for up to `entry_order_fill_timeout_seconds`; only if it fills does it place the protective SL (`SL` with `price = trigger_price`, since NSE rejects `SL-M` for options per circular NSE/FAOP/49677 effective 27-Sep-2021), `product='I'`, `tag='trade-<id>'`
+7. on entry no-fill: cancel order, mark lead `skipped` + log `errors`
+8. on SL-placement failure after entry fill: cancel entry, raise, mark lead `skipped`
 
 ### 7.2 Trailing SL rule (S2) — configurable
 
@@ -368,7 +369,7 @@ favorable move >= trail_activate_pct  →  move SL to breakeven (trail_state=bre
 after breakeven:
     for CALL:  new_sl = max(current_sl, best_price * (1 - trail_gap_pct))
     for PUT :  new_sl = min(current_sl, best_price * (1 + trail_gap_pct))
-if new_sl moved by >= order_tick → broker.modify_order(ModifyOrderParams(order_id, quantity, trigger_price=new_sl, order_type="SL-M"))
+if new_sl moved by >= order_tick → broker.modify_order(ModifyOrderParams(order_id, quantity, trigger_price=new_sl, price=new_sl, order_type="SL"))
 ```
 
 Trailing is executed by **S2 via `OrderApiV3.modify_order`** (v3 `ModifyOrderRequest`
