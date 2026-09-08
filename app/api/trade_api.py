@@ -154,6 +154,9 @@ def _lead_dict(l: Lead) -> dict:
         "trading_symbol": plan.get("trading_symbol"),
         "quantity": plan.get("quantity"),
         "lot_size": plan.get("lot_size"),
+        "premium": plan.get("premium"),
+        "margin_needed": plan.get("margin_needed"),
+        "spot": plan.get("spot"),
     }
 
 

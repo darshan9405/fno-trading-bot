@@ -228,6 +228,8 @@ def test_lead_generator_attaches_fno_plan(env):
             "lot_size": 50,
             "quantity": 100,
             "spot": 100.0,
+            "premium": 100.0,
+            "margin_needed": 10000.0,
         }
         assert reliance.plan is None  # only a PE contract exists for RELIANCE
 

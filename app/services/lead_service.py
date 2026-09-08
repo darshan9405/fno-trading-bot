@@ -147,4 +147,7 @@ def attach_lead_plans(
                 "lot_size": chosen.lot_size,
                 "quantity": chosen.lot_size * lots,
                 "spot": spot,
+                "premium": premiums.get(chosen.instrument_key),
             }
+            if lead.plan["premium"] is not None:
+                lead.plan["margin_needed"] = round(lead.plan["premium"] * lead.plan["quantity"], 2)

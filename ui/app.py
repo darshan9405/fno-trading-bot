@@ -44,6 +44,13 @@ def _css() -> str:
               font-size: 0.78rem; font-weight: 600; }}
     .dot {{ width: 12px; height: 12px; border-radius: 50%; display: inline-block;
               flex-shrink: 0; box-shadow: 0 0 6px rgba(0,0,0,0.4); }}
+    @keyframes ks-pulse {{
+        0% {{ box-shadow: 0 0 0 0 rgba(251,113,133,0.55); }}
+        70% {{ box-shadow: 0 0 0 9px rgba(251,113,133,0); }}
+        100% {{ box-shadow: 0 0 0 0 rgba(251,113,133,0); }}
+    }}
+    .ks-dot {{ width: 10px; height: 10px; border-radius: 50%; background: {LOSS};
+              display: inline-block; animation: ks-pulse 1.5s infinite; }}
     .row {{ display:flex; gap:8px; align-items:center; }}
     .conf-bar {{ height:6px; border-radius:4px; background:{BORDER}; overflow:hidden; }}
     .conf-fill {{ height:6px; border-radius:4px; }}
@@ -136,6 +143,9 @@ def _lead_plan_line(r: dict) -> str:
     expiry = r.get("expiry")
     if expiry:
         parts.append(f"exp {expiry}")
+    margin = r.get("margin_needed")
+    if margin is not None:
+        parts.append(f"margin ₹{float(margin):,.0f}")
     return f"<div class='muted'>F&O: {' · '.join(parts)}</div>"
 
 
@@ -250,22 +260,62 @@ def render_sidebar() -> str:
 
 
 def render_killswitch():
+    """Full-width alert banner when the killswitch is active (plus Release)."""
     ks = api.get_killswitch()
     data = ks.get("data", {}) if ks.get("status") == "ok" else {}
     active = data.get("active", False)
     if not active:
         return  # the green status dot in the header indicates "system active"
+    reason = data.get("reason") or "no reason given"
+    by = data.get("triggered_by") or "user"
+    ts = _utc_to_ist_hm(data.get("triggered_at"))
     _html(
-        f"<div class='ks-banner' style='background:#fee2e2;border-color:#fca5a5;color:#991b1b;'>"
-        f"KILLSWITCH ACTIVE — system halted{f' · {data.get("reason")}' if data.get("reason") else ''}</div>"
+        f"""
+        <div style="display:flex;align-items:center;gap:14px;
+                    background:linear-gradient(90deg,#2c0b18,#1c0a12);
+                    border:1px solid {LOSS};border-radius:12px;padding:14px 16px;margin:8px 0;">
+          <span class="ks-dot" style="flex-shrink:0;"></span>
+          <div>
+            <div style="color:{LOSS};font-weight:800;font-size:1.05rem;letter-spacing:.03em;">
+              KILLSWITCH ACTIVE — SYSTEM HALTED</div>
+            <div class="muted" style="margin-top:2px;">Reason: <b>{reason}</b></div>
+            <div class="muted">Triggered by {by} · {ts} IST</div>
+          </div>
+        </div>
+        """
     )
     c1, c2 = st.columns([3, 1])
     with c1:
-        st.caption(f"Triggered by {data.get('triggered_by')} · {data.get('triggered_at')}")
+        st.caption("No new leads or entries; all open trades were squared off. Releasing re-arms the system.")
     with c2:
-        if st.button("Release", type="primary", use_container_width=True):
-            api.release_killswitch()
-            st.rerun()
+        _release_button()
+
+
+def _release_button():
+    if st.button("Release", type="primary", use_container_width=True, key="ks_release"):
+        _confirm_release()
+
+
+def _confirm_release():
+    dlg = getattr(st, "dialog", None)
+    if dlg is None:
+        api.release_killswitch()
+        st.rerun()
+        return
+
+    @dlg("Release killswitch?")
+    def _inner():
+        st.markdown("Re-arm the system for new leads and entries? Confirm the reason is resolved.")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Yes, release", type="primary", use_container_width=True, key="ks_release_yes"):
+                api.release_killswitch()
+                st.rerun()
+        with c2:
+            if st.button("Cancel", use_container_width=True, key="ks_release_no"):
+                st.rerun()
+
+    _inner()
 
 
 def render_token_status():
@@ -355,6 +405,7 @@ def render_dashboard():
                         "Pattern": r["signal_type"],
                         "Level": r["signal_level"],
                         "Conf": r["confidence"],
+                        "Margin": _money(r.get("margin_needed")) if r.get("margin_needed") is not None else "—",
                         "Status": r["status"],
                     }
                     for r in rows
