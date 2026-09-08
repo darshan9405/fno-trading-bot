@@ -270,7 +270,7 @@ class UpstoxBroker(BrokerBase):
             disclosed_quantity=0,
             trigger_price=order.trigger_price,
             is_amo=order.is_amo,
-            market_protection=order.market_protection,
+            market_protection=-1,
         )
         try:
             resp = api.place_order(body)
@@ -292,7 +292,7 @@ class UpstoxBroker(BrokerBase):
             order_type=params.order_type,
             disclosed_quantity=params.disclosed_quantity,
             trigger_price=params.trigger_price,
-            market_protection=params.market_protection,
+            market_protection=-1,
         )
         try:
             api.modify_order(body)

@@ -20,7 +20,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "qty_lots_per_trade": 1,
     "margin_check_enabled": True,
     "margin_max_depth": 3,
-    "market_protection_pct": 2,
+    # Scheduler intervals (seconds). Read at startup by app.scheduler.manager.
     "scheduler.lead_generator_seconds": 300,
     "scheduler.trade_tracker_seconds": 30,
     "scheduler.order_placer_seconds": 30,

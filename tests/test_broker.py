@@ -165,7 +165,7 @@ def test_place_order_builds_v3_request(monkeypatch):
     broker._apis["order_v3"] = FakeOrderV3()
     order_id = broker.place_order(OrderRequest(
         instrument_key="NSE_FO|84123", transaction_type="BUY", quantity=50,
-        product="I", order_type="MARKET", tag="trade-201", market_protection=2,
+        product="I", order_type="MARKET", tag="trade-201",
     ))
     assert order_id == "o-22014"
     body = received["body"]
@@ -175,7 +175,7 @@ def test_place_order_builds_v3_request(monkeypatch):
     assert body.quantity == 50
     assert body.product == "I"
     assert body.tag == "trade-201"
-    assert body.market_protection == 2
+    assert body.market_protection == -1  # Upstox sentinel for standard guidelines
 
 
 def test_modify_order_sets_trigger_price(monkeypatch):
@@ -190,7 +190,6 @@ def test_modify_order_sets_trigger_price(monkeypatch):
     broker._apis["order_v3"] = FakeOrderV3()
     broker.modify_order(ModifyOrderParams(
         order_id="o-22017", quantity=50, trigger_price=273.6, order_type="SL-M", price=0.0, validity="DAY",
-        market_protection=2,
     ))
     body = received["body"]
     assert isinstance(body, upstox_client.ModifyOrderRequest)
@@ -199,7 +198,7 @@ def test_modify_order_sets_trigger_price(monkeypatch):
     assert body.order_type == "SL-M"
     assert body.quantity == 50
     assert body.validity == "DAY"
-    assert body.market_protection == 2
+    assert body.market_protection == -1
 
 
 def test_exit_all_passes_segment(monkeypatch):

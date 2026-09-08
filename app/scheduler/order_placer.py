@@ -44,7 +44,6 @@ def run_order_placer(broker=None, now=None):
         lots = int(get_setting("qty_lots_per_trade", 1))
         margin_check = bool(get_setting("margin_check_enabled", True))
         max_depth = int(get_setting("margin_max_depth", get_setting("margin_strikes_below", 3)))
-        market_protection = float(get_setting("market_protection_pct", 0.5))
 
         available_margin = None
         if margin_check:
@@ -62,8 +61,7 @@ def run_order_placer(broker=None, now=None):
             ).scalars())
             for lead in leads:
                 try:
-                    process_lead(session, broker, lead, sl_pct, max_div, min_days, lots, available_margin, max_depth,
-                                 market_protection)
+                    process_lead(session, broker, lead, sl_pct, max_div, min_days, lots, available_margin, max_depth)
                 except Exception as e:
                     log.exception("order_placer: lead %s failed", lead.id)
                     mark_lead(session, lead, "skipped", note=str(e))
@@ -81,7 +79,7 @@ def run_order_placer(broker=None, now=None):
 
 
 def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min_days: int, lots: int,
-                 available_margin: float | None = None, max_depth: int = 3, market_protection: float = 0.0) -> None:
+                 available_margin: float | None = None, max_depth: int = 3) -> None:
     mark_lead(session, lead, "picked", note="processing")
 
     if trade_service.has_open_trade_for_underlying(session, lead.underlying_key):
@@ -126,10 +124,9 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
             instrument_key=contract.instrument_key,
             transaction_type="BUY",
             quantity=quantity,
-            product="D",
+            product="I",
             order_type="MARKET",
             tag=tag,
-            market_protection=market_protection,
         )
     )
 
@@ -156,11 +153,10 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
             instrument_key=contract.instrument_key,
             transaction_type="SELL",
             quantity=quantity,
-            product="D",
+            product="I",
             order_type="SL-M",
             trigger_price=initial_sl,
             tag=tag,
-            market_protection=market_protection,
         )
     )
 

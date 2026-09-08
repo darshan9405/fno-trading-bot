@@ -465,7 +465,7 @@ def test_order_placer_opens_trade_with_sl(env):
         orders = session.execute(select(Order)).scalars().all()
         assert sorted(o.order_type for o in orders) == ["MARKET", "SL-M"]
 
-    assert [o.market_protection for o in broker.placed] == [2, 2]  # MARKET + SL-M both protected
+    assert [o.product for o in broker.placed] == ["I", "I"]  # intraday: MARKET + SL-M both
 
     # RELIANCE lead skipped (no CE contract for a CALL)
     with session_scope() as session:
@@ -612,7 +612,7 @@ def test_trade_tracker_trails_stop_loss(env):
         assert t.trail_state == "trailing"
 
     assert [m.trigger_price for m in broker.modified] == [100.0, 104.5]
-    assert all(m.market_protection == 2 for m in broker.modified)
+    assert all(m.order_type == "SL-M" for m in broker.modified)
 
 
 def test_trade_tracker_closes_on_sl_hit(env):

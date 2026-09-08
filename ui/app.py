@@ -631,10 +631,6 @@ def render_settings():
     divergence = st.number_input("Max lead price divergence %", min_value=0.1, max_value=5.0, value=float(cfg.get("max_lead_price_divergence_pct", 0.5)))
     min_days = st.number_input("Min days to expiry", min_value=1, max_value=30, value=int(cfg.get("min_days_to_expiry", 5)))
     lots = st.number_input("Lots per trade", min_value=1, max_value=10, value=int(cfg.get("qty_lots_per_trade", 1)))
-    mp = st.number_input(
-        "Market protection %", min_value=1, max_value=10, value=int(cfg.get("market_protection_pct", 2)),
-        help="Max % the MARKET/SL-M fill may deviate from the option's LTP (Upstox market protection).",
-    )
 
     st.markdown("##### Margin affordability")
     margin_check = st.checkbox(
@@ -694,7 +690,6 @@ def render_settings():
                 "max_lead_price_divergence_pct": float(divergence),
                 "min_days_to_expiry": int(min_days),
                 "qty_lots_per_trade": int(lots),
-                "market_protection_pct": int(mp),
                 "margin_check_enabled": bool(margin_check),
                 "margin_max_depth": int(max_depth),
                 "breakout.patterns_enabled": patterns,
