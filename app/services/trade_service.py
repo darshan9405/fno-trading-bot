@@ -1,5 +1,7 @@
 """Trade persistence + trailing-SL math shared by order_placer and trade_tracker."""
 
+import logging
+
 from sqlalchemy import select
 
 from app.broker.base import BrokerError, InstrumentView, OrderRequest
@@ -7,11 +9,111 @@ from app.db import session_scope
 from app.models import Lead, Order, OrderFill, Trade
 from app.services.health_service import utcnow
 
+log = logging.getLogger(__name__)
+
 PRODUCT = "D"  # delivery / NRML for F&O (Upstox product code for carry-forward)
+
+DEFAULT_OPTION_TICK = 0.05
 
 
 def _token_from_key(instrument_key: str) -> str:
     return instrument_key.split("|")[-1]
+
+
+def option_tick_for(price: float, instrument_tick: float = 0.0) -> float:
+    """NSE option tick band: 0.05 below ₹250, 0.10 from ₹250–1000, 0.50 above.
+    `instrument_tick` is the broker-reported tick; non-zero overrides the band."""
+    if instrument_tick and instrument_tick > 0:
+        return float(instrument_tick)
+    if price >= 1000:
+        return 0.50
+    if price >= 250:
+        return 0.10
+    return 0.05
+
+
+def round_to_tick(price: float, tick: float = DEFAULT_OPTION_TICK) -> float:
+    """Snap a price to the nearest tick (must be > 0)."""
+    tick = tick or DEFAULT_OPTION_TICK
+    return round(round(price / tick) * tick, 2)
+
+
+def sl_price_below_trigger(trigger: float, tick: float = DEFAULT_OPTION_TICK) -> float:
+    """Return a SL limit price strictly less than `trigger` (Upstox UDAPI1038
+    rejects SELL SL orders where price == trigger_price). `tick` is the option's
+    tick band at the trigger price."""
+    return round(max(trigger - tick, 0.05), 2)
+
+
+# Substrings the Upstox SDK returns in the ApiException body when SL-M is
+# rejected for F&O options (historical NSE/FAOP/49677). Used as a soft hint
+# to fall back to a stop-loss-limit (SL) order.
+_SLM_REJECT_HINTS = ("SL-M", "SLM", "stop loss market", "stop-loss market", "SL M")
+
+
+def _is_slm_rejection(err: Exception) -> bool:
+    """Heuristic: did the broker reject because SL-M is unsupported for this
+    segment? Used to fall back to SL (limit < trigger)."""
+    msg = (str(err) or "") + " " + (getattr(err, "api_message", "") or "")
+    msg = msg.lower()
+    return any(h.lower() in msg for h in _SLM_REJECT_HINTS)
+
+
+def place_stop_loss(
+    broker,
+    *,
+    instrument_key: str,
+    quantity: int,
+    trigger_price: float,
+    tag: str,
+    instrument_tick: float = 0.0,
+) -> tuple[str, str]:
+    """Place the protective SL order. Tries SL-M (cleaner: no UDAPI1038 since
+    there is no limit price) and falls back to SL with limit = trigger - 1 tick
+    if the broker rejects SL-M for the segment.
+
+    Returns `(order_id, order_type)` where order_type is "SL-M" or "SL".
+    Raises BrokerError if both attempts fail.
+    """
+    trigger = round_to_tick(trigger_price, option_tick_for(trigger_price, instrument_tick))
+    # First attempt: SL-M (Stop-Loss-Market). Becomes a market sell at trigger.
+    try:
+        order_id = broker.place_order(
+            OrderRequest(
+                instrument_key=instrument_key,
+                transaction_type="SELL",
+                quantity=quantity,
+                product=PRODUCT,
+                order_type="SL-M",
+                price=0.0,
+                trigger_price=trigger,
+                tag=tag,
+            )
+        )
+        return order_id, "SL-M"
+    except Exception as e:
+        if not _is_slm_rejection(e):
+            raise
+        log.info(
+            "trade_service: SL-M rejected by broker for %s (%s); falling back to SL with limit<trigger",
+            instrument_key, str(e)[:120],
+        )
+
+    # Fallback: SL with limit strictly below trigger (UDAPI1038).
+    sl_limit = sl_price_below_trigger(trigger, option_tick_for(trigger, instrument_tick))
+    order_id = broker.place_order(
+        OrderRequest(
+            instrument_key=instrument_key,
+            transaction_type="SELL",
+            quantity=quantity,
+            product=PRODUCT,
+            order_type="SL",
+            price=sl_limit,
+            trigger_price=trigger,
+            tag=tag,
+        )
+    )
+    return order_id, "SL"
 
 
 def place_defensive_sqoff(
@@ -180,9 +282,25 @@ def square_off(session, broker, trade: Trade, reason: str = "sqoff") -> float:
     return exit_price
 
 
-def initial_sl_for(entry_price: float, direction: str, sl_pct: float) -> float:
+def initial_sl_for(entry_price: float, direction: str, sl_pct: float,
+                   instrument_tick: float = 0.0) -> float:
+    """Initial SL trigger price for a CALL/PUT option.
+
+    CALL: SL below entry (price * (1 - sl_pct/100))
+    PUT : SL above entry (price * (1 + sl_pct/100))
+
+    The trigger is snapped to the option's NSE tick band (0.05/0.10/0.50) so
+    Upstox doesn't reject the order for an off-tick price.
+    """
     factor = (1.0 - sl_pct / 100.0) if direction == "CALL" else (1.0 + sl_pct / 100.0)
-    return round(entry_price * factor, 2)
+    raw = entry_price * factor
+    tick = option_tick_for(raw, instrument_tick)
+    snapped = round_to_tick(raw, tick)
+    if direction == "CALL" and snapped >= entry_price:
+        snapped = round_to_tick(entry_price - tick, tick)
+    elif direction == "PUT" and snapped <= entry_price:
+        snapped = round_to_tick(entry_price + tick, tick)
+    return snapped
 
 
 def avg_fill_price(fills) -> float | None:
@@ -192,10 +310,12 @@ def avg_fill_price(fills) -> float | None:
     return sum(f.average_price * f.quantity for f in fills) / total_qty
 
 
-def compute_trailing_sl(trade: Trade, ltp: float, activate_pct: float, gap_pct: float) -> tuple[float, str]:
+def compute_trailing_sl(trade: Trade, ltp: float, activate_pct: float, gap_pct: float,
+                         instrument_tick: float = 0.0) -> tuple[float, str]:
     """Return (new_sl, new_trail_state) per the trailing rule.
 
     breakeven once favourable move >= activate_pct; then trail `gap_pct` from best_price.
+    Result is snapped to the option tick so Upstox accepts the modify.
     """
     entry, best = trade.entry_price, trade.best_price
     if trade.direction == "CALL":
@@ -207,16 +327,16 @@ def compute_trailing_sl(trade: Trade, ltp: float, activate_pct: float, gap_pct: 
     state = trade.trail_state
     if fav >= activate_pct / 100.0:
         if state == "at_initial":
-            new_sl, state = entry, "breakeven"
+            new_sl, state = round_to_tick(entry, option_tick_for(entry, instrument_tick)), "breakeven"
         else:
             if trade.direction == "CALL":
                 candidate = best * (1.0 - gap_pct / 100.0)
                 if candidate > new_sl:
-                    new_sl, state = round(candidate, 2), "trailing"
+                    new_sl, state = round_to_tick(candidate, option_tick_for(candidate, instrument_tick)), "trailing"
             else:
                 candidate = best * (1.0 + gap_pct / 100.0)
                 if candidate < new_sl:
-                    new_sl, state = round(candidate, 2), "trailing"
+                    new_sl, state = round_to_tick(candidate, option_tick_for(candidate, instrument_tick)), "trailing"
     return new_sl, state
 
 

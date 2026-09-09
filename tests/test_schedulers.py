@@ -492,15 +492,15 @@ def test_order_placer_opens_trade_with_sl(env):
         assert lead.status == "placed"
 
         orders = session.execute(select(Order)).scalars().all()
-        assert sorted(o.order_type for o in orders) == ["LIMIT", "SL"]
+        assert sorted(o.order_type for o in orders) == ["LIMIT", "SL-M"]
 
-    assert [o.product for o in broker.placed] == ["D", "D"]  # delivery (NRML): LIMIT + SL both
-    assert [o.order_type for o in broker.placed] == ["LIMIT", "SL"]
+    assert [o.product for o in broker.placed] == ["D", "D"]  # delivery (NRML): LIMIT + SL-M
+    assert [o.order_type for o in broker.placed] == ["LIMIT", "SL-M"]
     # LIMIT entry priced at LTP + 1% (default premium): 100.0 * 1.01 = 101.0.
     assert broker.placed[0].price == 101.0
-    # SL: limit price = trigger price (sell at trigger or better).
-    assert broker.placed[1].order_type == "SL"
-    assert broker.placed[1].price == 90.0  # = trigger_price
+    # SL-M: stop-loss-market; no limit price, only a trigger.
+    assert broker.placed[1].order_type == "SL-M"
+    assert broker.placed[1].price == 0.0
     assert broker.placed[1].trigger_price == 90.0
 
     # RELIANCE lead skipped (no CE contract for a CALL)
@@ -538,7 +538,8 @@ def test_order_placer_squares_off_when_sl_placement_fails(env):
 
     def selective_place(order):
         calls.append(order)
-        if order.order_type == "SL":
+        # Reject both SL-M and SL so the SL-M-then-SL fallback path is exhausted.
+        if order.order_type in ("SL", "SL-M"):
             raise BrokerError("SL rejected by broker")
         return real_place(order)
 
@@ -551,12 +552,12 @@ def test_order_placer_squares_off_when_sl_placement_fails(env):
         skipped = session.execute(select(Lead).where(Lead.status == "skipped")).scalars().all()
         assert any("sqoff=placed" in (s.note or "") for s in skipped)
 
-    # Order sequence: LIMIT (entry), SL (failed), LIMIT SELL (sqoff at LTP - 1%).
-    assert [o.order_type for o in calls] == ["LIMIT", "SL", "LIMIT"]
-    assert calls[2].transaction_type == "SELL"
-    assert calls[2].product == "D"
+    # Order sequence: LIMIT (entry), SL-M (rejected), SL (rejected), LIMIT SELL (sqoff).
+    assert [o.order_type for o in calls] == ["LIMIT", "SL-M", "SL", "LIMIT"]
+    assert calls[3].transaction_type == "SELL"
+    assert calls[3].product == "D"
     # LTP=100, premium=1% -> sqoff price = 99.0 (slightly below LTP for fast fill).
-    assert calls[2].price == 99.0
+    assert calls[3].price == 99.0
 
 
 def test_order_placer_unfilled_entry_does_not_block_retry(env, monkeypatch):
@@ -693,7 +694,9 @@ def test_trade_tracker_trails_stop_loss(env):
         assert t.trail_state == "trailing"
 
     assert [m.trigger_price for m in broker.modified] == [100.0, 104.5]
-    assert all(m.order_type == "SL" for m in broker.modified)
+    # Trailing is done by modifying the existing SL-M order (no limit price).
+    assert all(m.order_type == "SL-M" for m in broker.modified)
+    assert all(m.price == 0.0 for m in broker.modified)
 
 
 def test_trade_tracker_closes_on_sl_hit(env):
@@ -753,7 +756,7 @@ def test_trade_tracker_replaces_cancelled_sl(env):
 
     # Exactly one new SL was placed (the replacement).
     assert len(broker.placed) == placed_before + 1
-    assert broker.placed[-1].order_type == "SL"
+    assert broker.placed[-1].order_type == "SL-M"
     assert broker.placed[-1].transaction_type == "SELL"
 
 
@@ -817,7 +820,7 @@ def test_trade_tracker_squares_off_when_no_sl_and_replacement_fails(env):
 
     def selective_place(order):
         calls.append(order)
-        if order.order_type == "SL":
+        if order.order_type in ("SL", "SL-M"):
             raise BrokerError("SL rejected")
         return real_place(order)
 
@@ -830,8 +833,8 @@ def test_trade_tracker_squares_off_when_no_sl_and_replacement_fails(env):
         assert t.status == "closed"
         assert t.exit_reason == "no_sl_sqoff"
 
-    # SL attempted (failed), then LIMIT SELL sqoff placed.
-    assert [o.order_type for o in calls[placed_before:]] == ["SL", "LIMIT"]
+    # SL-M attempted (failed), then SL fallback (failed), then LIMIT SELL sqoff placed.
+    assert [o.order_type for o in calls[placed_before:]] == ["SL-M", "SL", "LIMIT"]
     assert calls[-1].transaction_type == "SELL"
     # Sqoff priced at LTP - premium%: 100 * (1 - 0.01) = 99.0.
     assert calls[-1].price == 99.0

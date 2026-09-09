@@ -144,6 +144,7 @@ class Trade(Base):
     best_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     entry_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     sl_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sl_order_type: Mapped[str | None] = mapped_column(String(8), nullable=True)  # SL-M | SL (set at placement)
 
     status: Mapped[str] = mapped_column(String(16), default="open")  # open | closed | sqoff | killed
     entry_time: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)

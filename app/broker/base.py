@@ -42,14 +42,16 @@ class OrderRequest:
 class ModifyOrderParams:
     """Full spec for modifying an order (v3 ModifyOrderRequest requires all).
 
-    Note: this bot trades only F&O options, where NSE rejects SL-M orders
-    (circular NSE/FAOP/49677, eff. 27-Sep-2021). Default is therefore `SL`.
+    The bot prefers `SL-M` (Stop-Loss-Market, no limit price) and falls back
+    to `SL` with `price < trigger_price` (Upstox UDAPI1038) when the broker
+    rejects SL-M for the segment. Modify keeps the original order_type, so
+    pass the same one you used on placement.
     """
 
     order_id: str
     quantity: int
     trigger_price: float
-    order_type: str = "SL"
+    order_type: str = "SL-M"
     price: float = 0.0
     validity: str = "DAY"
     disclosed_quantity: int = 0

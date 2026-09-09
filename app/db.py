@@ -47,7 +47,8 @@ def create_all():
 
 _MIGRATIONS = [
     ("leads", "plan", "TEXT"),
-]
+    ("trades", "sl_order_type", "VARCHAR(8)"),
+]   
 
 def _run_sqlite_migrations(engine):
     if engine is None or not engine.url.drivername.startswith("sqlite"):

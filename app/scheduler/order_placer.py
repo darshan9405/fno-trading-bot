@@ -146,29 +146,26 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
 
     entry_price, status = _wait_for_fill(broker, entry_order_id, fill_timeout)
     if entry_price is None:
-        try:
-            broker.cancel_order(entry_order_id)
-        except Exception as e:
-            log.warning("order_placer: could not cancel unfilled entry %s: %s", entry_order_id, e)
+        _safe_cancel_if_open(broker, entry_order_id, status)
         raise BrokerError(
             f"entry LIMIT {entry_order_id} for {contract.instrument_key} did not fill"
             f" within {fill_timeout}s (status={status or 'unknown'}); cancelled, no trade opened"
         )
 
     initial_sl = trade_service.initial_sl_for(entry_price, lead.direction, sl_pct)
+    instrument_tick = getattr(contract, "tick_size", 0.0) or 0.0
 
     try:
-        sl_order_id = broker.place_order(
-            OrderRequest(
-                instrument_key=contract.instrument_key,
-                transaction_type="SELL",
-                quantity=quantity,
-                product="D",
-                order_type="SL",
-                price=initial_sl,
-                trigger_price=initial_sl,
-                tag=tag,
-            )
+        sl_order_id, sl_order_type = trade_service.place_stop_loss(
+            broker,
+            instrument_key=contract.instrument_key,
+            quantity=quantity,
+            trigger_price=initial_sl,
+            tag=tag,
+            instrument_tick=instrument_tick,
+        )
+        sl_limit_price = trade_service.sl_price_below_trigger(
+            initial_sl, trade_service.option_tick_for(initial_sl, instrument_tick),
         )
     except Exception as e:
         log.exception("order_placer: SL placement failed after entry fill; squaring off entry")
@@ -207,14 +204,25 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
         tradingsymbol=contract.trading_symbol,
     )
     trade_service.record_order(
-        session, order_id=sl_order_id, trade_id=trade.id, order_type="SL", transaction_type="SELL",
+        session, order_id=sl_order_id, trade_id=trade.id, order_type=sl_order_type, transaction_type="SELL",
         instrument_token=contract.instrument_key, quantity=quantity, tag=tag, trigger_price=initial_sl,
-        tradingsymbol=contract.trading_symbol,
+        price=0.0 if sl_order_type == "SL-M" else sl_limit_price, tradingsymbol=contract.trading_symbol,
     )
-    mark_lead(session, lead, "placed", note=f"trade={trade.id}")
 
-    log.info("order_placer: opened trade %s for %s entry=%.2f sl=%.2f (LIMIT @ %.2f)",
-             trade.id, lead.underlying_key, entry_price, initial_sl, limit_price)
+    # Commit trade + orders FIRST so the trade survives even if the lead-status
+    # update below fails. Without this split a downstream DB error rolls back
+    # the whole transaction — the trade disappears while the BUY and SL
+    # orders are already sitting at the broker.
+    session.commit()
+
+    try:
+        with session_scope() as lead_session:
+            mark_lead(lead_session, lead_session.get(Lead, lead.id), "placed", note=f"trade={trade.id}")
+    except Exception as e:
+        log.warning("order_placer: trade %s saved but lead status update failed: %s", trade.id, e)
+
+    log.info("order_placer: opened trade %s for %s entry=%.2f sl=%.2f (LIMIT @ %.2f, %s)",
+             trade.id, lead.underlying_key, entry_price, initial_sl, limit_price, sl_order_type)
 
 
 def _wait_for_fill(broker, order_id: str, timeout_seconds: int) -> tuple[float | None, str | None]:
@@ -236,3 +244,27 @@ def _wait_for_fill(broker, order_id: str, timeout_seconds: int) -> tuple[float |
             return None, status
         time.sleep(1)
     return None, status
+
+
+_TERMINAL_STATUSES = {"complete", "traded", "rejected", "cancelled", "canceled"}
+
+
+def _safe_cancel_if_open(broker, order_id: str, known_status: str | None = None) -> None:
+    """Cancel `order_id` only if it is still open. The Upstox API rejects
+    cancel attempts on already-terminal orders with UDAPI100040 — those errors
+    are not actionable, so we don't log them as warnings either."""
+    status = known_status
+    if status not in _TERMINAL_STATUSES:
+        try:
+            book = broker.get_order_book()
+        except Exception as e:
+            log.warning("order_placer: get_order_book failed during cancel check: %s", e)
+            return
+        order = next((o for o in book if o.order_id == order_id), None)
+        status = order.status if order else None
+    if status in _TERMINAL_STATUSES:
+        return
+    try:
+        broker.cancel_order(order_id)
+    except Exception as e:
+        log.warning("order_placer: could not cancel order %s (status=%s): %s", order_id, status, e)

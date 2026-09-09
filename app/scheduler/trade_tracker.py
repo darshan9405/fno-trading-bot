@@ -162,37 +162,39 @@ def place_initial_sl(session, broker, trade: Trade, sl_pct: float) -> None:
     if trade.sl_order_id is not None:
         return
     sl = trade_service.initial_sl_for(trade.entry_price, trade.direction, sl_pct)
-    order_id = broker.place_order(
-        OrderRequest(
-            instrument_key=trade.option_instrument_key,
-            transaction_type="SELL",
-            quantity=trade.quantity,
-            product="D",
-            order_type="SL",
-            price=sl,
-            trigger_price=sl,
-            tag=f"trade-{trade.id}",
-        )
+    order_id, sl_order_type = trade_service.place_stop_loss(
+        broker,
+        instrument_key=trade.option_instrument_key,
+        quantity=trade.quantity,
+        trigger_price=sl,
+        tag=f"trade-{trade.id}",
     )
+    sl_tick = trade_service.option_tick_for(sl)
+    sl_limit = trade_service.sl_price_below_trigger(sl, sl_tick) if sl_order_type == "SL" else 0.0
     trade.sl_order_id = order_id
+    trade.sl_order_type = sl_order_type
     trade.current_sl = sl
     trade_service.record_order(
-        session, order_id=order_id, trade_id=trade.id, order_type="SL", transaction_type="SELL",
+        session, order_id=order_id, trade_id=trade.id, order_type=sl_order_type, transaction_type="SELL",
         instrument_token=trade.option_instrument_key, quantity=trade.quantity, tag=f"trade-{trade.id}",
-        trigger_price=sl, tradingsymbol=trade.tradingsymbol,
+        trigger_price=sl, price=sl_limit,
+        tradingsymbol=trade.tradingsymbol,
     )
 
 
 def move_sl(broker, trade: Trade, new_sl: float, new_state: str) -> None:
     if trade.sl_order_id is None:
         return
+    order_type = trade.sl_order_type or "SL-M"
+    sl_tick = trade_service.option_tick_for(new_sl)
+    price = 0.0 if order_type == "SL-M" else trade_service.sl_price_below_trigger(new_sl, sl_tick)
     broker.modify_order(
         ModifyOrderParams(
             order_id=trade.sl_order_id,
             quantity=trade.quantity,
             trigger_price=new_sl,
-            order_type="SL",
-            price=new_sl,
+            order_type=order_type,
+            price=price,
             validity="DAY",
         )
     )
