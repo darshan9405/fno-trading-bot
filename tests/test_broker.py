@@ -47,7 +47,7 @@ def test_parse_candles_empty():
 
 def test_to_position_view_maps_fields():
     p = SimpleNamespace(
-        exchange="NSE", product="I", instrument_token="NSE_FO|84123", tradingsymbol="NIFTY 10 SEP 26 26800 CE",
+        exchange="NSE", product="D", instrument_token="NSE_FO|84123", tradingsymbol="NIFTY 10 SEP 26 26800 CE",
         quantity=50, average_price=245.0, last_price=273.8, multiplier=50.0,
         unrealised=1440.0, realised=0.0, pnl=1440.0,
     )
@@ -61,7 +61,7 @@ def test_to_position_view_maps_fields():
 def test_to_order_view_and_fill_view():
     o = SimpleNamespace(
         order_id="o-1", exchange_order_id="11000", status="complete", status_message="OK",
-        order_type="MARKET", variety="regular", transaction_type="BUY", product="I",
+        order_type="MARKET", variety="regular", transaction_type="BUY", product="D",
         price=0.0, trigger_price=0.0, average_price=245.0, quantity=50, filled_quantity=50,
         instrument_token="NSE_FO|84123", tradingsymbol="NIFTY 10 SEP 26 26800 CE", exchange="NSE",
         tag="trade-201",
@@ -165,7 +165,7 @@ def test_place_order_builds_v3_request(monkeypatch):
     broker._apis["order_v3"] = FakeOrderV3()
     order_id = broker.place_order(OrderRequest(
         instrument_key="NSE_FO|84123", transaction_type="BUY", quantity=50,
-        product="I", order_type="LIMIT", price=101.0, tag="trade-201",
+        product="D", order_type="LIMIT", price=101.0, tag="trade-201",
     ))
     assert order_id == "o-22014"
     body = received["body"]
@@ -173,7 +173,7 @@ def test_place_order_builds_v3_request(monkeypatch):
     assert body.instrument_token == "NSE_FO|84123"
     assert body.transaction_type == "BUY"
     assert body.quantity == 50
-    assert body.product == "I"
+    assert body.product == "D"
     assert body.tag == "trade-201"
     assert body.order_type == "LIMIT"
     assert body.price == 101.0

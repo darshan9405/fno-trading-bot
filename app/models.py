@@ -121,7 +121,7 @@ class Lead(Base):
 
 
 class Trade(Base):
-    """A single managed intraday F&O trade (option leg)."""
+    """A single managed delivery (NRML) F&O trade (option leg)."""
 
     __tablename__ = "trades"
 
@@ -132,7 +132,7 @@ class Trade(Base):
     option_instrument_token: Mapped[str] = mapped_column(String(32), default="")
     tradingsymbol: Mapped[str] = mapped_column(String(64))
     lot_size: Mapped[int] = mapped_column(Integer)
-    product: Mapped[str] = mapped_column(String(8), default="I")  # intraday
+    product: Mapped[str] = mapped_column(String(8), default="D")  # delivery (NRML)
     direction: Mapped[str] = mapped_column(String(8))  # CALL | PUT
 
     entry_price: Mapped[float] = mapped_column(Float)

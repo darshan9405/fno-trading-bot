@@ -126,7 +126,7 @@ def test_order_lifecycle(broker):
             instrument_key=c.instrument_key,
             transaction_type="BUY",
             quantity=qty,
-            product="I",
+            product="D",
             order_type="LIMIT",
             price=1.0,
             tag="integration-test",

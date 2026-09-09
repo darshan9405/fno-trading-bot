@@ -101,7 +101,7 @@ def _seed_open_trade(age_minutes=0):
             option_instrument_key="NSE_FO|84123",
             option_instrument_token="84123",
             tradingsymbol="NIFTY 10 SEP 26 26800 CE",
-            lot_size=50, product="I", direction="CALL",
+            lot_size=50, product="D", direction="CALL",
             entry_price=100.0, quantity=50, initial_sl=90.0, current_sl=90.0,
             trail_state="at_initial", best_price=100.0, status="open",
             entry_order_id="o-entry", sl_order_id="o-sl",

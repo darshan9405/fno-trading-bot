@@ -494,7 +494,7 @@ def test_order_placer_opens_trade_with_sl(env):
         orders = session.execute(select(Order)).scalars().all()
         assert sorted(o.order_type for o in orders) == ["LIMIT", "SL"]
 
-    assert [o.product for o in broker.placed] == ["I", "I"]  # intraday: LIMIT + SL both
+    assert [o.product for o in broker.placed] == ["D", "D"]  # delivery (NRML): LIMIT + SL both
     assert [o.order_type for o in broker.placed] == ["LIMIT", "SL"]
     # LIMIT entry priced at LTP + 1% (default premium): 100.0 * 1.01 = 101.0.
     assert broker.placed[0].price == 101.0
@@ -554,7 +554,7 @@ def test_order_placer_squares_off_when_sl_placement_fails(env):
     # Order sequence: LIMIT (entry), SL (failed), LIMIT SELL (sqoff at LTP - 1%).
     assert [o.order_type for o in calls] == ["LIMIT", "SL", "LIMIT"]
     assert calls[2].transaction_type == "SELL"
-    assert calls[2].product == "I"
+    assert calls[2].product == "D"
     # LTP=100, premium=1% -> sqoff price = 99.0 (slightly below LTP for fast fill).
     assert calls[2].price == 99.0
 
@@ -630,7 +630,7 @@ def test_order_placer_skips_when_underlying_already_traded_today(env):
         session.flush()
         session.add(Trade(lead_id=None, underlying_key="NSE_INDEX|Nifty 50",
                           option_instrument_key="NSE_FO|84123", option_instrument_token="84123",
-                          tradingsymbol="NIFTY 10 SEP 26 26800 CE", lot_size=50, product="I",
+                          tradingsymbol="NIFTY 10 SEP 26 26800 CE", lot_size=50, product="D",
                           direction="CALL", entry_price=100.0, quantity=50,
                           initial_sl=90.0, current_sl=90.0, trail_state="at_initial",
                           status="closed", entry_order_id="o-x", sl_order_id="o-y"))

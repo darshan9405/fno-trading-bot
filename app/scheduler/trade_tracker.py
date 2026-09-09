@@ -167,7 +167,7 @@ def place_initial_sl(session, broker, trade: Trade, sl_pct: float) -> None:
             instrument_key=trade.option_instrument_key,
             transaction_type="SELL",
             quantity=trade.quantity,
-            product="I",
+            product="D",
             order_type="SL",
             price=sl,
             trigger_price=sl,

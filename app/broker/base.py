@@ -29,7 +29,7 @@ class OrderRequest:
     instrument_key: str  # NSE_FO|...
     transaction_type: str  # BUY | SELL
     quantity: int
-    product: str = "I"  # intraday
+    product: str = "D"  # delivery (NRML for F&O)
     order_type: str = "MARKET"  # MARKET | LIMIT | SL | SL-M
     price: float = 0.0
     trigger_price: float = 0.0

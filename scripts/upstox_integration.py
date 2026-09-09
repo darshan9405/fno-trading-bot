@@ -93,7 +93,7 @@ def main() -> int:
             qty = c.lot_size or 1
             oid = broker.place_order(OrderRequest(
                 instrument_key=c.instrument_key, transaction_type="BUY", quantity=qty,
-                product="I", order_type="LIMIT", price=1.0, tag="integration-script"))
+                product="D", order_type="LIMIT", price=1.0, tag="integration-script"))
             in_book = any(o.order_id == oid for o in broker.get_order_book())
             broker.modify_order(ModifyOrderParams(order_id=oid, quantity=qty, price=2.0,
                                                   order_type="LIMIT", trigger_price=0.0))

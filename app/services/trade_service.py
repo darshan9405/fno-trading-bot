@@ -7,7 +7,7 @@ from app.db import session_scope
 from app.models import Lead, Order, OrderFill, Trade
 from app.services.health_service import utcnow
 
-PRODUCT = "I"  # intraday (Upstox auto-square-off at session end)
+PRODUCT = "D"  # delivery / NRML for F&O (Upstox product code for carry-forward)
 
 
 def _token_from_key(instrument_key: str) -> str:

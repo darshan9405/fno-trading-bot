@@ -184,7 +184,7 @@ One lead per instrument per day (dedup by `instrument_id` + date).
 | option_instrument_token | str | v2 token for position reconcile |
 | tradingsymbol | str | |
 | lot_size | int | |
-| product | str | `I` (intraday) |
+| product | str | `D` (delivery / NRML — F&O carry-forward) |
 | direction | str | `CALL` \| `PUT` |
 | entry_price / quantity | float/int | |
 | initial_sl / current_sl | float | |
@@ -357,7 +357,7 @@ interface for every registered strategy.
 3. current price within `max_lead_price_divergence_pct` of `signal_level`
 4. option expiry ≥ `min_days_to_expiry` days away (`get_expiries`)
 5. strike selection: `ATM` (default) or `ITM_0.5` config; contract from `option_cache`
-6. place entry (`LIMIT` at `LTP × (1 + entry_limit_premium_pct/100)`) and poll `get_order_book` for up to `entry_order_fill_timeout_seconds`; only if it fills does it place the protective SL (`SL` with `price = trigger_price`, since NSE rejects `SL-M` for options per circular NSE/FAOP/49677 effective 27-Sep-2021), `product='I'`, `tag='trade-<id>'`
+6. place entry (`LIMIT` at `LTP × (1 + entry_limit_premium_pct/100)`) and poll `get_order_book` for up to `entry_order_fill_timeout_seconds`; only if it fills does it place the protective SL (`SL` with `price = trigger_price`, since NSE rejects `SL-M` for options per circular NSE/FAOP/49677 effective 27-Sep-2021), `product='D'` (delivery/NRML — Intraday `I` is not supported for F&O on Upstox), `tag='trade-<id>'`
 7. on entry no-fill: cancel order, mark lead `skipped` + log `errors`
 8. on SL-placement failure after entry fill: cancel entry, raise, mark lead `skipped`
 
