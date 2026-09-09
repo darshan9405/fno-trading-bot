@@ -130,7 +130,9 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
     contract_ltp = (broker.get_ltp([contract.instrument_key]) or {}).get(contract.instrument_key)
     if contract_ltp is None:
         raise BrokerError(f"no LTP for option {contract.instrument_key}")
-    limit_price = round(contract_ltp * (1.0 + limit_premium_pct / 100.0), 2)
+    instrument_tick = getattr(contract, "tick_size", 0.0) or 0.0
+    raw_limit = contract_ltp * (1.0 + limit_premium_pct / 100.0)
+    limit_price = trade_service.ceil_to_tick(raw_limit, trade_service.option_tick_for(raw_limit, instrument_tick))
 
     entry_order_id = broker.place_order(
         OrderRequest(
@@ -147,9 +149,10 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
     entry_price, status = _wait_for_fill(broker, entry_order_id, fill_timeout)
     if entry_price is None:
         _safe_cancel_if_open(broker, entry_order_id, status)
+        verb = "already terminal" if status in _TERMINAL_STATUSES else "cancelled"
         raise BrokerError(
             f"entry LIMIT {entry_order_id} for {contract.instrument_key} did not fill"
-            f" within {fill_timeout}s (status={status or 'unknown'}); cancelled, no trade opened"
+            f" within {fill_timeout}s (status={status or 'unknown'}); {verb}, no trade opened"
         )
 
     initial_sl = trade_service.initial_sl_for(entry_price, lead.direction, sl_pct)

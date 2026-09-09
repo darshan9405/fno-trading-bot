@@ -38,6 +38,15 @@ def round_to_tick(price: float, tick: float = DEFAULT_OPTION_TICK) -> float:
     return round(round(price / tick) * tick, 2)
 
 
+def ceil_to_tick(price: float, tick: float = DEFAULT_OPTION_TICK) -> float:
+    """Snap a price UP to the next tick (used for entry LIMIT offers so we
+    always bid ≥ the current LTP — rounding down could price us below LTP
+    and the order never fills)."""
+    import math
+    tick = tick or DEFAULT_OPTION_TICK
+    return round(math.ceil(price / tick - 1e-9) * tick, 2)
+
+
 def sl_price_below_trigger(trigger: float, tick: float = DEFAULT_OPTION_TICK) -> float:
     """Return a SL limit price strictly less than `trigger` (Upstox UDAPI1038
     rejects SELL SL orders where price == trigger_price). `tick` is the option's
@@ -189,8 +198,8 @@ def create_trade(session, *, lead: Lead, contract: InstrumentView, direction: st
 
 def record_order(session, *, order_id: str, trade_id: int, order_type: str, transaction_type: str,
                  instrument_token: str, quantity: int, tag: str | None, status: str = "complete",
-                 average_price: float | None = None, trigger_price: float | None = None,
-                 tradingsymbol: str | None = None) -> Order:
+                 price: float = 0.0, average_price: float | None = None,
+                 trigger_price: float | None = None, tradingsymbol: str | None = None) -> Order:
     order = Order(
         order_id=order_id,
         trade_id=trade_id,
@@ -198,7 +207,7 @@ def record_order(session, *, order_id: str, trade_id: int, order_type: str, tran
         variety="regular",
         transaction_type=transaction_type,
         product=PRODUCT,
-        price=0.0,
+        price=price,
         trigger_price=trigger_price,
         average_price=average_price,
         quantity=quantity,
