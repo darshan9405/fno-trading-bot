@@ -18,6 +18,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -110,6 +111,7 @@ class Lead(Base):
     status: Mapped[str] = mapped_column(String(16), default="queued")  # queued | picked | placed | skipped | expired
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     plan: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    components: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -263,6 +265,30 @@ class KillSwitch(Base):
     triggered_by: Mapped[str] = mapped_column(String(32), default="user")  # user | manual | system
     released_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class PatternStat(Base):
+    """Per-pattern historical win-rate used to calibrate scoring (Tier-4).
+
+    Closed-trade outcomes are aggregated by `(pattern, underlying_key)` here so
+    the order placer can fetch a live win-rate and nudge the composite score
+    via a configurable alpha (default 0 = no effect). Requires ≥ MIN_TRADES
+    before any calibration kicks in.
+    """
+
+    __tablename__ = "pattern_stats"
+    __table_args__ = (
+        UniqueConstraint("pattern", "underlying_key", name="uq_pattern_stats_pattern_underlying"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    pattern: Mapped[str] = mapped_column(String(32), index=True)
+    underlying_key: Mapped[str] = mapped_column(String(64), index=True)
+    trades: Mapped[int] = mapped_column(Integer, default=0)
+    wins: Mapped[int] = mapped_column(Integer, default=0)
+    total_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    avg_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 # --- Auth / ops -----------------------------------------------------------

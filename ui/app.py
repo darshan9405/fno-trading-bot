@@ -997,7 +997,7 @@ def _render_position_card(r: dict):
 def render_leads():
     st.subheader("Leads")
 
-    top = st.columns([3, 1, 1])
+    top = st.columns([3, 1, 1, 1, 1])
     with top[0]:
         q = st.text_input("Search", placeholder="Filter by symbol or instrument…",
                           label_visibility="collapsed", key="leads_q")
@@ -1007,6 +1007,13 @@ def render_leads():
     with top[2]:
         dir_f = st.selectbox("Direction", ["All", "CALL", "PUT"],
                              label_visibility="collapsed", key="leads_dir")
+    with top[3]:
+        sort_f = st.selectbox("Sort", ["score", "time"],
+                              label_visibility="collapsed", key="leads_sort",
+                              help="score: composite (best first) · time: newest first")
+    with top[4]:
+        breakdown = st.toggle("Show breakdown", value=False, key="leads_breakdown",
+                              help="Show why each lead scored the way it did.")
 
     c1, c2 = st.columns([4, 1])
     with c2:
@@ -1021,7 +1028,7 @@ def render_leads():
                 st.error(resp.get("error", {}).get("message", "Generation failed."))
             st.rerun()
 
-    resp = api.get_leads()
+    resp = api.get_leads(sort=sort_f)
     if resp.get("status") != "ok":
         st.warning("Could not load leads.")
         return
@@ -1045,16 +1052,24 @@ def render_leads():
         st.info("No leads match the current filters.")
         return
 
-    # Put actionable queued leads first
+    # Server already returns rows sorted by `sort_f` (score or created_at desc).
+    # Apply final client-side ordering: actionable queued first, then by the
+    # chosen axis within each bucket.
     status_priority = {"queued": 0, "picked": 1, "placed": 2, "filled": 3, "skipped": 4, "expired": 5}
-    rows = sorted(rows, key=lambda r: (status_priority.get(r.get("status"), 99), r.get("created_at") or ""))
+    if sort_f == "score":
+        rows = sorted(rows, key=lambda r: (status_priority.get(r.get("status"), 99), -(float(r.get("confidence") or 0))))
+    else:
+        rows = sorted(rows, key=lambda r: (status_priority.get(r.get("status"), 99), -(r.get("created_at_ts") or 0)))
 
     _html("<div class='row' style='margin-bottom:12px;align-items:center;'>")
-    _html(f"<span class='muted'>Showing <b>{len(rows)}</b> {'lead' if len(rows) == 1 else 'leads'}</span>")
+    _html(f"<span class='muted'>Showing <b>{len(rows)}</b> {'lead' if len(rows) == 1 else 'leads'} · sort=<b>{sort_f}</b></span>")
     _html(f"</div>")
 
     for r in rows:
-        c1, c2, c3 = st.columns([4, 1, 2])
+        if breakdown:
+            c1, c2, c3 = st.columns([3, 1, 3])
+        else:
+            c1, c2, c3 = st.columns([4, 1, 2])
         with c1:
             created_ist = (
                 r.get("created_at_ist_label")
@@ -1062,7 +1077,7 @@ def render_leads():
             )
             direction_class = "up" if r["direction"] == "CALL" else "down"
             status_class = "ok" if r["status"] in ("placed", "filled") else ("warn" if r["status"] == "queued" else "muted")
-            
+
             _html(
                 f"<div style='display:flex;justify-content:space-between;margin-bottom:6px;'>"
                 f"<div style='font-weight:600'>{r.get('symbol') or r['underlying'].split('|')[-1]} "
@@ -1105,11 +1120,11 @@ def render_leads():
             pct = int((r.get("confidence") or 0) * 100)
             bar_color = PROFIT if pct >= 80 else (WARN if pct >= 60 else MUTED)
             badge_color = "ok" if pct >= 80 else ("warn" if pct >= 60 else "muted")
-            
+
             _html(
                 f"<div style='text-align:center;margin-top:8px;'>"
                 f"<div class='badge {badge_color}' style='margin-bottom:6px;'>"
-                f"{pct}% Confidence</div>"
+                f"{pct}% Score</div>"
                 f"<div class='conf-bar' style='margin:6px 0;'>"
                 f"<div class='conf-fill' style='width:{pct}%;background:{bar_color};'></div>"
                 f"</div>"
@@ -1121,6 +1136,22 @@ def render_leads():
         with c3:
             if r.get("note"):
                 st.caption(r["note"])
+            if breakdown:
+                breakdown_rows = r.get("score_breakdown") or []
+                if breakdown_rows:
+                    breakdown_df = pd.DataFrame([
+                        {
+                            "Component": row.get("label", row["key"]),
+                            "Value": round(float(row["value"]) * 100, 1),
+                            "Weight": round(float(row["weight"]) * 100, 1),
+                            "Contribution": round(float(row["contribution"]) * 100, 2),
+                        }
+                        for row in breakdown_rows
+                    ])
+                    st.dataframe(
+                        breakdown_df, use_container_width=True, hide_index=True,
+                        height=min(40 + 35 * len(breakdown_df), 220),
+                    )
 
 
 def render_instruments():

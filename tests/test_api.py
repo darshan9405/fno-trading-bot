@@ -400,6 +400,90 @@ def test_leads_include_fno_plan(env):
     assert row["option_type"] == "CE"
     assert row["quantity"] == 50
     assert row["lot_size"] == 50
+    # Tier-5: components exposed via the API for the breakdown UI.
+    assert row["components"] == {}
+    assert row["score_breakdown"] == []
+
+
+def test_leads_include_components_breakdown(env):
+    """Tier-5: when components are persisted on the Lead, the API must
+    expose them as a `components` dict plus a flattened `score_breakdown`
+    list consumable by the UI."""
+    client, token, cfg = env
+    from app.models import Instrument, Lead
+
+    with session_scope() as session:
+        inst = Instrument(symbol="NIFTY", exchange="NSE", segment="NSE_INDEX",
+                          spot_instrument_key="NSE_INDEX|Nifty 50", instrument_token="26000",
+                          trading_symbol="NIFTY", lot_size=50, enabled=True)
+        session.add(inst)
+        session.flush()
+        session.add(
+            Lead(
+                instrument_id=inst.id,
+                underlying_key="NSE_INDEX|Nifty 50",
+                direction="CALL",
+                strategy="breakout",
+                signal_type="volume_breakout",
+                signal_level=100.0,
+                confidence=0.85,
+                chart_interval="day",
+                status="queued",
+                components={
+                    "pattern_fit":     0.85,
+                    "volume":          0.95,
+                    "trend_alignment": 0.5,
+                    "proximity":       1.0,
+                    "structure":       0.95,
+                },
+            )
+        )
+
+    r = client.get("/api/trades/leads", headers=_headers(token))
+    assert r.status_code == 200
+    lead = r.get_json()["data"]["leads"][0]
+    assert lead["components"]["pattern_fit"] == pytest.approx(0.85)
+    breakdown = {row["key"]: row for row in lead["score_breakdown"]}
+    assert "pattern_fit" in breakdown
+    assert "volume" in breakdown
+    assert "trend_alignment" in breakdown
+    assert "proximity" in breakdown
+    # Weights + contributions add up across the listed dimensions.
+    total_contrib = sum(row["contribution"] for row in lead["score_breakdown"])
+    assert total_contrib == pytest.approx(0.85, abs=0.05)
+
+
+def test_leads_sort_param_orders_by_score_desc(env):
+    """`?sort=score` orders by `confidence DESC, created_at DESC`."""
+    client, token, cfg = env
+    from app.models import Instrument, Lead
+    from datetime import datetime, timedelta, timezone
+
+    base = datetime(2026, 9, 4, 10, 0, tzinfo=timezone.utc)
+    with session_scope() as session:
+        inst = Instrument(symbol="NIFTY", exchange="NSE", segment="NSE_INDEX",
+                          spot_instrument_key="NSE_INDEX|Nifty 50", instrument_token="26000",
+                          trading_symbol="NIFTY", lot_size=50, enabled=True)
+        session.add(inst); session.flush()
+        session.add_all([
+            Lead(instrument_id=inst.id, underlying_key="NSE_INDEX|Nifty 50",
+                 direction="CALL", strategy="breakout", signal_type="horizontal_range",
+                 signal_level=100.0, confidence=0.5, status="queued",
+                 created_at=base + timedelta(minutes=1)),
+            Lead(instrument_id=inst.id, underlying_key="NSE_INDEX|Nifty 50",
+                 direction="PUT", strategy="breakout", signal_type="triangle",
+                 signal_level=100.0, confidence=0.9, status="queued",
+                 created_at=base + timedelta(minutes=2)),
+            Lead(instrument_id=inst.id, underlying_key="NSE_INDEX|Nifty 50",
+                 direction="CALL", strategy="breakout", signal_type="trendline",
+                 signal_level=100.0, confidence=0.7, status="queued",
+                 created_at=base + timedelta(minutes=3)),
+        ])
+
+    r = client.get("/api/trades/leads?sort=score", headers=_headers(token))
+    rows = r.get_json()["data"]["leads"]
+    confidences = [row["confidence"] for row in rows]
+    assert confidences == sorted(confidences, reverse=True)
 
 
 # --- health + config -----------------------------------------------------

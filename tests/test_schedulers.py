@@ -450,6 +450,148 @@ def test_lead_generator_force_runs_outside_window(env):
     assert all(l.status == "queued" for l in leads)
 
 
+def test_order_placer_picks_higher_score_first(env):
+    """Tier-1 / Tier-2: when two queued leads exist for different underlyings,
+    the higher-confidence lead is processed first so a margin-limited account
+    trades the best signal."""
+    broker = _seed_broker(env)
+    broker.get_funds = lambda: type("_F", (), {"available_margin": 100_000.0})()
+    # RELIANCE spot is needed for divergence check.
+    broker.ltp_map["NSE_EQ|INE002A01018"] = 3000.0
+    # NIFTY: low score; RELIANCE: high score.
+    with session_scope() as session:
+        nifty = session.execute(select(Instrument).where(Instrument.symbol == "NIFTY")).scalars().first()
+        reliance = session.execute(select(Instrument).where(Instrument.symbol == "RELIANCE")).scalars().first()
+        session.add_all([
+            Lead(instrument_id=nifty.id, underlying_key="NSE_INDEX|Nifty 50",
+                 direction="CALL", strategy="test", signal_type="horizontal_range",
+                 signal_level=100.0, confidence=0.55, chart_interval="day", status="queued"),
+            Lead(instrument_id=reliance.id, underlying_key="NSE_EQ|INE002A01018",
+                 direction="PUT", strategy="test", signal_type="head_shoulders",
+                 signal_level=3000.0, confidence=0.95, chart_interval="day", status="queued"),
+        ])
+
+    run_order_placer(broker=broker, now=_now(10, 35))
+
+    with session_scope() as session:
+        trades = list(session.execute(select(Trade)).scalars())
+        assert len(trades) == 1
+        # RELIANCE has affordable PUT only (no CALL in the test contracts);
+        # the order placer should have picked the high-score lead over NIFTY.
+        assert trades[0].underlying_key == "NSE_EQ|INE002A01018"
+
+
+def test_order_placer_picks_higher_score_first(env):
+    """Tier-1 / Tier-2: when two queued leads exist for different underlyings,
+    the higher-confidence lead is processed first so a margin-limited account
+    trades the best signal first."""
+    broker = _seed_broker(env)
+    broker.get_funds = lambda: type("_F", (), {"available_margin": 100_000.0})()
+    broker.ltp_map["NSE_EQ|INE002A01018"] = 3000.0
+    # Make RELIANCE affordable so order placer doesn't skip it on margin.
+    broker.ltp_map["NSE_FO|90111"] = 50.0
+    # NIFTY: low score; RELIANCE: high score.
+    with session_scope() as session:
+        nifty = session.execute(select(Instrument).where(Instrument.symbol == "NIFTY")).scalars().first()
+        reliance = session.execute(select(Instrument).where(Instrument.symbol == "RELIANCE")).scalars().first()
+        session.add_all([
+            Lead(instrument_id=nifty.id, underlying_key="NSE_INDEX|Nifty 50",
+                 direction="CALL", strategy="test", signal_type="horizontal_range",
+                 signal_level=100.0, confidence=0.55, chart_interval="day", status="queued"),
+            Lead(instrument_id=reliance.id, underlying_key="NSE_EQ|INE002A01018",
+                 direction="PUT", strategy="test", signal_type="head_shoulders",
+                 signal_level=3000.0, confidence=0.95, chart_interval="day", status="queued"),
+        ])
+
+    run_order_placer(broker=broker, now=_now(10, 35))
+
+    # The first entry order placed goes to the higher-confidence RELIANCE leg.
+    entry_orders = [o for o in broker.placed if o.order_type == "LIMIT"]
+    assert entry_orders, "expected at least one LIMIT entry order"
+    assert entry_orders[0].instrument_key == "NSE_FO|90111"
+
+
+def test_order_placer_applies_staleness_decay(env):
+    """Tier-4: a queued lead that's several hours old gets ranked below a
+    fresh lead with the same stored confidence."""
+    broker = _seed_broker(env)
+    broker.get_funds = lambda: type("_F", (), {"available_margin": 100_000.0})()
+    broker.ltp_map["NSE_EQ|INE002A01018"] = 3000.0
+    broker.ltp_map["NSE_FO|90111"] = 50.0
+    from app.settings import set_setting
+    set_setting("breakout.staleness_half_life_min", 30)
+
+    from datetime import datetime, timedelta, timezone
+    # Stay inside the trading window (10:00-14:00 IST).
+    now_ist = datetime(2026, 9, 4, 13, 50, tzinfo=IST)
+    # Lead.created_at is naive UTC by convention: compute elapsed correctly
+    # by converting the IST offsets to UTC equivalents.
+    fresh_dt = datetime(2026, 9, 4, 8, 15)   # 13:45 IST
+    stale_dt = datetime(2026, 9, 4, 5, 20)   # 10:50 IST (180 min earlier)
+
+    with session_scope() as session:
+        nifty = session.execute(select(Instrument).where(Instrument.symbol == "NIFTY")).scalars().first()
+        reliance = session.execute(select(Instrument).where(Instrument.symbol == "RELIANCE")).scalars().first()
+        session.add_all([
+            Lead(instrument_id=nifty.id, underlying_key="NSE_INDEX|Nifty 50",
+                 direction="CALL", strategy="test", signal_type="horizontal_range",
+                 signal_level=100.0, confidence=0.9, chart_interval="day", status="queued",
+                 created_at=fresh_dt),
+            Lead(instrument_id=reliance.id, underlying_key="NSE_EQ|INE002A01018",
+                 direction="PUT", strategy="test", signal_type="head_shoulders",
+                 signal_level=3000.0, confidence=0.9, chart_interval="day", status="queued",
+                 created_at=stale_dt),
+        ])
+
+    run_order_placer(broker=broker, now=now_ist)
+
+    entry_orders = [o for o in broker.placed if o.order_type == "LIMIT"]
+    assert entry_orders, "expected at least one entry order"
+    # Without staleness, oldest-first would pick RELIANCE (created first).
+    # With staleness decay enabled, the fresh NIFTY lead wins despite being
+    # newer.
+    assert entry_orders[0].instrument_key == "NSE_FO|84123"
+
+
+def test_close_trade_upserts_pattern_stats(env):
+    """Tier-4 calibration: closing trades updates `pattern_stats` so future
+    leads for the same (pattern, underlying) get a calibrated rank."""
+    broker = _seed_broker(env)
+    broker.get_funds = lambda: type("_F", (), {"available_margin": 5_000_000.0})()
+    # Seed a lead and a corresponding trade, then close it profitably.
+    from app.db import session_scope as _ss
+    from app.models import PatternStat
+    with _ss() as session:
+        nifty = session.execute(select(Instrument).where(Instrument.symbol == "NIFTY")).scalars().first()
+        lead = Lead(instrument_id=nifty.id, underlying_key="NSE_INDEX|Nifty 50",
+                    direction="CALL", strategy="breakout", signal_type="horizontal_range",
+                    signal_level=100.0, confidence=0.9, chart_interval="day", status="placed")
+        session.add(lead); session.flush()
+        trade = Trade(
+            lead_id=lead.id, underlying_key="NSE_INDEX|Nifty 50",
+            option_instrument_key="NSE_FO|84123",
+            option_instrument_token="84123",
+            tradingsymbol="NIFTY", lot_size=50, product="D", direction="CALL",
+            entry_price=100.0, quantity=50, initial_sl=90.0, current_sl=90.0,
+            trail_state="at_initial", status="open",
+        )
+        session.add(trade); session.flush()
+
+        trade_service.close_trade(session, trade, exit_price=110.0, exit_reason="manual")
+        session.commit()
+
+        stat = session.execute(
+            select(PatternStat).where(
+                PatternStat.pattern == "horizontal_range",
+                PatternStat.underlying_key == "NSE_INDEX|Nifty 50",
+            )
+        ).scalars().first()
+        assert stat is not None
+        assert stat.trades == 1
+        assert stat.wins == 1  # 110 > 100 => win
+        assert stat.total_pnl > 0
+
+
 def test_lead_generator_touches_heartbeat(env):
     run_lead_generator(broker=_seed_broker(env), now=_now(10, 30))
     assert health_service.last_heartbeat("lead_generator") is not None

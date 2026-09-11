@@ -118,14 +118,22 @@ def pnl():
 def leads():
     date_filter = request.args.get("date")
     status_filter = request.args.get("status")
+    sort = (request.args.get("sort") or "score").lower()  # "score" | "time"
     # Build the response INSIDE the session to avoid DetachedInstanceError
     # on `lead.instrument` lazy-load after the session is gone.
     with session_scope() as session:
-        q = select(Lead).order_by(Lead.created_at.desc()).limit(200)
+        q = select(Lead)
         if date_filter:
             q = q.where(Lead.created_at.like(f"{date_filter}%"))
         if status_filter:
             q = q.where(Lead.status == status_filter)
+        # Tier-5: rank by score (composite confidence) so the operator sees
+        # the best leads first; fall back to "time" when explicitly requested.
+        if sort == "time":
+            q = q.order_by(Lead.created_at.desc())
+        else:
+            q = q.order_by(Lead.confidence.desc(), Lead.created_at.desc())
+        q = q.limit(200)
         rows = list(session.execute(q).scalars())
         data = [_lead_dict(l) for l in rows]
     return ok({"count": len(data), "leads": data})
@@ -149,6 +157,7 @@ def generate_leads():
 
 def _lead_dict(l: Lead) -> dict:
     plan = l.plan or {}
+    components = l.components or {}
     # `created_at` is naive UTC. Surface IST equivalents so the UI doesn't
     # need a TZ round-trip on the client.
     ist_created = l.created_at.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("Asia/Kolkata"))
@@ -161,6 +170,8 @@ def _lead_dict(l: Lead) -> dict:
         "signal_type": l.signal_type,
         "signal_level": l.signal_level,
         "confidence": l.confidence,
+        "components": components,
+        "score_breakdown": _score_breakdown(components),
         "status": l.status,
         "note": l.note,
         "created_at": l.created_at,
@@ -176,5 +187,43 @@ def _lead_dict(l: Lead) -> dict:
         "margin_needed": plan.get("margin_needed"),
         "spot": plan.get("spot"),
     }
+
+
+def _score_breakdown(components: dict) -> list[dict]:
+    """Flatten the components dict to a list of {label, value, weight} so
+    the UI can render the per-dimension contribution to the composite score."""
+    weights = {
+        "pattern_fit":     0.40,
+        "volume":          0.25,
+        "trend_alignment": 0.15,
+        "proximity":       0.10,
+        "structure":       0.10,
+        "iv":              0.05,
+        "oi":              0.05,
+        "time_of_day":     0.05,
+    }
+    labels = {
+        "pattern_fit":     "Pattern fit",
+        "volume":          "Volume",
+        "trend_alignment": "Trend alignment",
+        "proximity":       "Proximity",
+        "structure":       "Structure",
+        "iv":              "IV",
+        "oi":              "OI",
+        "time_of_day":     "Time of day",
+    }
+    out = []
+    for k, label in labels.items():
+        v = components.get(k)
+        if v is None:
+            continue
+        out.append({
+            "key": k,
+            "label": label,
+            "value": float(v),
+            "weight": float(weights.get(k, 0.0)),
+            "contribution": round(float(v) * float(weights.get(k, 0.0)), 4),
+        })
+    return out
 
 

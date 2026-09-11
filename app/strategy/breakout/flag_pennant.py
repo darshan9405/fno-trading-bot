@@ -7,6 +7,7 @@ consolidation low -> PUT.
 """
 
 from app.strategy.breakout.signals import PatternSignal
+from app.strategy.scoring import ComponentScores
 
 
 def detect_flag(df, pole_len: int = 8, consolidation_len: int = 6,
@@ -40,9 +41,21 @@ def detect_flag(df, pole_len: int = 8, consolidation_len: int = 6,
     up = float(cons["high"].max())
     lo = float(cons["low"].min())
 
+    # Fit components: how tight is the consolidation (structure), how strong is
+    # the pole (pattern_fit), and proximity to the breakout level.
+    tightness = max(0.0, 1.0 - cons_range / pole_span)  # 1.0 = razor-tight
+    pole_strength = min(1.0, abs(pole_move) / (pole_pct * 3.0))  # saturates ~3x pole_pct
+    components = ComponentScores(
+        pattern_fit=pole_strength,
+        volume=0.5,
+        trend_alignment=0.5,
+        proximity=1.0,
+        structure=tightness,
+    )
+
     signals = []
     if pole_move > 0 and close >= up:
-        signals.append(PatternSignal("CALL", "flag_pennant", round(up, 2), 0.7))
+        signals.append(PatternSignal("CALL", "flag_pennant", round(up, 2), 0.7, components))
     elif pole_move < 0 and close <= lo:
-        signals.append(PatternSignal("PUT", "flag_pennant", round(lo, 2), 0.7))
+        signals.append(PatternSignal("PUT", "flag_pennant", round(lo, 2), 0.7, components))
     return signals

@@ -62,9 +62,21 @@ def run_detectors(df, patterns_enabled: list[str], cfg: dict | None = None) -> l
 
 
 def best_signal(signals: list[PatternSignal], min_confidence: float = 0.6) -> PatternSignal | None:
+    """Backward-compatible single-pick: the top-1 above `min_confidence`."""
+    ranked = rank_signals(signals, top_k=1, min_score=min_confidence)
+    return ranked[0] if ranked else None
+
+
+def rank_signals(signals: list[PatternSignal], top_k: int = 2,
+                 min_score: float = 0.6) -> list[PatternSignal]:
+    """Return the top-`top_k` signals above `min_score`, preserving detector
+    order for ties. Tier-2 of the scoring improvement: an underlying that fires
+    multiple patterns (e.g. both CALL and PUT in the same session) now produces
+    multiple leads, each carrying its own composite score."""
     if not signals:
-        return None
-    best = max(signals, key=lambda s: s.confidence)
-    if best.confidence < min_confidence:
-        return None
-    return best
+        return []
+    top_k = max(1, int(top_k))
+    min_score = float(min_score)
+    eligible = [s for s in signals if float(s.confidence) >= min_score]
+    eligible.sort(key=lambda s: float(s.confidence), reverse=True)
+    return eligible[:top_k]

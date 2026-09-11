@@ -10,6 +10,7 @@ two peaks); a close above the neckline -> CALL.
 
 from app.strategy.breakout.signals import PatternSignal
 from app.strategy.breakout.swing import find_swing_highs, find_swing_lows
+from app.strategy.scoring import ComponentScores
 
 
 def _neckline_at_today(p1: tuple[int, float], p2: tuple[int, float], n: int) -> float | None:
@@ -38,11 +39,25 @@ def detect_head_shoulders(df, k: int = 3, shoulder_tol: float = 0.10,
                 l_before = min((i for i in lows if h[0] < i < h[1]), key=lambda i: float(df["low"].iloc[i]), default=None)
                 l_after = min((i for i in lows if h[1] < i < h[2]), key=lambda i: float(df["low"].iloc[i]), default=None)
                 if l_before is not None and l_after is not None:
-                    neck = _neckline_at_today((l_before, float(df["low"].iloc[l_before])),
-                                              (l_after, float(df["low"].iloc[l_after])), n)
+                    neck = _neckline_at_today(
+                        (l_before, float(df["low"].iloc[l_before])),
+                        (l_after, float(df["low"].iloc[l_after])),
+                        n,
+                    )
                     if neck and neck > 0 and (neck * (1 - proximity_pct / 100.0) <= close <= neck * (1 + proximity_pct / 100.0)):
-                        conf = round(min(0.9, 0.6 + 0.2 * (1 - abs(left - right) / max(left, right))), 2)
-                        signals.append(PatternSignal("PUT", "head_shoulders", round(neck, 2), conf))
+                        symmetry = 1.0 - abs(left - right) / max(left, right)
+                        structure = max(0.0, min(1.0, symmetry))
+                        components = ComponentScores(
+                            pattern_fit=structure,
+                            volume=0.5,
+                            trend_alignment=0.5,
+                            proximity=1.0,
+                            structure=structure,
+                        )
+                        signals.append(PatternSignal(
+                            "PUT", "head_shoulders", round(neck, 2),
+                            round(min(0.9, 0.6 + 0.2 * structure), 2), components,
+                        ))
 
     # --- Inverse H&S (bullish) ---
     if len(lows) >= 3:
@@ -55,10 +70,24 @@ def detect_head_shoulders(df, k: int = 3, shoulder_tol: float = 0.10,
                 p_before = max((i for i in highs if l[0] < i < l[1]), key=lambda i: float(df["high"].iloc[i]), default=None)
                 p_after = max((i for i in highs if l[1] < i < l[2]), key=lambda i: float(df["high"].iloc[i]), default=None)
                 if p_before is not None and p_after is not None:
-                    neck = _neckline_at_today((p_before, float(df["high"].iloc[p_before])),
-                                              (p_after, float(df["high"].iloc[p_after])), n)
+                    neck = _neckline_at_today(
+                        (p_before, float(df["high"].iloc[p_before])),
+                        (p_after, float(df["high"].iloc[p_after])),
+                        n,
+                    )
                     if neck and neck > 0 and (neck * (1 - proximity_pct / 100.0) <= close <= neck * (1 + proximity_pct / 100.0)):
-                        conf = round(min(0.9, 0.6 + 0.2 * (1 - abs(left - right) / max(left, right))), 2)
-                        signals.append(PatternSignal("CALL", "head_shoulders", round(neck, 2), conf))
+                        symmetry = 1.0 - abs(left - right) / max(left, right)
+                        structure = max(0.0, min(1.0, symmetry))
+                        components = ComponentScores(
+                            pattern_fit=structure,
+                            volume=0.5,
+                            trend_alignment=0.5,
+                            proximity=1.0,
+                            structure=structure,
+                        )
+                        signals.append(PatternSignal(
+                            "CALL", "head_shoulders", round(neck, 2),
+                            round(min(0.9, 0.6 + 0.2 * structure), 2), components,
+                        ))
 
     return signals

@@ -20,8 +20,10 @@ from app.config import Config
 from app.db import session_scope
 from app.models import Lead
 from app.services import contract_service, health_service, market_calendar, trade_service
+from app.services.calibration import calibration_multiplier
 from app.services.killswitch_service import is_killswitch_active
 from app.services.lead_service import mark_lead
+from app.services.score_decay import decayed_score
 from app.settings import get_setting
 
 log = logging.getLogger(__name__)
@@ -58,13 +60,28 @@ def run_order_placer(broker=None, now=None):
                 log.warning("order_placer: margin fetch failed (%s); margin check skipped", e)
 
         pending_errors = []
+        half_life_min = float(get_setting("breakout.staleness_half_life_min", 0.0))
+        calibration_alpha = float(get_setting("scoring.calibration_alpha", 0.0))
         with session_scope() as session:
             # Consume highest-confidence leads first so the best signals get filled
             # before lower-conviction ones when margin/limits constrain how many trade.
-            leads = list(session.execute(
-                select(Lead).where(Lead.status == "queued").order_by(Lead.confidence.desc(), Lead.created_at)
+            # Tier-4: apply staleness decay + historical calibration at rank time so
+            # fresh, high-quality signals outrank stale ones even if they share the
+            # same stored score. Tie-break on `created_at` ascending preserves the
+            # legacy "oldest first within same score" semantics.
+            candidates = list(session.execute(
+                select(Lead).where(Lead.status == "queued")
             ).scalars())
-            for lead in leads:
+            def _rank_key(lead):
+                decayed = decayed_score(lead, half_life_min, now)
+                mult = calibration_multiplier(
+                    lead.signal_type or "",
+                    lead.underlying_key or "",
+                    calibration_alpha,
+                ) if calibration_alpha > 0 else 1.0
+                return (-(decayed * mult), lead.created_at or 0)
+            candidates.sort(key=_rank_key)
+            for lead in candidates:
                 try:
                     process_lead(session, broker, lead, sl_pct, max_div, min_days, lots, available_margin,
                                  max_depth, fill_timeout, limit_premium_pct)

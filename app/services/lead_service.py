@@ -28,8 +28,10 @@ def create_leads_from_candidates(session, instrument: Instrument, candidates, no
     if not candidates:
         return []
 
-    rows = [
-        Lead(
+    rows = []
+    for c in candidates:
+        components = (c.meta or {}).get("components") if getattr(c, "meta", None) else None
+        rows.append(Lead(
             instrument_id=c.instrument_id,
             underlying_key=c.underlying_key,
             direction=c.direction,
@@ -39,9 +41,8 @@ def create_leads_from_candidates(session, instrument: Instrument, candidates, no
             confidence=c.confidence,
             chart_interval=c.chart_interval,
             status="queued",
-        )
-        for c in candidates
-    ]
+            components=components,
+        ))
     session.add_all(rows)
     return rows
 

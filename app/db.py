@@ -47,6 +47,7 @@ def create_all():
 
 _MIGRATIONS = [
     ("leads", "plan", "TEXT"),
+    ("leads", "components", "TEXT"),
     ("trades", "sl_order_type", "VARCHAR(8)"),
 ]   
 

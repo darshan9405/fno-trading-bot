@@ -41,8 +41,18 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "breakout.volume_lookback": 5,
     "breakout.require_volume_spike": True,
     "breakout.volume_boost": 0.15,
+    # Tier-2: emit the top-N signals per instrument (previously only top-1).
+    "breakout.top_k_per_instrument": 2,
     # Market-alignment filter: "off" or "nifty_sma20" (trade with the NIFTY trend).
     "breakout.market_alignment": "off",
+    # Tier-4 staleness: half-life (minutes) of queued lead confidence decay; 0 disables.
+    "breakout.staleness_half_life_min": 0,
+    # Tier-4 calibration: alpha multiplier applied to historical win-rate; 0 disables.
+    "scoring.calibration_alpha": 0.0,
+    # Tier-3 add-ons (default off; flip on once option-chain IV/OI is wired in).
+    "scoring.enable_iv": False,
+    "scoring.enable_oi": False,
+    "scoring.enable_time_of_day": False,
 }
 
 

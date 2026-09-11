@@ -173,7 +173,13 @@ def test_volume_breakout_detector_call():
     assert signals
     assert signals[0].direction == "CALL"
     assert signals[0].signal_type == "volume_breakout"
-    assert signals[0].confidence == 0.8
+    # New composite scoring: scores rationally in a meaningful range with the
+    # volume_breakout component weighting (volume-gated + price-breakout).
+    # Was a flat `0.8` under the legacy heuristic; ties tested in `test_scoring`.
+    assert 0.5 <= signals[0].confidence <= 1.0
+    assert signals[0].components.pattern_fit >= 0.7  # gated detector
+    assert signals[0].components.volume >= 0.5      # spike captured
+    assert signals[0].components.proximity == 1.0   # confirmed at level
 
 
 def test_volume_breakout_requires_spike():
@@ -216,20 +222,28 @@ def test_breakout_strategy_volume_boost(db_env):
 
     set_setting("breakout.require_volume_spike", False)
     set_setting("breakout.volume_boost", 0.3)
-    set_setting("breakout.min_confidence", 0.9)
+    # min_confidence matches the new composite's score floor for a 5x volume
+    # spike on a flat close-at-level breakout (unboosted ≈ 0.70, boosted ≈ 0.77).
+    set_setting("breakout.min_confidence", 0.6)
 
     strategy = StrategyRegistry.get("breakout")()
     instrument = SimpleNamespace(id=1, symbol="NIFTY", spot_instrument_key="NSE_INDEX|Nifty 50")
 
-    # horizontal range signal conf ~0.95 -> base already high; use a lower-base pattern instead:
-    # volume spike present should push confidence up (0.8 -> 0.9+ when combined with volume_breakout)
+    # volume spike present should push the composite score above the floor.
     closes = [100.0] * 39 + [105.0]
     highs = [101.0] * 39 + [105.5]
     lows = [99.0] * 39 + [104.0]
     df = _df(closes, highs, lows)
     df["volume"] = [1000.0] * 38 + [5000.0, 5000.0]
     leads = strategy.generate(instrument, df, now=None)
-    assert len(leads) == 1  # volume_breakout (0.8 + 0.3 = 1.0 -> capped 0.95) passes min_confidence 0.9
+    assert len(leads) == 1
+    boosted_confidence = leads[0].confidence
+
+    # Without the volume boost the same data must still emit but score lower.
+    set_setting("breakout.volume_boost", 0.0)
+    leads_no_boost = strategy.generate(instrument, df, now=None)
+    assert len(leads_no_boost) == 1
+    assert boosted_confidence > leads_no_boost[0].confidence
 
 
 # --- detector / strategy wiring ------------------------------------------

@@ -275,6 +275,25 @@ def close_trade(session, trade: Trade, *, exit_price: float, exit_reason: str) -
     trade.exit_price = exit_price
     trade.exit_reason = exit_reason
     trade.realized_pnl = (exit_price - trade.entry_price) * trade.quantity
+    # Tier-4 calibration: record this outcome so future leads carrying the
+    # same (pattern, underlying) get a calibrated score at rank time.
+    if trade.lead_id:
+        try:
+            lead = session.get(__import__("app.models").Lead, trade.lead_id) if False else None
+        except Exception:
+            lead = None
+        try:
+            from app.models import Lead as _Lead
+            lead = session.get(_Lead, trade.lead_id) if trade.lead_id else None
+            if lead is not None:
+                from app.services.calibration import upsert_pattern_stat
+                upsert_pattern_stat(
+                    session,
+                    pattern=lead.signal_type,
+                    underlying_key=trade.underlying_key,
+                )
+        except Exception as e:
+            log.warning("trade_service: calibration upsert failed for trade %s (%s)", trade.id, e)
 
 
 def square_off(session, broker, trade: Trade, reason: str = "sqoff") -> float:

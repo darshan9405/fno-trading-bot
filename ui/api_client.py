@@ -164,12 +164,14 @@ def get_closed_trades(date: str | None = None):
     return api("GET", path)
 
 
-def get_leads(status: str | None = None, date: str | None = None):
+def get_leads(status: str | None = None, date: str | None = None, sort: str | None = None):
     params = []
     if date:
         params.append(f"date={date}")
     if status:
         params.append(f"status={status}")
+    if sort:
+        params.append(f"sort={sort}")
     path = "/api/trades/leads"
     if params:
         path += "?" + "&".join(params)
