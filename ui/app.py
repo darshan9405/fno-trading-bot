@@ -271,69 +271,69 @@ def _css() -> str:
     }}
 
     /* Improve spacing in history page */
-    .history-section {
+    .history-section {{
         padding: 0 12px;
-    }
+    }}
 
     /* History page specific mobile improvements */
-    @media (max-width: 768px) {
+    @media (max-width: 768px) {{
         /* Stat tiles: 2-column grid on mobile for better readability */
-        .history-section .row {
+        .history-section .row {{
             flex-wrap: wrap;
             gap: 10px;
             justify-content: center;
             padding: 4px 0;
-        }
-        .history-section .stat-tile {
+        }}
+        .history-section .stat-tile {{
             flex: 1 1 140px;
             min-width: 130px;
             max-width: 200px;
             padding: 10px 12px;
-        }
-        .history-section .stat-value {
+        }}
+        .history-section .stat-value {{
             font-size: 1.1rem;
-        }
-        .history-section .stat-label {
+        }}
+        .history-section .stat-label {{
             font-size: 0.62rem;
             text-transform: uppercase;
             letter-spacing: 0.04em;
-        }
+        }}
 
         /* Period filter: make it prominent and touch-friendly */
-        .history-period-row {
+        .history-period-row {{
             display: flex;
             gap: 8px;
             align-items: stretch;
             margin-bottom: 12px;
             flex-wrap: wrap;
-        }
-        .history-period-row [data-testid="stSelectbox"] {
+        }}
+        .history-period-row [data-testid="stSelectbox"] {{
             flex: 1;
             min-width: 140px;
-        }
-        .history-period-row label {
+        }}
+        .history-period-row label {{
             font-weight: 600;
             font-size: 0.85rem;
             color: #e2e8f0;
             margin-bottom: 4px;
-        }
+        }}
 
         /* Chart container padding */
         .history-section .stLineChart,
-        .history-section .stPlotlyChart {
+        .history-section .stPlotlyChart {{
             margin: 12px 0;
             padding: 4px;
-        }
+        }}
 
         /* Divider between sections */
-        .history-divider {
+        .history-divider {{
             border: 0;
             border-top: 1px solid #243049;
             margin: 16px 0;
-        }
+        }}
 
         /* Section header for mobile */
-        .history-mobile-header {
+        .history-mobile-header {{
             font-size: 0.9rem;
             font-weight: 700;
             color: #e2e8f0;
@@ -342,45 +342,45 @@ def _css() -> str:
             margin: 12px 0 6px 0;
             padding-bottom: 4px;
             border-bottom: 2px solid #6366f1;
-        }
+        }}
 
         /* Dataframe row height for touch */
-        div[data-testid="stDataFrame"] {
+        div[data-testid="stDataFrame"] {{
             overflow-x: auto;
             -webkit-overflow-scrolling: touch;
             margin: 8px 0;
             border-radius: 8px;
             border: 1px solid #243049;
-        }
-        div[data-testid="stDataFrame"] table {
+        }}
+        div[data-testid="stDataFrame"] table {{
             min-width: 100%;
             font-size: 0.8rem;
-        }
+        }}
         div[data-testid="stDataFrame"] th,
-        div[data-testid="stDataFrame"] td {
+        div[data-testid="stDataFrame"] td {{
             padding: 10px 6px !important;
             white-space: nowrap;
             min-height: 36px;
-        }
-        div[data-testid="stDataFrame"] thead th {
+        }}
+        div[data-testid="stDataFrame"] thead th {{
             position: sticky;
             top: 0;
             background: #131c2e;
             font-size: 0.75rem;
             text-transform: uppercase;
             letter-spacing: 0.04em;
-        }
-    }
+        }}
+    }}
 
     /* Always-visible section labels for better navigation */
-    .history-section-label {
+    .history-section-label {{
         display: none;
-    }
-    @media (max-width: 768px) {
-        .history-section-label {
+    }}
+    @media (max-width: 768px) {{
+        .history-section-label {{
             display: block;
-        }
-    }
+        }}
+    }}
     </style>
     """
 
