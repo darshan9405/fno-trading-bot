@@ -1268,7 +1268,7 @@ def render_history():
     _html("<div class='row' style='flex-wrap:wrap;gap:10px;'>" + "".join(tiles) + "</div>")
     
     # Divider
-    _html("<div class='history-divider'></div>", unsafe_allow_html=True)
+    _html("<div class='history-divider'></div>")
 
     # Equity curve from running P&L
     if len(cum) >= 2:
@@ -1279,7 +1279,7 @@ def render_history():
         st.caption("Equity curve (running net P&L across the selected period).")
         
         # Divider
-        _html("<div class='history-divider'></div>", unsafe_allow_html=True)
+    _html("<div class='history-divider'></div>")
 
     # Mobile section header for table
     st.markdown("<div class='history-mobile-header'>📋 Trade History</div>", unsafe_allow_html=True)
