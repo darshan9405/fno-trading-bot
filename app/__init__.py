@@ -1,4 +1,6 @@
 import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from flask import Flask, jsonify
 from flask_cors import CORS
@@ -15,6 +17,16 @@ import app.models  # noqa: F401  (register ORM tables)
 import app.strategy  # noqa: F401  (register built-in strategies)
 
 
+class _ISTFormatter(logging.Formatter):
+    """Logging formatter that prints timestamps in IST."""
+
+    def formatTime(self, record, datefmt=None):  # type: ignore[override]
+        ts = datetime.fromtimestamp(record.created, tz=ZoneInfo("Asia/Kolkata"))
+        if datefmt:
+            return ts.strftime(datefmt)
+        return ts.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
 def create_app(config: Config | None = None) -> Flask:
     config = config or Config()
     app = Flask(__name__)
@@ -26,7 +38,10 @@ def create_app(config: Config | None = None) -> Flask:
     logging.basicConfig(
         level=getattr(logging, config.LOG_LEVEL.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
+    for handler in logging.root.handlers:
+        handler.setFormatter(_ISTFormatter("%(asctime)s %(levelname)s %(name)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
 
     engine = init_db(config.DATABASE_URL)
     Base.metadata.create_all(engine)
