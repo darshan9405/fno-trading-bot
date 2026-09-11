@@ -182,6 +182,7 @@ def refresh():
     return _set_cookies(response, config, access_jwt, new_refresh)
 
 
+@bp.get("/logout")
 @bp.post("/logout")
 @limiter.limit("10 per minute")
 def logout():
@@ -192,5 +193,8 @@ def logout():
 
         revoke_refresh(refresh)
     UpstoxTokenStore.clear()
-    response = jsonify({"status": "ok", "data": {}})
+    if request.method == "GET":
+        response = redirect(config.FRONTEND_URL)
+    else:
+        response = jsonify({"status": "ok", "data": {}})
     return _clear_cookies(response, config)

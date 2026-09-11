@@ -271,9 +271,116 @@ def _css() -> str:
     }}
 
     /* Improve spacing in history page */
-    .history-section {{
+    .history-section {
         padding: 0 12px;
-    }}
+    }
+
+    /* History page specific mobile improvements */
+    @media (max-width: 768px) {
+        /* Stat tiles: 2-column grid on mobile for better readability */
+        .history-section .row {
+            flex-wrap: wrap;
+            gap: 10px;
+            justify-content: center;
+            padding: 4px 0;
+        }
+        .history-section .stat-tile {
+            flex: 1 1 140px;
+            min-width: 130px;
+            max-width: 200px;
+            padding: 10px 12px;
+        }
+        .history-section .stat-value {
+            font-size: 1.1rem;
+        }
+        .history-section .stat-label {
+            font-size: 0.62rem;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        /* Period filter: make it prominent and touch-friendly */
+        .history-period-row {
+            display: flex;
+            gap: 8px;
+            align-items: stretch;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+        .history-period-row [data-testid="stSelectbox"] {
+            flex: 1;
+            min-width: 140px;
+        }
+        .history-period-row label {
+            font-weight: 600;
+            font-size: 0.85rem;
+            color: #e2e8f0;
+            margin-bottom: 4px;
+        }
+
+        /* Chart container padding */
+        .history-section .stLineChart,
+        .history-section .stPlotlyChart {
+            margin: 12px 0;
+            padding: 4px;
+        }
+
+        /* Divider between sections */
+        .history-divider {
+            border: 0;
+            border-top: 1px solid #243049;
+            margin: 16px 0;
+        }
+
+        /* Section header for mobile */
+        .history-mobile-header {
+            font-size: 0.9rem;
+            font-weight: 700;
+            color: #e2e8f0;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            margin: 12px 0 6px 0;
+            padding-bottom: 4px;
+            border-bottom: 2px solid #6366f1;
+        }
+
+        /* Dataframe row height for touch */
+        div[data-testid="stDataFrame"] {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            margin: 8px 0;
+            border-radius: 8px;
+            border: 1px solid #243049;
+        }
+        div[data-testid="stDataFrame"] table {
+            min-width: 100%;
+            font-size: 0.8rem;
+        }
+        div[data-testid="stDataFrame"] th,
+        div[data-testid="stDataFrame"] td {
+            padding: 10px 6px !important;
+            white-space: nowrap;
+            min-height: 36px;
+        }
+        div[data-testid="stDataFrame"] thead th {
+            position: sticky;
+            top: 0;
+            background: #131c2e;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+    }
+
+    /* Always-visible section labels for better navigation */
+    .history-section-label {
+        display: none;
+    }
+    @media (max-width: 768px) {
+        .history-section-label {
+            display: block;
+        }
+    }
     </style>
     """
 
@@ -1086,7 +1193,13 @@ def render_history():
 
     # Period filter (derived client-side from exit_time; keeps the same /closed endpoint)
     periods = ["All", "Today", "Last 7 days", "Last 30 days"]
-    period = st.selectbox("Period", periods, label_visibility="collapsed", key="hist_period")
+    
+    # Create mobile-friendly period selector with visible label
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        st.markdown("<div class='history-section-label'>📅 Period</div>", unsafe_allow_html=True)
+    with col2:
+        period = st.selectbox("Period", periods, label_visibility="collapsed", key="hist_period")
     now = datetime.now(ZoneInfo("Asia/Kolkata"))
 
     def _in_period(r):
@@ -1137,6 +1250,9 @@ def render_history():
     # Wrap content in history-section div for mobile styling
     st.markdown("<div class='history-section'>", unsafe_allow_html=True)
     
+    # Mobile section header for stats
+    st.markdown("<div class='history-mobile-header'>📊 Performance Summary</div>", unsafe_allow_html=True)
+    
     tiles = [
         _stat_tile("Trades", str(len(pnls))),
         _stat_tile("Win rate", f"{win_rate:.0f}%",
@@ -1149,15 +1265,25 @@ def render_history():
         _stat_tile("Avg loss", _money(avg_loss) if avg_loss is not None else "—", color=LOSS),
         _stat_tile("Max drawdown", _money(dd), color=LOSS),
     ]
-    _html("<div class='row' style='flex-wrap:wrap;gap:8px;'>" + "".join(tiles) + "</div>")
+    _html("<div class='row' style='flex-wrap:wrap;gap:10px;'>" + "".join(tiles) + "</div>")
+    
+    # Divider
+    _html("<div class='history-divider'></div>", unsafe_allow_html=True)
 
     # Equity curve from running P&L
     if len(cum) >= 2:
+        st.markdown("<div class='history-mobile-header'>📈 Equity Curve</div>", unsafe_allow_html=True)
         eq = pd.DataFrame({"Equity": cum})
         eq.index = pd.RangeIndex(1, len(eq) + 1, name="trade #")
-        st.line_chart(eq, height=140, use_container_width=True)
+        st.line_chart(eq, height=160, use_container_width=True)
         st.caption("Equity curve (running net P&L across the selected period).")
+        
+        # Divider
+        _html("<div class='history-divider'></div>", unsafe_allow_html=True)
 
+    # Mobile section header for table
+    st.markdown("<div class='history-mobile-header'>📋 Trade History</div>", unsafe_allow_html=True)
+    
     df = _trades_df(
         filtered,
         ["symbol", "direction", "entry_price", "exit_price", "realized_pnl", "exit_reason"],

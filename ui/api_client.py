@@ -67,7 +67,6 @@ def logout() -> None:
         """,
         unsafe_allow_html=True,
     )
-    st.stop()
 
 
 def bootstrap_from_query() -> None:
