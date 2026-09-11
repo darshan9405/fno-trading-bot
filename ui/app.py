@@ -712,12 +712,7 @@ def render_leads():
     _html(f"<div class='row' style='margin-bottom:12px;align-items:center;'>")
     _html(f"<span class='muted'>Showing <b>{stats['total']}</b> lead(s)</span>")
 
-    # Status badges
-    for status, count in stats["by_status"].items():
-        color = "ok" if status in ("placed", "filled") else ("warn" if status == "queued" else "muted")
-        _html(f"{_badge(f'{status.title()}: {count}', color)}")
-
-    # Direction badges
+    # Direction badges (keep only direction counts)
     for direction, count in stats["by_direction"].items():
         color = "up" if direction == "CALL" else "down"
         _html(f"{_badge(f'{direction}: {count}', color)}")
