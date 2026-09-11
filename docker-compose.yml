@@ -14,6 +14,7 @@ services:
       - DATABASE_URL=sqlite:////data/fno.db
       - BACKEND_URL=http://backend:8000
       - AUTO_SEED_INSTRUMENTS=1
+      - TZ=Asia/Kolkata
     volumes:
       - fno-data:/data
     restart: unless-stopped
