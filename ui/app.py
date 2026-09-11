@@ -88,11 +88,6 @@ def _css() -> str:
     .gauge-num {{ position:relative; text-align:center; font-weight:700; font-size:0.85rem;
                   padding-top:4px; color:#e2e8f0; }}
     footer, [data-testid="stHeader"] {{ background: transparent; }}
-    .topbar {{ display:flex; align-items:center; gap:10px; padding:6px 0;
-               background:{CARD}; border:1px solid {BORDER}; border-radius:10px;
-               padding:8px 14px; margin: 4px 0 10px 0; flex-wrap:wrap; }}
-    .topbar-item {{ color:{MUTED}; font-size:0.85rem; }}
-    .topbar-item b {{ color:#e2e8f0; }}
     .stat-tile {{ background:{CARD}; border:1px solid {BORDER}; border-radius:10px;
                   padding:10px 12px; }}
     .stat-label {{ color:{MUTED}; font-size:0.72rem; text-transform:uppercase;
@@ -331,45 +326,6 @@ def render_sidebar() -> str:
             st.rerun()
 
     return page
-
-
-# --- top header (status bar) ---------------------------------------------
-
-
-def render_topbar():
-    """A unified status strip at the top: market state, token, killswitch, IST clock."""
-    health = api.get_health()
-    ks = api.get_killswitch()
-    ist_now = _ist_now_str()
-
-    ks_active = ks.get("data", {}).get("active", False) if ks.get("status") == "ok" else None
-
-    parts = []
-    if health.get("status") == "ok":
-        m = health["data"]["market"]
-        parts.append(_badge("MARKET OPEN" if m["open"] else "MARKET CLOSED",
-                            "ok" if m["open"] else "muted"))
-        b = health["data"].get("broker", {})
-        if b.get("token_expired"):
-            parts.append(_badge("TOKEN EXPIRED", "err"))
-        elif b.get("token_near_expiry"):
-            parts.append(_badge(f"TOKEN ~{_utc_to_ist_hm(b.get('token_valid_until'))}", "warn"))
-        elif b.get("token_valid_until"):
-            parts.append(_badge(f"TOKEN OK · {_utc_to_ist_hm(b.get('token_valid_until'))}", "ok"))
-    else:
-        parts.append(_badge("API DOWN", "err"))
-
-    if ks_active is True:
-        parts.append(_badge("KILLSWITCH ACTIVE", "err"))
-    elif ks_active is False:
-        parts.append(_badge("KILLSWITCH ARMED", "ok"))
-
-    parts.append(f"<span class='topbar-item'>🕒 <b>{ist_now}</b> IST</span>")
-    parts.append(
-        f"<span class='topbar-item'>↻ auto-refresh <b>{REFRESH_SECS}s</b></span>"
-    )
-
-    _html("<div class='topbar'>" + " · ".join(parts) + "</div>")
 
 
 # --- killswitch ----------------------------------------------------------
@@ -1163,13 +1119,17 @@ def main():
 
     # Page title with status dot
     ks_active = api.get_killswitch().get("data", {}).get("active", False)
-    dot = f"<span class='dot' style='background:{LOSS if ks_active else PROFIT};'></span>"
+    market_open = False
+    health = api.get_health()
+    if health.get("status") == "ok":
+        market_open = health["data"]["market"].get("open", False)
+    dot_color = LOSS if ks_active else (PROFIT if market_open else MUTED)
+    dot = f"<span class='dot' style='background:{dot_color};'></span>"
     _html(
         f"<div style='display:flex;align-items:center;gap:10px;margin:6px 0 4px 0;'>"
         f"{dot}<span style='font-size:1.5rem;font-weight:700;'>TradePilot</span></div>"
     )
 
-    render_topbar()
     render_killswitch()
     render_token_status()
 
