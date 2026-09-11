@@ -50,7 +50,102 @@ def _css() -> str:
     [data-testid="stMetricLabel"] {{ color: {MUTED}; }}
     [data-testid="stMetricValue"] {{ font-size: 1.3rem; color: #e2e8f0; }}
     [data-testid="stMetric"]:hover {{ border-color: {PRIMARY}66; }}
-    [data-testid="stSidebar"] {{ background: {CARD}; }}
+    [data-testid="stSidebar"] {{
+        background: linear-gradient(180deg, #101a2e 0%, #0d1626 100%);
+        border-right: 1px solid #202b42;
+        padding: 16px 14px;
+    }}
+    [data-testid="stSidebar"] h3 {{
+        color: #e2e8f0; font-size: 0.82rem; text-transform: uppercase;
+        letter-spacing: .09em; margin: 16px 4px 8px 4px;
+    }}
+    [data-testid="stSidebar"] .stSidebarHeader {{
+        background: transparent; padding: 0;
+    }}
+    .sidebar-brand {{
+        margin: 0 4px 2px;
+        color: #f1f5f9;
+        font-size: 1.15rem;
+        font-weight: 700;
+        letter-spacing: .01em;
+    }}
+    .sidebar-subtitle {{
+        margin: 0 4px 14px 4px;
+        color: {MUTED};
+        font-size: .76rem;
+    }}
+    .sidebar-divider {{
+        border: 0;
+        border-top: 1px solid #202b42;
+        margin: 14px 4px;
+    }}
+    .sidebar-nav {{
+        display: grid;
+        gap: 4px;
+    }}
+    [data-testid="stRadio"] label {{
+        display: flex;
+        align-items: center;
+        min-height: 38px;
+        padding: 8px 10px;
+        border: 1px solid transparent;
+        border-radius: 9px;
+        font-size: .86rem;
+        font-weight: 500;
+        color: #b6c1d3;
+        transition: background .15s ease, border-color .15s ease, color .15s ease;
+    }}
+    [data-testid="stRadio"] label:hover {{
+        background: #18243a;
+        color: #e2e8f0;
+    }}
+    [data-testid="stRadio"] label:has(input:checked) {{
+        background: rgba(99, 102, 241, .16);
+        border-color: rgba(99, 102, 241, .55);
+        color: #c7d2fe;
+        box-shadow: inset 3px 0 0 {PRIMARY};
+    }}
+    .sidebar-card {{
+        background: #111b2e;
+        border: 1px solid #202b42;
+        border-radius: 10px;
+        padding: 10px 11px;
+        margin: 6px 0;
+    }}
+    .sidebar-card-title {{
+        color: {MUTED};
+        font-size: .72rem;
+        font-weight: 700;
+        letter-spacing: .07em;
+        text-transform: uppercase;
+        margin-bottom: 7px;
+    }}
+    .status-row {{
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        min-height: 20px;
+        font-size: .78rem;
+        color: #cbd5e1;
+    }}
+    .status-label {{
+        flex: 1;
+        color: #94a3b8;
+    }}
+    .status-value {{
+        font-weight: 600;
+        white-space: nowrap;
+    }}
+    .status-dot {{
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        flex-shrink: 0;
+        background: {MUTED};
+    }}
+    .status-dot.ok {{ background: {PROFIT}; box-shadow: 0 0 7px rgba(52, 211, 153, .55); }}
+    .status-dot.warn {{ background: {WARN}; box-shadow: 0 0 7px rgba(251, 191, 36, .55); }}
+    .status-dot.err {{ background: {LOSS}; box-shadow: 0 0 7px rgba(251, 113, 133, .55); }}
     .ks-banner {{ border-radius: 10px; padding: 10px 14px; margin: 6px 0;
                   border: 1px solid; font-weight: 600; }}
     .badge {{ display:inline-block; border-radius: 999px; padding: 2px 10px;
@@ -280,44 +375,115 @@ def render_login():
 
 def render_sidebar() -> str:
     with st.sidebar:
+        # Brand
+        st.markdown("<div class='sidebar-brand'>TradePilot</div>", unsafe_allow_html=True)
+        st.markdown("<div class='sidebar-subtitle'>F&O control center</div>", unsafe_allow_html=True)
+        st.markdown("<hr class='sidebar-divider'>", unsafe_allow_html=True)
+
+        # Navigation
         st.markdown("### Navigation")
         page = st.radio(
             "Page",
-            ["Dashboard", "Open Trades", "Leads", "Instruments", "History", "Health", "Settings"],
-            label_visibility="collapsed",
+            [
+                "Dashboard",
+                "Open Trades",
+                "Leads",
+                "Instruments",
+                "History",
+                "Health",
+                "Settings",
+            ],
+            label_visibility="visible",
+            help="Navigate between dashboard sections.",
+            key="sidebar_page",
         )
 
-        st.markdown("---")
-        st.markdown("### Market")
-        with st.spinner(""):
-            health = api.get_health()
+        st.markdown("<hr class='sidebar-divider'>", unsafe_allow_html=True)
+
+        # Live status card
+        st.markdown("### Status")
+        health = api.get_health()
+        ks = api.get_killswitch()
+        b = health.get("data", {}).get("broker", {}) if health.get("status") == "ok" else {}
+
+        m_open = False
+        m_time = "—"
         if health.get("status") == "ok":
             m = health["data"]["market"]
-            _html(f"**{_badge('OPEN' if m['open'] else 'CLOSED', 'ok' if m['open'] else 'muted')}**")
-            st.caption(f"Session {m['session']['start']}–{m['session']['end']} · {m['time_ist']} IST")
-        else:
-            _html(f"**{_badge('—', 'muted')}**")
-            st.caption("Backend unreachable")
-
-        ks = api.get_killswitch()
+            m_open = bool(m.get("open"))
+            m_time = f"{m['time_ist']} IST"
         active = ks.get("data", {}).get("active") if ks.get("status") == "ok" else None
-        _html(f"**Killswitch:** {_badge('ACTIVE' if active else 'ARMED', 'err' if active else 'ok')}")
+        token_expired = b.get("token_expired", False)
+        token_valid = b.get("token_valid_until")
 
-        b = health.get("data", {}).get("broker", {}) if health.get("status") == "ok" else {}
-        if b.get("token_expired"):
-            _html(f"**Token:** {_badge('EXPIRED', 'err')}")
-            st.markdown(
-                f"<a href='{api.login_url()}' style='display:block;text-align:center;"
-                f"background:{PRIMARY};color:#fff;padding:8px;border-radius:8px;"
-                f"text-decoration:none;font-weight:600;font-size:0.85rem;'>Re-login to Upstox</a>",
-                unsafe_allow_html=True,
-            )
-        elif b.get("token_valid_until"):
-            _html(f"**Token:** {_badge(f'OK · {_utc_to_ist_hm(b.get('token_valid_until'))} IST', 'ok')}")
+        _html(
+            f"""
+            <div class='sidebar-card'>
+              <div class='sidebar-card-title'>Market</div>
+              <div class='status-row'>
+                <span class='status-label'>Session</span>
+                <span class='status-value'>{'Open' if m_open else 'Closed'}</span>
+                <span class='status-dot {'ok' if m_open else 'muted'}'></span>
+              </div>
+              <div class='status-row' style='margin-top:4px;'>
+                <span class='status-label'>Server time</span>
+                <span class='status-value'>{m_time}</span>
+              </div>
+            </div>
+            """
+        )
 
-        render_killswitch_setup()
+        _html(
+            f"""
+            <div class='sidebar-card'>
+              <div class='sidebar-card-title'>Risk</div>
+              <div class='status-row'>
+                <span class='status-label'>Killswitch</span>
+                <span class='status-value'>{'Active' if active else 'Armed'}</span>
+                <span class='status-dot {'err' if active else 'ok'}'></span>
+              </div>
+            </div>
+            """
+        )
 
-        st.markdown("---")
+        if token_expired:
+            token_dot = "err"
+            token_txt = "Expired"
+        elif token_valid:
+            token_dot = "ok"
+            token_txt = f"OK · {_utc_to_ist_hm(token_valid)} IST"
+        else:
+            token_dot = "muted"
+            token_txt = "—"
+
+        _html(
+            f"""
+            <div class='sidebar-card'>
+              <div class='sidebar-card-title'>Broker token</div>
+              <div class='status-row'>
+                <span class='status-label'>Status</span>
+                <span class='status-value'>{token_txt}</span>
+                <span class='status-dot {token_dot}'></span>
+              </div>
+            </div>
+            """
+        )
+
+        # Killswitch setup expander
+        with st.expander("Killswitch", expanded=False):
+            st.caption("Square off all managed trades and halt the system for the day.")
+            reason = st.text_input("Reason", placeholder="e.g. market crash", label_visibility="visible")
+            if st.button("ACTIVATE", type="primary", use_container_width=True):
+                resp = api.activate_killswitch(reason or "user requested")
+                if resp.get("status") == "ok":
+                    st.success(f"Squared off {len(resp['data'].get('squared_off', []))} trade(s).")
+                    st.rerun()
+                else:
+                    st.error(resp.get("error", {}).get("message", "Activation failed."))
+
+        st.markdown("<hr class='sidebar-divider'>", unsafe_allow_html=True)
+
+        # Controls
         st.markdown("### Controls")
         if st.button("Refresh now", use_container_width=True, help="Force-refresh the current view."):
             st.rerun()
