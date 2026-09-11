@@ -698,7 +698,34 @@ def render_leads():
         st.info("No leads match the current filters.")
         return
 
-    _html(f"<div class='muted'>Showing <b>{len(rows)}</b> lead(s)</div>")
+    # Summary stats
+    stats = {
+        "total": len(rows),
+        "by_status": {},
+        "by_direction": {"CALL": 0, "PUT": 0},
+        "high_conf": sum(1 for r in rows if (r.get("confidence") or 0) >= 0.8),
+    }
+    for r in rows:
+        stats["by_status"][r.get("status", "unknown")] = stats["by_status"].get(r.get("status", "unknown"), 0) + 1
+        stats["by_direction"][r.get("direction", "")] = stats["by_direction"].get(r.get("direction", ""), 0) + 1
+
+    _html(f"<div class='row' style='margin-bottom:12px;align-items:center;'>")
+    _html(f"<span class='muted'>Showing <b>{stats['total']}</b> lead(s)</span>")
+
+    # Status badges
+    for status, count in stats["by_status"].items():
+        color = "ok" if status in ("placed", "filled") else ("warn" if status == "queued" else "muted")
+        _html(f"{_badge(f'{status.title()}: {count}', color)}")
+
+    # Direction badges
+    for direction, count in stats["by_direction"].items():
+        color = "up" if direction == "CALL" else "down"
+        _html(f"{_badge(f'{direction}: {count}', color)}")
+
+    if stats["high_conf"]:
+        _html(f"{_badge(f'{stats['high_conf']} high-confidence (≥80%)', 'ok')}")
+
+    _html(f"</div>")
 
     for r in rows:
         c1, c2, c3 = st.columns([4, 1, 2])
@@ -707,22 +734,64 @@ def render_leads():
                 r.get("created_at_ist_label")
                 or _utc_to_ist_hm(r.get("created_at"))
             )
+            direction_class = "up" if r["direction"] == "CALL" else "down"
+            status_class = "ok" if r["status"] in ("placed", "filled") else ("warn" if r["status"] == "queued" else "muted")
+            
             _html(
+                f"<div style='display:flex;justify-content:space-between;margin-bottom:6px;'>"
                 f"<div style='font-weight:600'>{r.get('symbol') or r['underlying'].split('|')[-1]} "
-                f"{_badge(r['direction'], 'up' if r['direction'] == 'CALL' else 'down')} "
-                f"{_badge(r['status'], 'ok' if r['status'] in ('placed','filled') else 'muted')}</div>"
-                f"<div class='muted'>{r['signal_type']} @ {_num(r['signal_level'])}"
-                + (f" · generated <b>{created_ist} IST</b>" if created_ist else "")
-                + "</div>"
-                + _lead_plan_line(r)
+                f"{_badge(r['direction'], direction_class)} "
+                f"{_badge(r['status'], status_class)}</div>"
+                f"<div class='muted'>{created_ist} IST</div></div>"
             )
+
+            _html(
+                f"<div style='margin:6px 0;'>"
+                f"<span class='badge' style='color:{SECONDARY};background:{SECONDARY}33;'>"
+                f"{r['signal_type']}</span> "
+                f"<span class='badge' style='color:{PRIMARY};background:{PRIMARY}33;'>"
+                f"@ {_num(r['signal_level'])}</span></div>"
+            )
+
+            # Plan details
+            plan_parts = []
+            if r.get("expiry"):
+                plan_parts.append(f"Exp {r['expiry']}")
+            if r.get("strike_price"):
+                plan_parts.append(f"Strike {_num(r['strike_price'])}")
+            if r.get("option_type"):
+                plan_parts.append(f"Opt {r['option_type']}")
+            if r.get("quantity"):
+                plan_parts.append(f"Qty {r['quantity']}")
+            if r.get("lot_size"):
+                plan_parts.append(f"Lot {r['lot_size']}")
+            if r.get("margin_needed"):
+                plan_parts.append(f"Margin ₹{float(r['margin_needed']):,.0f}")
+            if r.get("premium"):
+                plan_parts.append(f"Prem {_num(r['premium'])}")
+            if r.get("spot"):
+                plan_parts.append(f"Spot {_num(r['spot'])}")
+            if plan_parts:
+                _html(f"<div class='muted' style='margin-top:8px;font-size:0.78rem;'>"
+                      f"{' · '.join(plan_parts)}</div>")
+
         with c2:
             pct = int((r.get("confidence") or 0) * 100)
+            bar_color = PROFIT if pct >= 80 else (WARN if pct >= 60 else MUTED)
+            badge_color = "ok" if pct >= 80 else ("warn" if pct >= 60 else "muted")
+            
             _html(
-                f"<div style='margin-top:8px'>{pct}%</div>"
-                f"<div class='conf-bar'><div class='conf-fill' style='width:{pct}%;"
-                f"background:{PROFIT if pct >= 60 else WARN}'></div></div>"
+                f"<div style='text-align:center;margin-top:8px;'>"
+                f"<div class='badge {badge_color}' style='margin-bottom:6px;'>"
+                f"{pct}% Confidence</div>"
+                f"<div class='conf-bar' style='margin:6px 0;'>"
+                f"<div class='conf-fill' style='width:{pct}%;background:{bar_color};'></div>"
+                f"</div>"
+                f"<div class='muted' style='font-size:0.72rem;'>"
+                f"{'High' if pct >= 80 else ('Medium' if pct >= 60 else 'Low')}</div>"
+                f"</div>"
             )
+
         with c3:
             if r.get("note"):
                 st.caption(r["note"])
