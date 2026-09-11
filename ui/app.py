@@ -1005,24 +1005,6 @@ def render_health():
             for er in recent[:10]:
                 st.caption(f"`{_utc_to_ist_hm(er['ts'])} IST` · **{er['source']}**: {er['message']}")
 
-    st.markdown("##### Recent leads (last 10)")
-    leads = d.get("recent_leads", []) or []
-    if not leads:
-        st.caption("No leads generated yet. Run the lead generator from the **Leads** tab or wait for the scheduler.")
-    else:
-        rows = [
-            {
-                "Time (IST)": row.get("created_at_ist_label") or _utc_to_ist_hm(row.get("created_at")),
-                "Symbol": row.get("symbol") or "—",
-                "Dir": row.get("direction") or "?",
-                "Pattern": row.get("signal_type") or "—",
-                "Confidence": f"{int((row.get('confidence') or 0) * 100)}%",
-                "Status": row.get("status") or "—",
-            }
-            for row in leads
-        ]
-        st.dataframe(rows, use_container_width=True, hide_index=True, height=min(40 + 35 * len(rows), 420))
-
     st.markdown("##### Market")
     st.markdown(
         f"{_badge('OPEN' if m['open'] else 'CLOSED', 'ok' if m['open'] else 'muted')} "

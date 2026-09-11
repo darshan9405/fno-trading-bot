@@ -15,7 +15,6 @@ from app.config import Config
 from app.db import session_scope
 from app.extensions import limiter
 from app.models import Lead, Trade
-from app.services import recon_service
 from app.services.health_service import utcnow
 
 bp = Blueprint("trade", __name__, url_prefix="/api/trades")
@@ -168,13 +167,3 @@ def _lead_dict(l: Lead) -> dict:
     }
 
 
-@bp.post("/recon")
-@jwt_required
-def recon():
-    """Manually trigger position reconciliation (sync DB trades to broker positions)."""
-    broker = get_broker(Config())
-    try:
-        result = recon_service.reconcile_open_trades(broker)
-    except BrokerError as e:
-        return broker_error(e)
-    return ok({"reconciled": result["reconciled"], "failed": result["failed"]})

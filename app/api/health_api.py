@@ -1,20 +1,17 @@
 """System health API (Stage 7): scheduler heartbeats, errors, broker, market, auth."""
 
 import logging
-from datetime import timedelta, timezone
+from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from flask import Blueprint
-from sqlalchemy import select
 
 from app.api.common import ok
 from app.auth import UpstoxTokenStore, jwt_required
 from app.broker import get_broker
 from app.broker.base import BrokerError
 from app.config import Config
-from app.db import session_scope
 from app.extensions import limiter
-from app.models import Lead
 from app.services import health_service, market_calendar
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -49,43 +46,6 @@ def health():
         {"ts": e.ts, "source": e.source, "message": e.message[:500]}
         for e in recent
     ]
-
-    # Most recently generated leads (timestamp in IST for the UI).
-    # Extract every attribute we need INSIDE the session to avoid
-    # DetachedInstanceError on the lazy-loaded `instrument` relationship.
-    with session_scope() as session:
-        lead_rows = session.execute(
-            select(Lead).order_by(Lead.created_at.desc()).limit(10)
-        ).scalars().all()
-        lead_snapshots = [
-            (
-                lead.id,
-                lead.instrument.symbol if lead.instrument else "—",
-                lead.direction,
-                lead.underlying_key,
-                lead.status,
-                lead.signal_type,
-                lead.confidence,
-                lead.created_at,
-            )
-            for lead in lead_rows
-        ]
-    recent_leads = []
-    for (lid, sym, direction, underlying, status, signal_type,
-         confidence, created_at) in lead_snapshots:
-        ist = created_at.replace(tzinfo=timezone.utc).astimezone(IST)
-        recent_leads.append({
-            "id": lid,
-            "symbol": sym,
-            "direction": direction,
-            "underlying": underlying,
-            "status": status,
-            "signal_type": signal_type,
-            "confidence": confidence,
-            "created_at": created_at,
-            "created_at_ist": ist.isoformat(),
-            "created_at_ist_label": ist.strftime("%d %b %H:%M"),
-        })
 
     # Broker connectivity.
     configured = bool(UpstoxTokenStore.get())
@@ -129,7 +89,6 @@ def health():
             "ts": now,
             "heartbeats": heartbeats,
             "errors": {"count": len(recent), "recent": errors},
-            "recent_leads": recent_leads,
             "broker": broker_status,
             "market": market,
         }
