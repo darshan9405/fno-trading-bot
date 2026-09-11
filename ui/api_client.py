@@ -55,18 +55,18 @@ def login_url() -> str:
 def logout() -> None:
     """Log out by redirecting to the backend logout endpoint.
 
-    Uses a relative URL so it works through any reverse proxy (nginx,
-    Cloudflare, etc.) — the browser hits `<current-origin>/api/auth/logout`,
-    which is proxied to the backend, clears the HttpOnly cookies via
-    the response headers, and the backend redirects back to the frontend.
+    Uses `<meta http-equiv="refresh">` so the navigation fires from the
+    HTML head and is robust against framework-side stripping of inline
+    `<script>` tags. A relative URL is used so it works through any
+    reverse proxy (nginx, Cloudflare, etc.) — the browser hits
+    `<current-origin>/api/auth/logout`, which is proxied to the backend,
+    clears the HttpOnly cookies via the response headers, and the
+    backend redirects back to the frontend.
     """
     clear_tokens()
     st.markdown(
-        """
-        <script>
-        window.location.href = "/api/auth/logout";
-        </script>
-        """,
+        """<meta http-equiv="refresh" content="0;url=/api/auth/logout">
+<script>window.location.replace("/api/auth/logout");</script>""",
         unsafe_allow_html=True,
     )
 
