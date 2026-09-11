@@ -110,6 +110,8 @@ def pnl():
 @jwt_required
 def leads():
     date_filter = request.args.get("date")
+    # Build the response INSIDE the session to avoid DetachedInstanceError
+    # on `lead.instrument` lazy-load after the session is gone.
     with session_scope() as session:
         q = select(Lead).order_by(Lead.created_at.desc()).limit(200)
         if date_filter:

@@ -51,23 +51,38 @@ def health():
     ]
 
     # Most recently generated leads (timestamp in IST for the UI).
+    # Extract every attribute we need INSIDE the session to avoid
+    # DetachedInstanceError on the lazy-loaded `instrument` relationship.
     with session_scope() as session:
         lead_rows = session.execute(
             select(Lead).order_by(Lead.created_at.desc()).limit(10)
         ).scalars().all()
+        lead_snapshots = [
+            (
+                lead.id,
+                lead.instrument.symbol if lead.instrument else "—",
+                lead.direction,
+                lead.underlying_key,
+                lead.status,
+                lead.signal_type,
+                lead.confidence,
+                lead.created_at,
+            )
+            for lead in lead_rows
+        ]
     recent_leads = []
-    for lead in lead_rows:
-        # `lead.created_at` is naive UTC (datetime.now(timezone.utc).replace(tzinfo=None)).
-        ist = lead.created_at.replace(tzinfo=timezone.utc).astimezone(IST)
+    for (lid, sym, direction, underlying, status, signal_type,
+         confidence, created_at) in lead_snapshots:
+        ist = created_at.replace(tzinfo=timezone.utc).astimezone(IST)
         recent_leads.append({
-            "id": lead.id,
-            "symbol": lead.instrument.symbol if lead.instrument else "—",
-            "direction": lead.direction,
-            "underlying": lead.underlying_key,
-            "status": lead.status,
-            "signal_type": lead.signal_type,
-            "confidence": lead.confidence,
-            "created_at": lead.created_at,
+            "id": lid,
+            "symbol": sym,
+            "direction": direction,
+            "underlying": underlying,
+            "status": status,
+            "signal_type": signal_type,
+            "confidence": confidence,
+            "created_at": created_at,
             "created_at_ist": ist.isoformat(),
             "created_at_ist_label": ist.strftime("%d %b %H:%M"),
         })
