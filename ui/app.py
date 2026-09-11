@@ -698,28 +698,12 @@ def render_leads():
         st.info("No leads match the current filters.")
         return
 
-    # Summary stats
-    stats = {
-        "total": len(rows),
-        "by_status": {},
-        "by_direction": {"CALL": 0, "PUT": 0},
-        "high_conf": sum(1 for r in rows if (r.get("confidence") or 0) >= 0.8),
-    }
-    for r in rows:
-        stats["by_status"][r.get("status", "unknown")] = stats["by_status"].get(r.get("status", "unknown"), 0) + 1
-        stats["by_direction"][r.get("direction", "")] = stats["by_direction"].get(r.get("direction", ""), 0) + 1
+    # Put actionable queued leads first
+    status_priority = {"queued": 0, "picked": 1, "placed": 2, "filled": 3, "skipped": 4, "expired": 5}
+    rows = sorted(rows, key=lambda r: (status_priority.get(r.get("status"), 99), r.get("created_at") or ""))
 
-    _html(f"<div class='row' style='margin-bottom:12px;align-items:center;'>")
-    _html(f"<span class='muted'>Showing <b>{stats['total']}</b> lead(s)</span>")
-
-    # Direction badges (keep only direction counts)
-    for direction, count in stats["by_direction"].items():
-        color = "up" if direction == "CALL" else "down"
-        _html(f"{_badge(f'{direction}: {count}', color)}")
-
-    if stats["high_conf"]:
-        _html(f"{_badge(f'{stats['high_conf']} high-confidence (≥80%)', 'ok')}")
-
+    _html("<div class='row' style='margin-bottom:12px;align-items:center;'>")
+    _html(f"<span class='muted'>Showing <b>{len(rows)}</b> {'lead' if len(rows) == 1 else 'leads'}</span>")
     _html(f"</div>")
 
     for r in rows:
