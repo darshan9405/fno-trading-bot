@@ -53,13 +53,21 @@ def login_url() -> str:
 
 
 def logout() -> None:
-    refresh = _tokens().get("refresh_token")
-    if refresh:
-        try:
-            requests.post(f"{BACKEND}/api/auth/logout", headers={"X-Refresh-Token": refresh}, timeout=TIMEOUT)
-        except requests.RequestException:
-            pass
+    """Log out by redirecting to the backend logout endpoint.
+    
+    This ensures HttpOnly cookies are cleared by the browser.
+    """
     clear_tokens()
+    # Use JS to redirect to backend logout, which clears cookies via response headers
+    st.markdown(
+        f"""
+        <script>
+        window.location.href = "{BACKEND}/api/auth/logout";
+        </script>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.stop()
 
 
 def bootstrap_from_query() -> None:
@@ -141,16 +149,30 @@ def get_pnl():
     return api("GET", "/api/trades/pnl")
 
 
-def get_open_trades():
-    return api("GET", "/api/trades/open")
+def get_open_trades(date: str | None = None):
+    path = "/api/trades/open"
+    if date:
+        path += f"?date={date}"
+    return api("GET", path)
 
 
-def get_closed_trades():
-    return api("GET", "/api/trades/closed")
+def get_closed_trades(date: str | None = None):
+    path = "/api/trades/closed"
+    if date:
+        path += f"?date={date}"
+    return api("GET", path)
 
 
-def get_leads():
-    return api("GET", "/api/trades/leads")
+def get_leads(status: str | None = None, date: str | None = None):
+    params = []
+    if date:
+        params.append(f"date={date}")
+    if status:
+        params.append(f"status={status}")
+    path = "/api/trades/leads"
+    if params:
+        path += "?" + "&".join(params)
+    return api("GET", path)
 
 
 def generate_leads():

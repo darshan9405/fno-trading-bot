@@ -61,8 +61,12 @@ def _live_ltps(broker, instrument_keys: list[str]) -> dict[str, float]:
 @jwt_required
 def open_trades():
     broker = get_broker(Config())
+    date_filter = request.args.get("date")
     with session_scope() as session:
-        trades = list(session.execute(select(Trade).where(Trade.status == "open").order_by(Trade.entry_time)).scalars())
+        q = select(Trade).where(Trade.status == "open")
+        if date_filter:
+            q = q.where(Trade.entry_time.like(f"{date_filter}%"))
+        trades = list(session.execute(q.order_by(Trade.entry_time)).scalars())
         keys = [t.option_instrument_key for t in trades]
         ltps = _live_ltps(broker, keys)
         data = [_trade_dict(t, ltps.get(t.option_instrument_key)) for t in trades]
@@ -73,9 +77,13 @@ def open_trades():
 @jwt_required
 def closed_trades():
     limit = min(int(request.args.get("limit", 100)), 500)
+    date_filter = request.args.get("date")
     with session_scope() as session:
+        q = select(Trade).where(Trade.status == "closed")
+        if date_filter:
+            q = q.where(Trade.exit_time.like(f"{date_filter}%"))
         trades = list(
-            session.execute(select(Trade).where(Trade.status == "closed").order_by(Trade.exit_time.desc()).limit(limit)).scalars()
+            session.execute(q.order_by(Trade.exit_time.desc()).limit(limit)).scalars()
         )
         data = [_trade_dict(t) for t in trades]
     return ok({"count": len(data), "trades": data})
@@ -109,12 +117,15 @@ def pnl():
 @jwt_required
 def leads():
     date_filter = request.args.get("date")
+    status_filter = request.args.get("status")
     # Build the response INSIDE the session to avoid DetachedInstanceError
     # on `lead.instrument` lazy-load after the session is gone.
     with session_scope() as session:
         q = select(Lead).order_by(Lead.created_at.desc()).limit(200)
         if date_filter:
             q = q.where(Lead.created_at.like(f"{date_filter}%"))
+        if status_filter:
+            q = q.where(Lead.status == status_filter)
         rows = list(session.execute(q).scalars())
         data = [_lead_dict(l) for l in rows]
     return ok({"count": len(data), "leads": data})

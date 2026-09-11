@@ -147,31 +147,31 @@ def _css() -> str:
     .status-dot.warn {{ background: {WARN}; box-shadow: 0 0 7px rgba(251, 191, 36, .55); }}
     .status-dot.err {{ background: {LOSS}; box-shadow: 0 0 7px rgba(251, 113, 133, .55); }}
     .ks-banner {{ border-radius: 10px; padding: 10px 14px; margin: 6px 0;
-                  border: 1px solid; font-weight: 600; }}
+                   border: 1px solid; font-weight: 600; }}
     .badge {{ display:inline-block; border-radius: 999px; padding: 2px 10px;
               font-size: 0.78rem; font-weight: 600; }}
     .chip {{ display:inline-block; border-radius: 6px; padding: 3px 10px;
-             font-size: 0.75rem; font-weight: 600; background:{BORDER}; color:{MUTED};
-             margin-right: 6px; }}
+              font-size: 0.75rem; font-weight: 600; background:{BORDER}; color:{MUTED};
+              margin-right: 6px; }}
     .chip-active {{ background:{PRIMARY}33; color:{PRIMARY}; border:1px solid {PRIMARY}66; }}
     .dot {{ width: 12px; height: 12px; border-radius: 50%; display: inline-block;
-              flex-shrink: 0; box-shadow: 0 0 6px rgba(0,0,0,0.4); }}
+               flex-shrink: 0; box-shadow: 0 0 6px rgba(0,0,0,0.4); }}
     @keyframes ks-pulse {{
         0% {{ box-shadow: 0 0 0 0 rgba(251,113,133,0.55); }}
         70% {{ box-shadow: 0 0 0 9px rgba(251,113,133,0); }}
         100% {{ box-shadow: 0 0 0 0 rgba(251,113,133,0); }}
     }}
     .ks-dot {{ width: 10px; height: 10px; border-radius: 50%; background: {LOSS};
-              display: inline-block; animation: ks-pulse 1.5s infinite; }}
+               display: inline-block; animation: ks-pulse 1.5s infinite; }}
     .row {{ display:flex; gap:8px; align-items:center; }}
     .conf-bar {{ height:6px; border-radius:4px; background:{BORDER}; overflow:hidden; }}
     .conf-fill {{ height:6px; border-radius:4px; }}
     .sec-title {{ color:{MUTED}; font-size:0.85rem; text-transform:uppercase;
-                  letter-spacing:.05em; margin: 14px 0 6px 0; }}
+                   letter-spacing:.05em; margin: 14px 0 6px 0; }}
     .big-num {{ font-size:1.6rem; font-weight:700; }}
     .muted {{ color:{MUTED}; font-size:0.85rem; }}
     .pos-card {{ background:{CARD}; border:1px solid {BORDER}; border-radius:12px;
-                 padding:14px; margin:8px 0; }}
+                  padding:14px; margin:8px 0; }}
     .pos-card:hover {{ border-color: {PRIMARY}66; }}
     .pos-card.up {{ border-left: 3px solid {PROFIT}; }}
     .pos-card.down {{ border-left: 3px solid {LOSS}; }}
@@ -181,7 +181,7 @@ def _css() -> str:
                  border-radius:32px 32px 0 0; background:{BORDER}; }}
     .gauge-fill {{ position:absolute; bottom:0; left:0; right:0; border-radius:32px 32px 0 0; }}
     .gauge-num {{ position:relative; text-align:center; font-weight:700; font-size:0.85rem;
-                  padding-top:4px; color:#e2e8f0; }}
+                   padding-top:4px; color:#e2e8f0; }}
     footer, [data-testid="stHeader"] {{ background: transparent; }}
     .stat-tile {{ background:{CARD}; border:1px solid {BORDER}; border-radius:10px;
                   padding:10px 12px; }}
@@ -213,6 +213,67 @@ def _css() -> str:
     [data-testid="stCheckbox"] label, [data-testid="stTextInput"] label,
     [data-testid="stTimeInput"] label, [data-testid="stSelectbox"] label,
     [data-testid="stMultiSelect"] label {{ font-weight: 500; }}
+
+    /* Mobile-friendly improvements for History page */
+    /* Make stat tiles stack vertically on small screens */
+    @media (max-width: 768px) {{
+        .row {{ 
+            flex-wrap: wrap; 
+            gap: 12px; 
+            justify-content: center; 
+        }}
+        .stat-tile {{
+            min-width: 140px;
+            flex: 1 1 140px;
+        }}
+        .stat-value {{
+            font-size: 1rem;
+        }}
+        .stat-label {{
+            font-size: 0.65rem;
+        }}
+    }}
+
+    /* Improve table rendering on mobile */
+    div[data-testid="stDataFrame"] {{
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        margin: 12px 0;
+    }}
+    div[data-testid="stDataFrame"] table {{
+        min-width: 100%;
+        font-size: 0.85rem;
+    }}
+    div[data-testid="stDataFrame"] th,
+    div[data-testid="stDataFrame"] td {{
+        padding: 8px 6px !important;
+        white-space: nowrap;
+    }}
+
+    /* Period selector improvements */
+    div[data-baseweb="select"] > div {{
+        min-height: 36px;
+    }}
+    div[data-baseweb="select"] [role="option"] {{
+        min-height: 32px;
+    }}
+
+    /* Touch-friendly buttons */
+    button[kind="primary"], button[kind="secondary"] {{
+        min-height: 40px;
+        padding: 8px 16px;
+    }}
+
+    /* Adjust chart container for better mobile display */
+    .stPlotlyChart, .stLineChart, .stAreaChart, .stBarChart {{
+        margin: 16px 0;
+        width: 100% !important;
+    }}
+
+    /* Improve spacing in history page */
+    .history-section {{
+        padding: 0 12px;
+    }}
     </style>
     """
 
@@ -489,7 +550,6 @@ def render_sidebar() -> str:
             st.rerun()
         if st.button("Logout", use_container_width=True, help="End the Upstox session and clear tokens."):
             api.logout()
-            st.rerun()
 
     return page
 
@@ -634,8 +694,9 @@ def render_dashboard():
     # Day-at-a-glance stats (combines open + today's closed)
     _render_day_stats()
 
-    st.markdown("#### Today's signals")
-    leads = api.get_leads()
+    st.markdown("#### Today's queued signals")
+    today = datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
+    leads = api.get_leads(status="queued", date=today)
     if leads.get("status") == "ok":
         rows = leads["data"]["leads"]
         if rows:
@@ -660,7 +721,7 @@ def render_dashboard():
             )
             st.dataframe(df, use_container_width=True, hide_index=True, height=min(40 + 35 * len(df), 420))
         else:
-            st.info("No signals yet today. Check the **Leads** tab to generate them manually.")
+            st.info("No queued signals today. Check the **Leads** tab to generate them manually.")
 
 
 def _track_pnl_history(total: float):
@@ -674,8 +735,9 @@ def _track_pnl_history(total: float):
 
 def _render_day_stats():
     """Compact stats: # trades today, wins, biggest winner/loser, avg hold (proxy)."""
-    closed = api.get_closed_trades()
-    open_trades = api.get_open_trades()
+    today = datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
+    closed = api.get_closed_trades(date=today)
+    open_trades = api.get_open_trades(date=today)
 
     closed_rows = closed.get("data", {}).get("trades", []) if closed.get("status") == "ok" else []
     open_rows = open_trades.get("data", {}).get("trades", []) if open_trades.get("status") == "ok" else []
@@ -1072,6 +1134,9 @@ def render_history():
     peak = max(cum) if cum else 0
     dd = min(c - peak for c in cum) if cum else 0
 
+    # Wrap content in history-section div for mobile styling
+    st.markdown("<div class='history-section'>", unsafe_allow_html=True)
+    
     tiles = [
         _stat_tile("Trades", str(len(pnls))),
         _stat_tile("Win rate", f"{win_rate:.0f}%",
@@ -1101,6 +1166,8 @@ def render_history():
     df.columns = ["Symbol", "Dir", "Entry", "Exit", "P&L", "Reason", "Closed (IST)"]
     styled = df.style.apply(_style_pnl_col, subset=["P&L"])
     st.dataframe(styled, use_container_width=True, hide_index=True)
+    
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_health():
