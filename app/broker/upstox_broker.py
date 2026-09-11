@@ -6,6 +6,8 @@ No mock — this is the real integration.
 """
 
 import logging
+import threading
+import time
 from datetime import date
 
 import pandas as pd
@@ -160,11 +162,35 @@ def make_configuration(config) -> upstox_client.Configuration:
     return configuration
 
 
+class _RateGate:
+    """Per-process minimum-interval gate. Sleeps the caller until `interval`
+    seconds have elapsed since the previous release.
+    """
+
+    def __init__(self, rate_per_second: float):
+        self._lock = threading.Lock()
+        self._interval = 1.0 / rate_per_second if rate_per_second > 0 else 0.0
+        self._next_at = 0.0
+
+    def wait(self) -> None:
+        if self._interval <= 0:
+            return
+        with self._lock:
+            now = time.monotonic()
+            delay = self._next_at - now
+            if delay > 0:
+                time.sleep(delay)
+            self._next_at = time.monotonic() + self._interval
+
+
 class UpstoxBroker(BrokerBase):
     def __init__(self, config: Config | None = None, access_token: str | None = None):
         self.config = config or Config()
         self._token = access_token or ""
         self._apis: dict[str, object] = {}
+        self._gate_history = _RateGate(self.config.UPSTOX_CANDLES_PER_SECOND)
+        self._gate_ltp = _RateGate(self.config.UPSTOX_LTP_PER_SECOND)
+        self._gate_contracts = _RateGate(self.config.UPSTOX_OPTION_CONTRACTS_PER_SECOND)
         self._rebuild_client()
 
     def _rebuild_client(self) -> None:
@@ -172,6 +198,17 @@ class UpstoxBroker(BrokerBase):
         configuration.access_token = self._token
         self._api_client = upstox_client.ApiClient(configuration)
         self._apis = {}
+
+    def _throttle(self, name: str) -> None:
+        if not self.config.UPSTOX_THROTTLING_ENABLED:
+            return
+        gate = {
+            "history": self._gate_history,
+            "ltp": self._gate_ltp,
+            "contracts": self._gate_contracts,
+        }.get(name)
+        if gate is not None:
+            gate.wait()
 
     def set_access_token(self, token: str) -> None:
         """Swap the bearer token (used by SSO / token refresh)."""
@@ -206,6 +243,7 @@ class UpstoxBroker(BrokerBase):
         self._require_token()
         if interval not in INTERVALS:
             raise BrokerError(f"Unsupported interval {interval!r}. Use one of {sorted(INTERVALS)}")
+        self._throttle("history")
         api = self._api(upstox_client.HistoryApi, "history")
         try:
             resp = api.get_historical_candle_data1(instrument_key, interval, _iso(to_date), _iso(from_date), API_VERSION)
@@ -218,6 +256,7 @@ class UpstoxBroker(BrokerBase):
         self._require_token()
         if not instrument_keys:
             return {}
+        self._throttle("ltp")
         api = self._api(upstox_client.MarketQuoteApi, "quote")
         try:
             resp = api.ltp(",".join(instrument_keys), API_VERSION)
@@ -356,6 +395,7 @@ class UpstoxBroker(BrokerBase):
 
     def get_option_contracts(self, underlying_key: str, expiry: date | None = None) -> list[InstrumentView]:
         self._require_token()
+        self._throttle("contracts")
         api = self._api(upstox_client.OptionsApi, "options")
         kwargs = {"expiry_date": _iso(expiry)} if expiry else {}
         try:

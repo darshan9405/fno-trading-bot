@@ -36,6 +36,13 @@ class Config:
     UPSTOX_API_BASE = os.getenv("UPSTOX_API_BASE", "https://api.upstox.com")
     UPSTOX_ORDER_BASE = os.getenv("UPSTOX_ORDER_BASE", "https://api-hft.upstox.com")
 
+    # Outbound rate limiting against the Upstox API. Per-process gate enforced
+    # inside UpstoxBroker; order endpoints are NOT throttled here.
+    UPSTOX_THROTTLING_ENABLED = os.getenv("UPSTOX_THROTTLING_ENABLED", "true").lower() == "true"
+    UPSTOX_CANDLES_PER_SECOND = _as_float(os.getenv("UPSTOX_CANDLES_PER_SECOND"), 1.0)
+    UPSTOX_LTP_PER_SECOND = _as_float(os.getenv("UPSTOX_LTP_PER_SECOND"), 10.0)
+    UPSTOX_OPTION_CONTRACTS_PER_SECOND = _as_float(os.getenv("UPSTOX_OPTION_CONTRACTS_PER_SECOND"), 2.0)
+
     # Post-SSO redirect target for the UI (Streamlit) and CORS origin.
     FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:8501")
     # Internal API base the UI uses for server-side calls (compose: http://backend:8000).

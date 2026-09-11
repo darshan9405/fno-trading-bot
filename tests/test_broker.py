@@ -1,5 +1,6 @@
 """Broker layer tests: SDK-call mapping and normalization (no network)."""
 
+import time
 from datetime import date
 from types import SimpleNamespace
 
@@ -350,3 +351,60 @@ def test_get_exchange_timings(monkeypatch):
     assert len(timings) == 1
     assert timings[0].exchange == "NSE"
     assert timings[0].start_time == 1000
+
+
+# --- outbound rate limiting ----------------------------------------------
+
+
+class _FakeHistoryOk:
+    def get_historical_candle_data1(self, instrument_key, interval, to_date, from_date, api_version):
+        return SimpleNamespace(data=SimpleNamespace(candles=[
+            ["2026-09-04T09:15:00+05:30", 1, 2, 0.5, 1.5, 100, 1000],
+        ]))
+
+
+class _FakeLtpOk:
+    def ltp(self, symbol, api_version):
+        return SimpleNamespace(data={"NSE_EQ|X": SimpleNamespace(last_price=1.0, instrument_token="NSE_EQ|X")})
+
+
+def test_throttle_enforces_min_interval_on_candles():
+    broker = _broker()
+    broker.config.UPSTOX_THROTTLING_ENABLED = True
+    from app.broker.upstox_broker import _RateGate
+    broker._gate_history = _RateGate(20.0)
+    broker._apis["history"] = _FakeHistoryOk()
+
+    t0 = time.monotonic()
+    broker.get_historical_candles("NSE_INDEX|Nifty 50", "day", date(2026, 9, 1), date(2026, 9, 4))
+    broker.get_historical_candles("NSE_INDEX|Nifty 50", "day", date(2026, 9, 1), date(2026, 9, 4))
+    elapsed = time.monotonic() - t0
+    assert elapsed >= 0.04
+
+
+def test_throttle_enforces_min_interval_on_ltp():
+    broker = _broker()
+    broker.config.UPSTOX_THROTTLING_ENABLED = True
+    from app.broker.upstox_broker import _RateGate
+    broker._gate_ltp = _RateGate(20.0)
+    broker._apis["quote"] = _FakeLtpOk()
+
+    t0 = time.monotonic()
+    broker.get_ltp(["NSE_EQ|X"])
+    broker.get_ltp(["NSE_EQ|X"])
+    elapsed = time.monotonic() - t0
+    assert elapsed >= 0.04
+
+
+def test_throttle_disabled_short_circuits(monkeypatch):
+    broker = _broker()
+    broker.config.UPSTOX_THROTTLING_ENABLED = False
+    from app.broker.upstox_broker import _RateGate
+    broker._gate_history = _RateGate(0.5)
+    broker._apis["history"] = _FakeHistoryOk()
+
+    t0 = time.monotonic()
+    broker.get_historical_candles("NSE_INDEX|Nifty 50", "day", date(2026, 9, 1), date(2026, 9, 4))
+    broker.get_historical_candles("NSE_INDEX|Nifty 50", "day", date(2026, 9, 1), date(2026, 9, 4))
+    elapsed = time.monotonic() - t0
+    assert elapsed < 0.05

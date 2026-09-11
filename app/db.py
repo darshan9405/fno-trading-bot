@@ -54,7 +54,15 @@ def _run_sqlite_migrations(engine):
     if engine is None or not engine.url.drivername.startswith("sqlite"):
         return
     with engine.begin() as conn:
+        existing = {
+            r[0]
+            for r in conn.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
         for table, column, coltype in _MIGRATIONS:
+            if table not in existing:
+                continue
             cols = {r[1] for r in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
             if column not in cols:
                 conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")

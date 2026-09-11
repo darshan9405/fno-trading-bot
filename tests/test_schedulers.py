@@ -538,8 +538,11 @@ def test_order_placer_squares_off_when_sl_placement_fails(env):
 
     def selective_place(order):
         calls.append(order)
-        # Reject both SL-M and SL so the SL-M-then-SL fallback path is exhausted.
-        if order.order_type in ("SL", "SL-M"):
+        # Reject SL-M with a message that matches the SL-M-rejection heuristic so
+        # `place_stop_loss` falls back to SL; then reject SL with a generic msg.
+        if order.order_type == "SL-M":
+            raise BrokerError("SL-M (stop-loss-market) not supported for this segment")
+        if order.order_type == "SL":
             raise BrokerError("SL rejected by broker")
         return real_place(order)
 
@@ -745,6 +748,8 @@ def test_trade_tracker_put_ratchets_down(env):
     broker = _seed_broker(env)
     broker.ltp_map["NSE_FO|90111"] = 200.0  # RELIANCE PE contract for PUT leg
     broker.ltp_map["NSE_EQ|INE002A01018"] = 3000.0  # spot for divergence check
+    # RELIANCE lot=1250 × premium=200 > FakeBroker default 100k; raise margin.
+    broker.get_funds = lambda: FundsView(available_margin=1_000_000.0)
     # Seed a PUT lead manually (default test seeds a CALL for NIFTY).
     from datetime import date
     from app.models import Lead
@@ -755,7 +760,7 @@ def test_trade_tracker_put_ratchets_down(env):
         lead = Lead(
             instrument_id=reliance.id, underlying_key="NSE_EQ|INE002A01018",
             direction="PUT", strategy="test_breakout", signal_type="horizontal_range",
-            signal_level=3050.0, confidence=0.9, chart_interval="day", status="queued",
+            signal_level=3000.0, confidence=0.9, chart_interval="day", status="queued",
         )
         session.add(lead)
 
@@ -924,7 +929,9 @@ def test_trade_tracker_squares_off_when_no_sl_and_replacement_fails(env):
 
     def selective_place(order):
         calls.append(order)
-        if order.order_type in ("SL", "SL-M"):
+        if order.order_type == "SL-M":
+            raise BrokerError("SL-M not supported for this segment")
+        if order.order_type == "SL":
             raise BrokerError("SL rejected")
         return real_place(order)
 
