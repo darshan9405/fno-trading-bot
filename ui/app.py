@@ -520,6 +520,10 @@ def render_dashboard():
             df = pd.DataFrame(
                 [
                     {
+                        "Time (IST)": (
+                            r.get("created_at_ist_label")
+                            or _utc_to_ist_hm(r.get("created_at"))
+                        ),
                         "Symbol": r.get("symbol") or r["underlying"].split("|")[-1],
                         "Instrument": r.get("trading_symbol") or "—",
                         "Dir": r["direction"],
@@ -743,11 +747,17 @@ def render_leads():
     for r in rows:
         c1, c2, c3 = st.columns([4, 1, 2])
         with c1:
+            created_ist = (
+                r.get("created_at_ist_label")
+                or _utc_to_ist_hm(r.get("created_at"))
+            )
             _html(
                 f"<div style='font-weight:600'>{r.get('symbol') or r['underlying'].split('|')[-1]} "
                 f"{_badge(r['direction'], 'up' if r['direction'] == 'CALL' else 'down')} "
                 f"{_badge(r['status'], 'ok' if r['status'] in ('placed','filled') else 'muted')}</div>"
-                f"<div class='muted'>{r['signal_type']} @ {_num(r['signal_level'])}</div>"
+                f"<div class='muted'>{r['signal_type']} @ {_num(r['signal_level'])}"
+                + (f" · generated <b>{created_ist} IST</b>" if created_ist else "")
+                + "</div>"
                 + _lead_plan_line(r)
             )
         with c2:
@@ -994,6 +1004,24 @@ def render_health():
         else:
             for er in recent[:10]:
                 st.caption(f"`{_utc_to_ist_hm(er['ts'])} IST` · **{er['source']}**: {er['message']}")
+
+    st.markdown("##### Recent leads (last 10)")
+    leads = d.get("recent_leads", []) or []
+    if not leads:
+        st.caption("No leads generated yet. Run the lead generator from the **Leads** tab or wait for the scheduler.")
+    else:
+        rows = [
+            {
+                "Time (IST)": row.get("created_at_ist_label") or _utc_to_ist_hm(row.get("created_at")),
+                "Symbol": row.get("symbol") or "—",
+                "Dir": row.get("direction") or "?",
+                "Pattern": row.get("signal_type") or "—",
+                "Confidence": f"{int((row.get('confidence') or 0) * 100)}%",
+                "Status": row.get("status") or "—",
+            }
+            for row in leads
+        ]
+        st.dataframe(rows, use_container_width=True, hide_index=True, height=min(40 + 35 * len(rows), 420))
 
     st.markdown("##### Market")
     st.markdown(

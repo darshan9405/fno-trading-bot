@@ -1,17 +1,23 @@
 """System health API (Stage 7): scheduler heartbeats, errors, broker, market, auth."""
 
 import logging
-from datetime import timedelta
+from datetime import timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from flask import Blueprint
+from sqlalchemy import select
 
+from app.api.common import ok
 from app.auth import UpstoxTokenStore, jwt_required
 from app.broker import get_broker
 from app.broker.base import BrokerError
 from app.config import Config
+from app.db import session_scope
 from app.extensions import limiter
+from app.models import Lead
 from app.services import health_service, market_calendar
-from app.api.common import ok
+
+IST = ZoneInfo("Asia/Kolkata")
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +49,28 @@ def health():
         {"ts": e.ts, "source": e.source, "message": e.message[:500]}
         for e in recent
     ]
+
+    # Most recently generated leads (timestamp in IST for the UI).
+    with session_scope() as session:
+        lead_rows = session.execute(
+            select(Lead).order_by(Lead.created_at.desc()).limit(10)
+        ).scalars().all()
+    recent_leads = []
+    for lead in lead_rows:
+        # `lead.created_at` is naive UTC (datetime.now(timezone.utc).replace(tzinfo=None)).
+        ist = lead.created_at.replace(tzinfo=timezone.utc).astimezone(IST)
+        recent_leads.append({
+            "id": lead.id,
+            "symbol": lead.instrument.symbol if lead.instrument else "—",
+            "direction": lead.direction,
+            "underlying": lead.underlying_key,
+            "status": lead.status,
+            "signal_type": lead.signal_type,
+            "confidence": lead.confidence,
+            "created_at": lead.created_at,
+            "created_at_ist": ist.isoformat(),
+            "created_at_ist_label": ist.strftime("%d %b %H:%M"),
+        })
 
     # Broker connectivity.
     configured = bool(UpstoxTokenStore.get())
@@ -86,6 +114,7 @@ def health():
             "ts": now,
             "heartbeats": heartbeats,
             "errors": {"count": len(recent), "recent": errors},
+            "recent_leads": recent_leads,
             "broker": broker_status,
             "market": market,
         }

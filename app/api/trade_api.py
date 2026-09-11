@@ -1,10 +1,13 @@
 """Trades + P&L API (Stage 6): open/closed trades, live P&L, funds, leads."""
 
 import logging
+from datetime import timezone
+from zoneinfo import ZoneInfo
 
 from flask import Blueprint, request
 from sqlalchemy import select
 
+from app.api.common import broker_error, error, ok
 from app.auth import jwt_required
 from app.broker import get_broker
 from app.broker.base import BrokerError
@@ -14,9 +17,6 @@ from app.extensions import limiter
 from app.models import Lead, Trade
 from app.services import recon_service
 from app.services.health_service import utcnow
-from app.api.common import broker_error, error, ok
-
-log = logging.getLogger(__name__)
 
 bp = Blueprint("trade", __name__, url_prefix="/api/trades")
 
@@ -137,6 +137,9 @@ def generate_leads():
 
 def _lead_dict(l: Lead) -> dict:
     plan = l.plan or {}
+    # `created_at` is naive UTC. Surface IST equivalents so the UI doesn't
+    # need a TZ round-trip on the client.
+    ist_created = l.created_at.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("Asia/Kolkata"))
     return {
         "id": l.id,
         "underlying": l.underlying_key,
@@ -149,6 +152,8 @@ def _lead_dict(l: Lead) -> dict:
         "status": l.status,
         "note": l.note,
         "created_at": l.created_at,
+        "created_at_ist": ist_created.isoformat(),
+        "created_at_ist_label": ist_created.strftime("%d %b %H:%M"),
         "expiry": plan.get("expiry"),
         "strike_price": plan.get("strike_price"),
         "option_type": plan.get("option_type"),
