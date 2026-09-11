@@ -54,15 +54,17 @@ def login_url() -> str:
 
 def logout() -> None:
     """Log out by redirecting to the backend logout endpoint.
-    
-    This ensures HttpOnly cookies are cleared by the browser.
+
+    Uses a relative URL so it works through any reverse proxy (nginx,
+    Cloudflare, etc.) — the browser hits `<current-origin>/api/auth/logout`,
+    which is proxied to the backend, clears the HttpOnly cookies via
+    the response headers, and the backend redirects back to the frontend.
     """
     clear_tokens()
-    # Use JS to redirect to backend logout, which clears cookies via response headers
     st.markdown(
-        f"""
+        """
         <script>
-        window.location.href = "{BACKEND}/api/auth/logout";
+        window.location.href = "/api/auth/logout";
         </script>
         """,
         unsafe_allow_html=True,
