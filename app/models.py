@@ -139,7 +139,7 @@ class Trade(Base):
     quantity: Mapped[int] = mapped_column(Integer)
     initial_sl: Mapped[float] = mapped_column(Float)
     current_sl: Mapped[float] = mapped_column(Float)
-    trail_state: Mapped[str] = mapped_column(String(16), default="at_initial")  # at_initial | breakeven | trailing
+    trail_state: Mapped[str] = mapped_column(String(16), default="at_initial")  # at_initial | trailing (historical "breakeven" stays valid for old rows)
     # Extreme favorable price used for trailing (highest for CALL, lowest for PUT).
     best_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     entry_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

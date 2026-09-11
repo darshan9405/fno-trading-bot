@@ -1024,12 +1024,13 @@ def render_settings():
         sl = st.number_input("Initial SL %", min_value=1.0, max_value=30.0,
                              value=float(cfg.get("initial_sl_pct", 10.0)),
                              help="Hard stop-loss distance from entry, in %.")
-        activate = st.number_input("Trail activate %", min_value=0.0, max_value=20.0,
-                                   value=float(cfg.get("trail_activate_pct", 5.0)),
-                                   help="Move to breakeven / trail once price moves this far in your favour.")
-        gap = st.number_input("Trail gap %", min_value=1.0, max_value=20.0,
-                              value=float(cfg.get("trail_gap_pct", 5.0)),
-                              help="Distance the trailing SL keeps from the high-water mark.")
+        activate = st.number_input("Trail activate % (past initial SL)", min_value=0.0, max_value=50.0,
+                                   value=float(cfg.get("trail_activate_pct", 20.0)),
+                                   help="Trailing starts once LTP moves this far PAST the initial SL in the profitable direction. "
+                                        "Example: initial SL 90 + 20% → trailing begins at ltp ≥ 108.")
+        gap = st.number_input("Trail gap % from current LTP", min_value=1.0, max_value=30.0,
+                              value=float(cfg.get("trail_gap_pct", 10.0)),
+                              help="After activation, SL = ltp ± this % (ratcheted — never moves against you).")
         new_cfg["initial_sl_pct"] = float(sl)
         new_cfg["trail_activate_pct"] = float(activate)
         new_cfg["trail_gap_pct"] = float(gap)

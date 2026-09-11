@@ -6,7 +6,9 @@ For each sampled trading day D:
   - for each lead, fetch the REAL 5-min intraday path of the underlying on day D
     and simulate the full lifecycle with the SAME rules as live:
       - entry at the breakout level when price first reaches it (10:00-14:00)
-      - initial 10% stop-loss, breakeven at +5%, trail 5% from best
+      - initial 10% stop-loss, trailing SL activates once price moves 20%
+        past the initial SL in the profitable direction, then SL = ltp ± 10%
+        with a ratchet (never moves against you)
       - square off at 14:00
 
 Usage:

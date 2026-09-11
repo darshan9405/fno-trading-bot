@@ -7,7 +7,9 @@ Every ~30s during the session, per open trade:
    - If filled/complete: the broker has already closed the position — close in DB.
    - If cancelled/rejected: the SL is gone — re-place it.
    - If still open/pending: continue.
-4. Apply the trailing-SL rule (breakeven then trail) via modify_order.
+4. Apply the trailing-SL rule (activate once price moves `trail_activate_pct`
+   past the initial SL in the profitable direction; then SL = ltp ± `trail_gap_pct`
+   with a ratchet) via modify_order.
 5. If LTP has crossed the trailing SL, close the trade manually.
 
 If at any point the trade has no SL order (initial placement failed, or the

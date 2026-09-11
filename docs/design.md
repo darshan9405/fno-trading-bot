@@ -361,16 +361,25 @@ interface for every registered strategy.
 7. on entry no-fill: cancel order, mark lead `skipped` + log `errors`
 8. on SL-placement failure after entry fill: cancel entry, raise, mark lead `skipped`
 
-### 7.2 Trailing SL rule (S2) — configurable
+### 7.2 Trailing SL rule (S2) — configurable (v2: activate past SL, then ltp trail)
 
 ```
-entry_price  → initial_sl = entry_price * (1 -+ initial_sl_pct)   # - for CALL, + for PUT
-favorable move >= trail_activate_pct  →  move SL to breakeven (trail_state=breakeven)
-after breakeven:
-    for CALL:  new_sl = max(current_sl, best_price * (1 - trail_gap_pct))
-    for PUT :  new_sl = min(current_sl, best_price * (1 + trail_gap_pct))
-if new_sl moved by >= order_tick → broker.modify_order(ModifyOrderParams(order_id, quantity, trigger_price=new_sl, price=new_sl, order_type="SL"))
+entry_price       → initial_sl  = entry_price * (1 -+ initial_sl_pct)      # - for CALL, + for PUT
+phase 1 (at_initial): SL stays at initial_sl until ltp crosses the activation threshold
+                      CALL: activate when ltp >= initial_sl * (1 + trail_activate_pct/100)
+                      PUT : activate when ltp <= initial_sl * (1 - trail_activate_pct/100)
+phase 2 (trailing): on every tracker tick,
+                      CALL: candidate = ltp * (1 - trail_gap_pct/100); new_sl = max(snapped, current_sl)
+                      PUT : candidate = ltp * (1 + trail_gap_pct/100); new_sl = min(snapped, current_sl)
+                      (ratchet — SL only moves in the profitable direction)
+if new_sl moved by >= order_tick → broker.modify_order(SL-M order, trigger_price=new_sl)
 ```
+
+Defaults: `initial_sl_pct=10`, `trail_activate_pct=20`, `trail_gap_pct=10`. For a CALL
+trade entered at 100 with `initial_sl_pct=10` → initial SL=90, activation threshold
+= 90 × 1.20 = 108. Once `ltp >= 108`, SL = `ltp × 0.9` (snapped to the option tick
+band); SL only ever moves UP. A retracement from 115 to 104 keeps SL at 103.50
+(115 × 0.9), not 93.60. PUT is symmetric (SL above entry, ratchet DOWN).
 
 Trailing is executed by **S2 via `OrderApiV3.modify_order`** (v3 `ModifyOrderRequest`
 requires the full SL-order spec — quantity/validity/price/order_type/trigger_price),
@@ -428,8 +437,8 @@ expiry info is otherwise shown in the sidebar badge and Health tab.
 | `trading_start` | `10:00` | S1/S3 window start |
 | `sqoff_time` | `14:00` | S2 auto square-off |
 | `initial_sl_pct` | `10.0` | initial SL % from entry |
-| `trail_activate_pct` | `5.0` | favorable move % to trigger breakeven |
-| `trail_gap_pct` | `5.0` | trailing distance from `best_price` |
+| `trail_activate_pct` | `20.0` | % past the initial SL (in profitable direction) before trailing starts |
+| `trail_gap_pct` | `10.0` | trailing distance from current LTP, snapped to option tick band |
 | `max_lead_price_divergence_pct` | `0.5` | max price drift at placement |
 | `min_days_to_expiry` | `5` | option expiry filter |
 | `strike_selection` | `ATM` | `ATM` \| `ITM_0.5` |

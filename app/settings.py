@@ -12,8 +12,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "trading_start": "10:00",
     "sqoff_time": "14:00",
     "initial_sl_pct": 10.0,
-    "trail_activate_pct": 5.0,
-    "trail_gap_pct": 5.0,
+    "trail_activate_pct": 20.0,
+    "trail_gap_pct": 10.0,
     "max_lead_price_divergence_pct": 0.5,
     "min_days_to_expiry": 5,
     "strike_selection": "ATM",
@@ -64,6 +64,13 @@ def _decode(raw: str) -> Any:
 
 
 def seed_default_settings() -> None:
+    # One-time migration: previous schema used the legacy "breakeven + best_price trail"
+    # defaults (trail_activate_pct=5.0, trail_gap_pct=5.0). Operators who never touched
+    # those rows get the new "activate past SL + ltp trail" defaults automatically.
+    # Operators who set non-default values are NOT bumped.
+    _LEGACY_TRAIL_ACTIVATE_PCT = 5.0
+    _LEGACY_TRAIL_GAP_PCT = 5.0
+
     with session_scope() as session:
         for key, value in DEFAULT_SETTINGS.items():
             if session.get(Setting, key) is None:
@@ -71,6 +78,23 @@ def seed_default_settings() -> None:
         for key, value in ENV_OVERRIDE_SETTINGS.items():
             if session.get(Setting, key) is None:
                 session.add(Setting(key=key, value=_encode(value)))
+
+        # Bump legacy defaults so existing deployments get the new behaviour.
+        legacy_bump = {
+            "trail_activate_pct": DEFAULT_SETTINGS["trail_activate_pct"],
+            "trail_gap_pct": DEFAULT_SETTINGS["trail_gap_pct"],
+        }
+        legacy_values = {
+            "trail_activate_pct": _LEGACY_TRAIL_ACTIVATE_PCT,
+            "trail_gap_pct": _LEGACY_TRAIL_GAP_PCT,
+        }
+        for key, new_value in legacy_bump.items():
+            row = session.get(Setting, key)
+            if row is None:
+                continue
+            current = _decode(row.value)
+            if current == legacy_values[key]:
+                row.value = _encode(new_value)
 
 
 def get_setting(key: str, default: Any = None) -> Any:

@@ -321,32 +321,53 @@ def avg_fill_price(fills) -> float | None:
 
 def compute_trailing_sl(trade: Trade, ltp: float, activate_pct: float, gap_pct: float,
                          instrument_tick: float = 0.0) -> tuple[float, str]:
-    """Return (new_sl, new_trail_state) per the trailing rule.
+    """Trailing SL rule (v2 — activate above initial SL, then track ltp ± gap%).
 
-    breakeven once favourable move >= activate_pct; then trail `gap_pct` from best_price.
-    Result is snapped to the option tick so Upstox accepts the modify.
+    Phase 1 (at_initial): SL stays at the initial SL. The rule activates once
+    the LTP moves `activate_pct`% beyond the initial SL in the profitable
+    direction. For a CALL with initial SL = 90 and activate_pct = 20, that
+    means ltp >= 90 * 1.20 = 108. Symmetric for PUTs.
+
+    Phase 2 (trailing): each tick the candidate SL is `ltp * (1 - gap_pct/100)`
+    for CALL / `ltp * (1 + gap_pct/100)` for PUT, snapped to the option tick
+    band. The SL only ever moves in the profitable direction (ratchet):
+    monotonic-up for CALL, monotonic-down for PUT. Once `trail_state` is
+    `"trailing"`, the activation gate is no longer re-applied — the rule
+    stays in trailing mode for the lifetime of the trade.
+
+    Returns `(new_sl, new_trail_state)`. `new_sl` is `trade.current_sl` when
+    the rule has nothing to update, so callers can skip the modify call.
     """
-    entry, best = trade.entry_price, trade.best_price
-    if trade.direction == "CALL":
-        fav = (best - entry) / entry
-    else:
-        fav = (entry - best) / entry
+    initial = trade.initial_sl
+    already_trailing = trade.trail_state == "trailing"
 
-    new_sl = trade.current_sl
-    state = trade.trail_state
-    if fav >= activate_pct / 100.0:
-        if state == "at_initial":
-            new_sl, state = round_to_tick(entry, option_tick_for(entry, instrument_tick)), "breakeven"
-        else:
-            if trade.direction == "CALL":
-                candidate = best * (1.0 - gap_pct / 100.0)
-                if candidate > new_sl:
-                    new_sl, state = round_to_tick(candidate, option_tick_for(candidate, instrument_tick)), "trailing"
-            else:
-                candidate = best * (1.0 + gap_pct / 100.0)
-                if candidate < new_sl:
-                    new_sl, state = round_to_tick(candidate, option_tick_for(candidate, instrument_tick)), "trailing"
-    return new_sl, state
+    if trade.direction == "CALL":
+        activation_ltp = initial * (1.0 + activate_pct / 100.0)
+        if not already_trailing and ltp < activation_ltp:
+            return trade.current_sl, "at_initial"
+        candidate = ltp * (1.0 - gap_pct / 100.0)
+        tick = option_tick_for(candidate, instrument_tick)
+        snapped = round_to_tick(candidate, tick)
+        cap = round_to_tick(ltp - tick, tick)
+        if snapped >= cap:
+            snapped = max(cap - tick, tick)
+        if not already_trailing:
+            return snapped, "trailing"
+        return max(snapped, trade.current_sl), "trailing"
+
+    # PUT
+    activation_ltp = initial * (1.0 - activate_pct / 100.0)
+    if not already_trailing and ltp > activation_ltp:
+        return trade.current_sl, "at_initial"
+    candidate = ltp * (1.0 + gap_pct / 100.0)
+    tick = option_tick_for(candidate, instrument_tick)
+    snapped = round_to_tick(candidate, tick)
+    floor = round_to_tick(ltp + tick, tick)
+    if snapped <= floor:
+        snapped = floor + tick
+    if not already_trailing:
+        return snapped, "trailing"
+    return min(snapped, trade.current_sl), "trailing"
 
 
 def is_sl_hit(trade: Trade, ltp: float) -> bool:

@@ -162,8 +162,8 @@ def env(tmp_path):
     set_setting("trading_start", "10:00")
     set_setting("sqoff_time", "14:00")
     set_setting("initial_sl_pct", 10.0)
-    set_setting("trail_activate_pct", 5.0)
-    set_setting("trail_gap_pct", 5.0)
+    set_setting("trail_activate_pct", 20.0)
+    set_setting("trail_gap_pct", 10.0)
     set_setting("max_lead_price_divergence_pct", 0.5)
     set_setting("min_days_to_expiry", 5)
     set_setting("qty_lots_per_trade", 1)
@@ -669,34 +669,138 @@ def test_lead_generator_regenerates_after_skip(env):
 
 
 def test_trade_tracker_trails_stop_loss(env):
+    """Trailing rule (v2):
+    - SL stays at initial_sl (90) until ltp crosses 90 * 1.20 = 108 (activation).
+    - After activation, SL = ltp * 0.9 and ratchets up on retracements.
+    """
     broker = _seed_broker(env)
     trade = _open_nifty_trade(env, broker)
 
-    broker.ltp_map["NSE_FO|84123"] = 100.0  # no move
+    broker.ltp_map["NSE_FO|84123"] = 100.0  # below activation (108) → SL unchanged
     run_trade_tracker(broker=broker, now=_now(11, 0))
     with session_scope() as session:
         t = session.get(Trade, trade.id)
         assert t.current_sl == 90.0
         assert t.trail_state == "at_initial"
 
-    broker.ltp_map["NSE_FO|84123"] = 106.0  # +6% -> breakeven
+    broker.ltp_map["NSE_FO|84123"] = 106.0  # still below activation
     run_trade_tracker(broker=broker, now=_now(11, 1))
     with session_scope() as session:
         t = session.get(Trade, trade.id)
-        assert t.current_sl == 100.0
-        assert t.trail_state == "breakeven"
+        assert t.current_sl == 90.0
+        assert t.trail_state == "at_initial"
+        assert broker.modified == []  # no modify_order call yet
 
-    broker.ltp_map["NSE_FO|84123"] = 110.0  # best=110 -> trail 5% = 104.5
+    broker.ltp_map["NSE_FO|84123"] = 108.0  # activation threshold = 90 * 1.20
     run_trade_tracker(broker=broker, now=_now(11, 2))
     with session_scope() as session:
         t = session.get(Trade, trade.id)
-        assert t.current_sl == 104.5
+        # SL = 108 * 0.9 = 97.20, snapped to 0.05 tick band.
+        assert t.current_sl == 97.20
         assert t.trail_state == "trailing"
 
-    assert [m.trigger_price for m in broker.modified] == [100.0, 104.5]
+    broker.ltp_map["NSE_FO|84123"] = 110.0  # SL = 110 * 0.9 = 99.0
+    run_trade_tracker(broker=broker, now=_now(11, 3))
+    with session_scope() as session:
+        t = session.get(Trade, trade.id)
+        assert t.current_sl == 99.0
+        assert t.trail_state == "trailing"
+
+    # Two modifies: the activation snap to 97.20, then the ratchet to 99.0.
+    assert [m.trigger_price for m in broker.modified] == [97.20, 99.0]
     # Trailing is done by modifying the existing SL-M order (no limit price).
     assert all(m.order_type == "SL-M" for m in broker.modified)
     assert all(m.price == 0.0 for m in broker.modified)
+
+
+def test_trade_tracker_ratchets_sl_on_retrace(env):
+    """Once activated, the SL must NEVER move down on a retrace — gains are
+    locked in. CALL entry=100, initial_sl=90, activation at ltp>=108.
+    Sequence: 100 → 110 (SL=99) → 104 (candidate would be 93.6, ratchet holds 99).
+    """
+    broker = _seed_broker(env)
+    trade = _open_nifty_trade(env, broker)
+
+    broker.ltp_map["NSE_FO|84123"] = 110.0  # activate + first trail
+    run_trade_tracker(broker=broker, now=_now(11, 0))
+    with session_scope() as session:
+        t = session.get(Trade, trade.id)
+        assert t.current_sl == 99.0
+        assert t.trail_state == "trailing"
+
+    broker.ltp_map["NSE_FO|84123"] = 104.0  # retrace below prior SL — ratchet holds
+    run_trade_tracker(broker=broker, now=_now(11, 1))
+    with session_scope() as session:
+        t = session.get(Trade, trade.id)
+        assert t.current_sl == 99.0, "SL must not move down on retrace"
+        assert t.trail_state == "trailing"
+
+    # Only the activation snap modify happened — no second modify on the retrace.
+    assert [m.trigger_price for m in broker.modified] == [99.0]
+
+
+def test_trade_tracker_put_ratchets_down(env):
+    """Symmetric PUT: initial_sl is above entry. activation_ltp = initial_sl * 0.8.
+    After activation, SL moves DOWN only (in profitable direction)."""
+    broker = _seed_broker(env)
+    broker.ltp_map["NSE_FO|90111"] = 200.0  # RELIANCE PE contract for PUT leg
+    broker.ltp_map["NSE_EQ|INE002A01018"] = 3000.0  # spot for divergence check
+    # Seed a PUT lead manually (default test seeds a CALL for NIFTY).
+    from datetime import date
+    from app.models import Lead
+    with session_scope() as session:
+        reliance = session.execute(
+            select(Instrument).where(Instrument.symbol == "RELIANCE")
+        ).scalars().first()
+        lead = Lead(
+            instrument_id=reliance.id, underlying_key="NSE_EQ|INE002A01018",
+            direction="PUT", strategy="test_breakout", signal_type="horizontal_range",
+            signal_level=3050.0, confidence=0.9, chart_interval="day", status="queued",
+        )
+        session.add(lead)
+
+    from app.scheduler.lead_generator import run_lead_generator as _rlg
+    _rlg(broker=broker, now=_now(10, 30))
+    from app.scheduler.order_placer import run_order_placer as _rop
+    _rop(broker=broker, now=_now(10, 35))
+
+    with session_scope() as session:
+        trade = session.execute(select(Trade).where(Trade.status == "open")).scalars().first()
+        assert trade.direction == "PUT"
+        # entry 200, sl_pct 10% PUT → initial_sl = 200 * 1.10 = 220
+        assert trade.entry_price == 200.0
+        assert trade.initial_sl == 220.0
+
+    # Below activation threshold: activation_ltp = 220 * (1 - 0.20) = 176.
+    broker.ltp_map["NSE_FO|90111"] = 200.0  # not activated
+    run_trade_tracker(broker=broker, now=_now(11, 0))
+    with session_scope() as session:
+        t = session.get(Trade, trade.id)
+        assert t.current_sl == 220.0
+        assert t.trail_state == "at_initial"
+
+    # Activate + first trail at ltp=176 → candidate = 176 * 1.10 = 193.6
+    broker.ltp_map["NSE_FO|90111"] = 176.0
+    run_trade_tracker(broker=broker, now=_now(11, 1))
+    with session_scope() as session:
+        t = session.get(Trade, trade.id)
+        assert t.current_sl == 193.6
+        assert t.trail_state == "trailing"
+
+    # Lower ltp → SL moves down: ltp=160 → candidate = 160 * 1.10 = 176.0
+    broker.ltp_map["NSE_FO|90111"] = 160.0
+    run_trade_tracker(broker=broker, now=_now(11, 2))
+    with session_scope() as session:
+        t = session.get(Trade, trade.id)
+        assert t.current_sl == 176.0
+
+    # Retrace UP → SL must not move up (ratchet): ltp=190 → candidate = 190*1.10 = 209.0
+    # max(209, current 176) keeps 176 in CALL logic; symmetric for PUT we keep MIN.
+    broker.ltp_map["NSE_FO|90111"] = 190.0
+    run_trade_tracker(broker=broker, now=_now(11, 3))
+    with session_scope() as session:
+        t = session.get(Trade, trade.id)
+        assert t.current_sl == 176.0, "PUT SL must not move up on retrace"
 
 
 def test_trade_tracker_closes_on_sl_hit(env):
@@ -868,12 +972,75 @@ def test_trade_tracker_logs_critical_when_no_sl_and_sqoff_also_fails(env):
 def test_compute_trailing_sl_unit(env):
     from app.services.trade_service import compute_trailing_sl
 
-    trade = _open_nifty_trade(env, _seed_broker(env))  # entry 100, sl 90, best 100
-    trade.best_price = 107.0
-    new_sl, state = compute_trailing_sl(trade, 107.0, activate_pct=5.0, gap_pct=5.0)
-    assert new_sl == 100.0 and state == "breakeven"
+    trade = _open_nifty_trade(env, _seed_broker(env))  # entry 100, initial_sl 90
+    # Below activation: ltp=107, threshold = 90 * 1.20 = 108 → SL unchanged.
+    new_sl, state = compute_trailing_sl(trade, ltp=107.0, activate_pct=20.0, gap_pct=10.0)
+    assert new_sl == trade.current_sl == 90.0 and state == "at_initial"
 
-    trade.trail_state = "breakeven"
-    trade.best_price = 115.0
-    new_sl, state = compute_trailing_sl(trade, 115.0, activate_pct=5.0, gap_pct=5.0)
-    assert new_sl == 109.25 and state == "trailing"
+    # Activate at ltp=108: candidate = 108 * 0.9 = 97.20.
+    new_sl, state = compute_trailing_sl(trade, ltp=108.0, activate_pct=20.0, gap_pct=10.0)
+    assert new_sl == 97.20 and state == "trailing"
+    trade.current_sl = new_sl
+    trade.trail_state = state
+
+    # Move up: ltp=115 → candidate = 115 * 0.9 = 103.50.
+    new_sl, state = compute_trailing_sl(trade, ltp=115.0, activate_pct=20.0, gap_pct=10.0)
+    assert new_sl == 103.50 and state == "trailing"
+    trade.current_sl = new_sl
+
+    # Retrace from 115 → 104: candidate = 104 * 0.9 = 93.60, but ratchet keeps 103.50.
+    new_sl, state = compute_trailing_sl(trade, ltp=104.0, activate_pct=20.0, gap_pct=10.0)
+    assert new_sl == 103.50 and state == "trailing"
+
+
+def test_compute_trailing_sl_put_unit(env):
+    """PUT trail is symmetric: SL is above entry and moves down on retrace.
+    Seed a PUT trade directly because the env fixture creates a CALL."""
+    from app.models import Trade
+    from app.services.trade_service import compute_trailing_sl
+
+    with session_scope() as session:
+        trade = Trade(
+            underlying_key="NSE_EQ|INE002A01018",
+            option_instrument_key="NSE_FO|90111",
+            option_instrument_token="90111",
+            tradingsymbol="RELIANCE 10 SEP 26 3000 PE",
+            lot_size=1250, product="D", direction="PUT",
+            entry_price=200.0, quantity=1250,
+            initial_sl=220.0, current_sl=220.0,
+            trail_state="at_initial", best_price=200.0, status="open",
+            entry_order_id="o-x", sl_order_id="o-y",
+        )
+        session.add(trade)
+        session.flush()
+        trade_id = trade.id
+
+    # activation_ltp = 220 * (1 - 0.20) = 176; ltp=180 NOT activated.
+    with session_scope() as session:
+        t = session.get(Trade, trade_id)
+        new_sl, state = compute_trailing_sl(t, ltp=180.0, activate_pct=20.0, gap_pct=10.0)
+        assert new_sl == 220.0 and state == "at_initial"
+
+    # Activate: ltp=176 → candidate = 176 * 1.10 = 193.60.
+    with session_scope() as session:
+        t = session.get(Trade, trade_id)
+        new_sl, state = compute_trailing_sl(t, ltp=176.0, activate_pct=20.0, gap_pct=10.0)
+        assert new_sl == 193.60 and state == "trailing"
+        t.current_sl = new_sl
+        t.trail_state = state
+
+    # Lower ltp: candidate = 160 * 1.10 = 176.00; moves down in profitable direction.
+    with session_scope() as session:
+        t = session.get(Trade, trade_id)
+        t.current_sl = 193.60
+        t.trail_state = "trailing"
+        new_sl, state = compute_trailing_sl(t, ltp=160.0, activate_pct=20.0, gap_pct=10.0)
+        assert new_sl == 176.00 and state == "trailing"
+
+    # Retrace UP — SL must not move up (PUT ratchet direction is down).
+    with session_scope() as session:
+        t = session.get(Trade, trade_id)
+        t.current_sl = 176.00
+        t.trail_state = "trailing"
+        new_sl, state = compute_trailing_sl(t, ltp=190.0, activate_pct=20.0, gap_pct=10.0)
+        assert new_sl == 176.00 and state == "trailing"
