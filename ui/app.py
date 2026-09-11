@@ -610,7 +610,8 @@ def render_open_trades():
             rows,
             ["symbol", "direction", "entry_price", "ltp", "unrealised_pnl", "current_sl", "trail_state"],
         )
-        df.columns = ["Symbol", "Dir", "Entry", "LTP", "P&L", "SL", "Trail"]
+        df["Entered (IST)"] = [_utc_to_ist_hm(r.get("entry_time")) for r in rows]
+        df.columns = ["Symbol", "Dir", "Entry", "LTP", "P&L", "SL", "Trail", "Entered (IST)"]
         styled = df.style.apply(_style_pnl_col, subset=["P&L"])
         st.dataframe(styled, use_container_width=True, hide_index=True)
 
@@ -676,6 +677,9 @@ def _render_position_card(r: dict):
             <div><span class='muted'>Entry</span> <b>{_num(entry)}</b></div>
             <div><span class='muted'>LTP</span> <b>{_num(ltp)}</b></div>
             <div><span class='muted'>SL</span> <b>{_num(sl)}</b></div>
+          </div>
+          <div class='muted' style='font-size:0.72rem;margin-top:4px;'>
+            Entered {_utc_to_ist_hm(r.get('entry_time'))} IST
           </div>
           {sl_bar}
         </div>
@@ -911,9 +915,10 @@ def render_history():
 
     df = _trades_df(
         filtered,
-        ["symbol", "direction", "entry_price", "exit_price", "realized_pnl", "exit_reason", "exit_time"],
+        ["symbol", "direction", "entry_price", "exit_price", "realized_pnl", "exit_reason"],
     )
-    df.columns = ["Symbol", "Dir", "Entry", "Exit", "P&L", "Reason", "Closed"]
+    df["Closed (IST)"] = [_utc_to_ist_hm(r.get("exit_time")) for r in filtered]
+    df.columns = ["Symbol", "Dir", "Entry", "Exit", "P&L", "Reason", "Closed (IST)"]
     styled = df.style.apply(_style_pnl_col, subset=["P&L"])
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
@@ -953,7 +958,10 @@ def render_health():
             col2.markdown(_badge("OK", "ok"), unsafe_allow_html=True)
         else:
             col2.markdown(_badge(state.upper(), "warn"), unsafe_allow_html=True)
-        col3.caption(hb["note"] or "")
+        last = _utc_to_ist_hm(hb.get("last_run_at"))
+        col3.caption(
+            f"`{last} IST` · {hb['note']}" if hb["note"] else f"`{last} IST`"
+        )
 
     st.markdown("##### Broker")
     status_kind = "ok" if b.get("connected") else ("muted" if not b.get("configured") else "warn")
@@ -985,7 +993,7 @@ def render_health():
             st.info("No errors match the filter.")
         else:
             for er in recent[:10]:
-                st.caption(f"`{er['ts']}` · **{er['source']}**: {er['message']}")
+                st.caption(f"`{_utc_to_ist_hm(er['ts'])} IST` · **{er['source']}**: {er['message']}")
 
     st.markdown("##### Market")
     st.markdown(
