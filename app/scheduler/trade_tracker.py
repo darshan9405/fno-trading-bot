@@ -68,8 +68,9 @@ def run_trade_tracker(broker=None, now=None):
 
 
 def process_trade(session, broker, trade: Trade, sl_pct: float, activate_pct: float, gap_pct: float,
-                  now, limit_premium_pct: float = 1.0) -> None:
+                   now, limit_premium_pct: float = 1.0) -> None:
     if now.time() >= market_calendar.session_end(now.date()):
+        log.info("trade_tracker: session end sqoff for trade %s | direction=%s", trade.id, trade.direction)
         trade_service.square_off(session, broker, trade, reason="sqoff")
         return
 
@@ -164,6 +165,8 @@ def place_initial_sl(session, broker, trade: Trade, sl_pct: float) -> None:
     if trade.sl_order_id is not None:
         return
     sl = trade_service.initial_sl_for(trade.entry_price, trade.direction, sl_pct)
+    log.info("trade_tracker: placing SL for trade %s | trigger=%.2f direction=%s sl_pct=%.1f%%",
+             trade.id, sl, trade.direction, sl_pct)
     order_id, sl_order_type = trade_service.place_stop_loss(
         broker,
         instrument_key=trade.option_instrument_key,
@@ -176,6 +179,8 @@ def place_initial_sl(session, broker, trade: Trade, sl_pct: float) -> None:
     trade.sl_order_id = order_id
     trade.sl_order_type = sl_order_type
     trade.current_sl = sl
+    log.info("trade_tracker: SL placed for trade %s | order=%s type=%s trigger=%.2f",
+             trade.id, order_id, sl_order_type, sl)
     trade_service.record_order(
         session, order_id=order_id, trade_id=trade.id, order_type=sl_order_type, transaction_type="SELL",
         instrument_token=trade.option_instrument_key, quantity=trade.quantity, tag=f"trade-{trade.id}",
@@ -190,6 +195,8 @@ def move_sl(broker, trade: Trade, new_sl: float, new_state: str) -> None:
     order_type = trade.sl_order_type or "SL-M"
     sl_tick = trade_service.option_tick_for(new_sl)
     price = 0.0 if order_type == "SL-M" else trade_service.sl_price_below_trigger(new_sl, sl_tick)
+    log.info("trade_tracker: modifying SL for trade %s | order=%s old=%.2f new=%.2f type=%s",
+             trade.id, trade.sl_order_id, trade.current_sl, new_sl, order_type)
     broker.modify_order(
         ModifyOrderParams(
             order_id=trade.sl_order_id,
@@ -202,3 +209,5 @@ def move_sl(broker, trade: Trade, new_sl: float, new_state: str) -> None:
     )
     trade.current_sl = new_sl
     trade.trail_state = new_state
+    log.info("trade_tracker: SL modified for trade %s | order=%s new=%.2f state=%s",
+             trade.id, trade.sl_order_id, new_sl, new_state)

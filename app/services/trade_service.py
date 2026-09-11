@@ -85,6 +85,8 @@ def place_stop_loss(
     Raises BrokerError if both attempts fail.
     """
     trigger = round_to_tick(trigger_price, option_tick_for(trigger_price, instrument_tick))
+    log.info("trade_service: placing SL for %s | direction=SELL qty=%s type=SL-M trigger=%.2f tag=%s",
+             instrument_key, quantity, trigger, tag)
     # First attempt: SL-M (Stop-Loss-Market). Becomes a market sell at trigger.
     try:
         order_id = broker.place_order(
@@ -99,6 +101,7 @@ def place_stop_loss(
                 tag=tag,
             )
         )
+        log.info("trade_service: SL-M placed order_id=%s for %s", order_id, instrument_key)
         return order_id, "SL-M"
     except Exception as e:
         if not _is_slm_rejection(e):
@@ -110,6 +113,8 @@ def place_stop_loss(
 
     # Fallback: SL with limit strictly below trigger (UDAPI1038).
     sl_limit = sl_price_below_trigger(trigger, option_tick_for(trigger, instrument_tick))
+    log.info("trade_service: placing SL fallback for %s | direction=SELL qty=%s type=SL price=%.2f trigger=%.2f tag=%s",
+             instrument_key, quantity, sl_limit, trigger, tag)
     order_id = broker.place_order(
         OrderRequest(
             instrument_key=instrument_key,
@@ -122,6 +127,7 @@ def place_stop_loss(
             tag=tag,
         )
     )
+    log.info("trade_service: SL placed order_id=%s for %s", order_id, instrument_key)
     return order_id, "SL"
 
 
@@ -145,6 +151,8 @@ def place_defensive_sqoff(
     sqoff_price = (broker.get_ltp([instrument_key]) or {}).get(instrument_key)
     if sqoff_price is None:
         raise BrokerError(f"no LTP for sqoff of {instrument_key}")
+    log.info("trade_service: placing defensive sqoff for %s qty=%s premium=%.1f%% price=%.2f tag=%s",
+             instrument_key, quantity, limit_premium_pct, sqoff_price, tag)
     return broker.place_order(
         OrderRequest(
             instrument_key=instrument_key,
@@ -271,6 +279,8 @@ def close_trade(session, trade: Trade, *, exit_price: float, exit_reason: str) -
 
 def square_off(session, broker, trade: Trade, reason: str = "sqoff") -> float:
     """Exit an open trade with a market SELL, record the order, close the trade."""
+    log.info("trade_service: defensive square-off trade %s | reason=%s qty=%s price=%.2f",
+             trade.id, reason, trade.quantity, trade.entry_price)
     order_id = broker.place_order(
         OrderRequest(
             instrument_key=trade.option_instrument_key,
@@ -288,6 +298,8 @@ def square_off(session, broker, trade: Trade, reason: str = "sqoff") -> float:
         average_price=exit_price, tradingsymbol=trade.tradingsymbol,
     )
     close_trade(session, trade, exit_price=exit_price, exit_reason=reason)
+    log.info("trade_service: square-off completed trade %s | exit=%.2f pnl=%.2f",
+             trade.id, exit_price, trade.realized_pnl)
     return exit_price
 
 

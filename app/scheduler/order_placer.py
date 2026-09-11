@@ -134,6 +134,8 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
     raw_limit = contract_ltp * (1.0 + limit_premium_pct / 100.0)
     limit_price = trade_service.ceil_to_tick(raw_limit, trade_service.option_tick_for(raw_limit, instrument_tick))
 
+    log.info("order_placer: placing entry order lead=%s instrument=%s | qty=%s limit=%.2f ltp=%.2f tag=%s",
+             lead.id, contract.instrument_key, quantity, limit_price, contract_ltp, tag)
     entry_order_id = broker.place_order(
         OrderRequest(
             instrument_key=contract.instrument_key,
@@ -145,6 +147,8 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
             tag=tag,
         )
     )
+    log.info("order_placer: entry order %s placed for lead=%s instrument=%s",
+             entry_order_id, lead.id, contract.instrument_key)
 
     entry_price, status = _wait_for_fill(broker, entry_order_id, fill_timeout)
     if entry_price is None:

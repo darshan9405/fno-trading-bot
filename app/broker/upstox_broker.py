@@ -318,7 +318,11 @@ class UpstoxBroker(BrokerBase):
         order_ids = getattr(getattr(resp, "data", None), "order_ids", None) or []
         if not order_ids:
             raise BrokerError("place_order: no order_id in response")
-        return order_ids[0]
+        order_id = order_ids[0]
+        log.info("upstox_broker: placed order %s: %s %s x%s at %s (tag=%s, type=%s)",
+                 order_id, order.transaction_type, order.instrument_key, order.quantity,
+                 order.price or "MARKET", order.tag, order.order_type)
+        return order_id
 
     def modify_order(self, params: ModifyOrderParams) -> None:
         self._require_token()
@@ -337,6 +341,8 @@ class UpstoxBroker(BrokerBase):
             api.modify_order(body)
         except ApiException as e:
             raise self._to_broker_error("modify_order", e)
+        log.info("upstox_broker: modified order %s: qty=%s price=%s trigger=%s type=%s",
+                 params.order_id, params.quantity, params.price, params.trigger_price, params.order_type)
 
     def cancel_order(self, order_id: str) -> None:
         self._require_token()
@@ -345,6 +351,7 @@ class UpstoxBroker(BrokerBase):
             api.cancel_order(order_id)
         except ApiException as e:
             raise self._to_broker_error("cancel_order", e)
+        log.info("upstox_broker: cancelled order %s", order_id)
 
     def exit_all(self, tag: str | None = None, segment: str | None = None) -> None:
         self._require_token()
@@ -358,6 +365,7 @@ class UpstoxBroker(BrokerBase):
             api.exit_positions(**kwargs)
         except ApiException as e:
             raise self._to_broker_error("exit_all", e)
+        log.info("upstox_broker: exited all positions tag=%s segment=%s", tag, segment)
 
     def get_order_book(self) -> list[OrderView]:
         self._require_token()

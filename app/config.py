@@ -71,6 +71,7 @@ class Config:
     AUTO_SEED_INSTRUMENTS = os.getenv("AUTO_SEED_INSTRUMENTS", "0").lower() == "1"
 
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+    LOG_FILE = os.getenv("LOG_FILE", "logs/trading.log")
 
     @property
     def is_dev(self):

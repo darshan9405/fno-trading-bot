@@ -27,6 +27,31 @@ class _ISTFormatter(logging.Formatter):
         return ts.strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
+def configure_logging(config: Config) -> None:
+    """Configure console + persistent file logging for the app."""
+    level = getattr(logging, config.LOG_LEVEL.upper(), logging.INFO)
+    log_dir = config.LOG_FILE.rsplit("/", 1)[0] if "/" in config.LOG_FILE else "."
+    log_path = config.LOG_FILE
+    try:
+        from logging.handlers import RotatingFileHandler
+        import os
+        os.makedirs(log_dir, exist_ok=True)
+        handler = RotatingFileHandler(log_path, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8")
+        handler.setLevel(level)
+        handler.setFormatter(_ISTFormatter("%(asctime)s %(levelname)s %(name)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+        logging.getLogger().addHandler(handler)
+    except Exception as e:
+        logging.getLogger(__name__).warning("failed to configure file logging: %s", e)
+
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    for handler in logging.root.handlers:
+        handler.setFormatter(_ISTFormatter("%(asctime)s %(levelname)s %(name)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+
+
 def create_app(config: Config | None = None) -> Flask:
     config = config or Config()
     app = Flask(__name__)
@@ -35,13 +60,7 @@ def create_app(config: Config | None = None) -> Flask:
     # Trust X-Forwarded-* (nginx behind Cloudflare Tunnel): 1 proxy hop.
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
-    logging.basicConfig(
-        level=getattr(logging, config.LOG_LEVEL.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-    for handler in logging.root.handlers:
-        handler.setFormatter(_ISTFormatter("%(asctime)s %(levelname)s %(name)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+    configure_logging(config)
 
     engine = init_db(config.DATABASE_URL)
     Base.metadata.create_all(engine)
