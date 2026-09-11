@@ -617,6 +617,9 @@ def render_sidebar() -> str:
         if token_expired:
             token_dot = "err"
             token_txt = "Expired"
+        elif b.get("connected") is False and b.get("message") and b.get("message") != "ok":
+            token_dot = "warn"
+            token_txt = "Locked" if "Locked" in b.get("message", "") else "Upstox error"
         elif token_valid:
             token_dot = "ok"
             token_txt = f"OK · {_utc_to_ist_hm(token_valid)} IST"
@@ -765,7 +768,16 @@ def render_dashboard():
 
     pnl = api.get_pnl()
     if pnl.get("status") != "ok":
-        st.warning(f"{pnl.get('error', {}).get('message', 'P&L unavailable')} — live P&L needs an Upstox token.")
+        msg = pnl.get("error", {}).get("message", "P&L unavailable")
+        err_code = pnl.get("error", {}).get("code", "")
+        if "Locked" in msg or err_code == "broker_error":
+            st.warning(
+                f"Upstox rejected the request: **{msg}** — this is an Upstox-side "
+                f"condition (account/app lock). Wait a few minutes and retry, or "
+                f"check your Upstox account."
+            )
+        else:
+            st.warning(f"{msg} — live P&L needs an Upstox token.")
         c = st.columns(4)
         c[0].metric("Unrealised", "—")
         c[1].metric("Realised", "—")
