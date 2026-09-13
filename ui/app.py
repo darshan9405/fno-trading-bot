@@ -1518,12 +1518,91 @@ def render_settings():
                                 value=float(cfg.get("breakout.volume_multiplier", 4.0)), step=0.5)
         vboost = st.slider("Volume confidence boost", 0.0, 0.4,
                            float(cfg.get("breakout.volume_boost", 0.15)), 0.05)
+        st.markdown("**Indicator context (Tier-3)**")
+        st.caption("Optional context features blended into the composite score. All default OFF — turn on one at a time and watch hit-rate in History before stacking.")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            tod_on = st.checkbox(
+                "Time-of-day",
+                value=bool(cfg.get("scoring.enable_time_of_day", False)),
+                help="Bias the score by IST session window (10:00-11:30 and 13:00-14:30 score higher).",
+            )
+        with c2:
+            oi_on = st.checkbox(
+                "Open Interest",
+                value=bool(cfg.get("scoring.enable_oi", False)),
+                help="Boost signals that align with dominant OI build-up near the strike.",
+            )
+        with c3:
+            iv_on = st.checkbox(
+                "Implied Volatility",
+                value=bool(cfg.get("scoring.enable_iv", False)),
+                help="Discount signals when IV is high, boost when IV is compressed (breakouts from compression are more meaningful).",
+            )
+        with st.expander("Pattern detection knobs", expanded=False):
+            st.caption("Tune the swing-based detectors. Defaults match the values Bulkowski's pattern-stats tables were derived on.")
+            lookback = st.number_input("Lookback (days)", min_value=20, max_value=250,
+                                       value=int(cfg.get("breakout.lookback_days", 60)))
+            swing_k = st.number_input("Swing K (pivot strength)", min_value=1, max_value=10,
+                                      value=int(cfg.get("breakout.swing_k", 3)))
+            proximity = st.number_input("Proximity %", min_value=0.05, max_value=5.0,
+                                        value=float(cfg.get("breakout.proximity_pct", 0.5)), step=0.05,
+                                        help="Max % distance from trigger level for a signal to qualify.")
+            min_touches = st.number_input("Min touches (horizontal)", min_value=1, max_value=10,
+                                         value=int(cfg.get("breakout.min_touches", 1)))
+            min_trendline_points = st.number_input("Min trendline points", min_value=2, max_value=10,
+                                                   value=int(cfg.get("breakout.min_trendline_points", 4)))
+            pole_pct = st.number_input("Flag pole %", min_value=1.0, max_value=20.0,
+                                       value=float(cfg.get("breakout.pole_pct", 3.0)), step=0.5,
+                                       help="Minimum prior move (%) before a flag/pennant qualifies.")
+            vwindow = st.number_input("Volume window (days)", min_value=5, max_value=60,
+                                      value=int(cfg.get("breakout.volume_window", 20)))
+            vlookback = st.number_input("Volume lookback (days)", min_value=1, max_value=20,
+                                        value=int(cfg.get("breakout.volume_lookback", 5)),
+                                        help="Number of recent bars checked for the spike.")
+        with st.expander("Market alignment, top-K & decay (Tier-2 / Tier-4)", expanded=False):
+            st.caption("Cross-asset filter, signal-per-instrument cap, and post-queue staleness/calibration.")
+            alignment = st.selectbox(
+                "Market alignment filter",
+                ["off", "nifty_sma20"],
+                index=["off", "nifty_sma20"].index(cfg.get("breakout.market_alignment", "off"))
+                    if cfg.get("breakout.market_alignment", "off") in ["off", "nifty_sma20"] else 0,
+                help="'off' = no filter. 'nifty_sma20' = only fire CALL signals in uptrend, PUT in downtrend (else neutral).",
+            )
+            top_k = st.number_input("Top-K signals per instrument", min_value=1, max_value=5,
+                                    value=int(cfg.get("breakout.top_k_per_instrument", 2)),
+                                    help="Emit up to this many leads per instrument (each direction can fire independently).")
+            staleness_min = st.number_input(
+                "Staleness half-life (minutes)", min_value=0, max_value=120,
+                value=int(cfg.get("breakout.staleness_half_life_min", 0)),
+                help="0 = no decay. >0 = queued lead confidence decays by half every N minutes.",
+            )
+            cal_alpha = st.slider(
+                "Calibration alpha", 0.0, 1.0,
+                float(cfg.get("scoring.calibration_alpha", 0.0)), 0.05,
+                help="0 = no historical calibration. 1 = lean entirely on past win-rate for this pattern.",
+            )
         new_cfg.update({
             "breakout.patterns_enabled": patterns,
             "breakout.min_confidence": float(min_conf),
             "breakout.require_volume_spike": bool(require_spike),
             "breakout.volume_multiplier": float(vmult),
             "breakout.volume_boost": float(vboost),
+            "scoring.enable_time_of_day": bool(tod_on),
+            "scoring.enable_oi": bool(oi_on),
+            "scoring.enable_iv": bool(iv_on),
+            "breakout.lookback_days": int(lookback),
+            "breakout.swing_k": int(swing_k),
+            "breakout.proximity_pct": float(proximity),
+            "breakout.min_touches": int(min_touches),
+            "breakout.min_trendline_points": int(min_trendline_points),
+            "breakout.pole_pct": float(pole_pct),
+            "breakout.volume_window": int(vwindow),
+            "breakout.volume_lookback": int(vlookback),
+            "breakout.market_alignment": alignment,
+            "breakout.top_k_per_instrument": int(top_k),
+            "breakout.staleness_half_life_min": int(staleness_min),
+            "scoring.calibration_alpha": float(cal_alpha),
         })
 
     with tab_sched:

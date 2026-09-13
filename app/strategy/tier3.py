@@ -71,13 +71,19 @@ def time_of_day_score(now: datetime | None) -> float:
 # --- Public entry point ----------------------------------------------------
 
 def attach_market_context(comps: ComponentScores, instrument, now) -> ComponentScores:
-    """Apply available Tier-3 context. Defensive — any setting/db/broker
-    failure is logged at DEBUG and the original `ComponentScores` is
-    returned unchanged.
+    """Apply available Tier-3 context at lead-generation time. Defensive —
+    any setting/db/broker failure is logged at DEBUG and the original
+    `ComponentScores` is returned unchanged.
 
-    Currently only `time_of_day` is cheap enough to compute during lead
-    generation. IV/OI wiring lives at `app.services.tier3_context` and is
-    applied later in the pipeline by `order_placer`.
+    A Tier-3 feature is only added to `extras` when it has actual data:
+      - time_of_day: requires a non-None `now` (we know the IST clock).
+      - iv / oi: NOT added here. They need the option chain, which is
+        fetched later in `attach_lead_plans` once the strike is resolved.
+        `enrich_for_order_placement` / `reblend_with_tier3` add them then.
+
+    Adding a neutral default (0.5) at generate time would silently penalise
+    otherwise-good signals by ~Tier-3 weight × 0.5 — see the score math in
+    the docstring of `app.strategy.scoring.available_weight_map`.
     """
     try:
         from app.settings import get_setting
@@ -86,7 +92,7 @@ def attach_market_context(comps: ComponentScores, instrument, now) -> ComponentS
         enable_tod = False
 
     extras: dict[str, float] = {}
-    if enable_tod:
+    if enable_tod and now is not None:
         extras["time_of_day"] = time_of_day_score(now)
 
     if not extras:
@@ -97,11 +103,13 @@ def attach_market_context(comps: ComponentScores, instrument, now) -> ComponentS
 # --- Pipe-through (no-op here; IV/OI happens in tier3_context service) ----
 
 def enrich_for_order_placement(comps: ComponentScores, broker, underlying_key: str,
-                                direction: str, signal_level: float) -> ComponentScores:
+                                direction: str, signal_level: float,
+                                contracts=None) -> ComponentScores:
     """Append IV/OI extras when their settings flag is on. Called from
-    `order_placer` after the strike has been resolved (so the option chain
-    fetch is essentially free). Defensive — returns `comps` unchanged on
-    any error.
+    `attach_lead_plans` (after strike is resolved — the option chain is
+    already in hand) or `order_placer`. If `contracts` is supplied, the
+    function skips re-fetching the chain. Defensive — returns `comps`
+    unchanged on any error.
     """
     try:
         from app.settings import get_setting
@@ -113,11 +121,12 @@ def enrich_for_order_placement(comps: ComponentScores, broker, underlying_key: s
     if not (enable_iv or enable_oi):
         return comps
 
-    try:
-        contracts = _fetch_option_chain(broker, underlying_key)
-    except Exception as e:
-        log.debug("tier3: option-chain fetch failed for %s (%s)", underlying_key, e)
-        return comps
+    if contracts is None:
+        try:
+            contracts = _fetch_option_chain(broker, underlying_key)
+        except Exception as e:
+            log.debug("tier3: option-chain fetch failed for %s (%s)", underlying_key, e)
+            return comps
 
     extras: dict[str, float] = {}
     if enable_iv:
@@ -127,6 +136,49 @@ def enrich_for_order_placement(comps: ComponentScores, broker, underlying_key: s
     if not extras:
         return comps
     return comps.with_extra(**extras)
+
+
+def reblend_with_tier3(comps: ComponentScores, underlying_key: str,
+                       direction: str, signal_level: float, contracts=None,
+                       broker=None) -> tuple[ComponentScores, float]:
+    """Re-blend the composite score including all enabled Tier-3 features
+    (IV / OI / time-of-day). Used by `attach_lead_plans` after the strike
+    has been resolved so IV/OI can be computed against the actual contract.
+
+    Returns (updated ComponentScores, new score in [0, 1]). Defensive —
+    on any error returns the input `comps` and its current score.
+    """
+    try:
+        from app.settings import get_setting
+        enable_iv = bool(get_setting("scoring.enable_iv", False))
+        enable_oi = bool(get_setting("scoring.enable_oi", False))
+        enable_tod = bool(get_setting("scoring.enable_time_of_day", False))
+    except Exception:
+        return comps, _approx_score(comps)
+
+    enriched = enrich_for_order_placement(
+        comps, broker, underlying_key, direction, signal_level, contracts=contracts,
+    )
+
+    try:
+        from app.strategy.scoring import available_weight_map, composite
+        weights = available_weight_map(
+            enable_iv=enable_iv, enable_oi=enable_oi, enable_tod=enable_tod,
+        )
+        new_score = composite(enriched, weights)
+        return enriched, new_score
+    except Exception:
+        return comps, _approx_score(comps)
+
+
+def _approx_score(comps: ComponentScores) -> float:
+    """Best-effort current score for fallback when the weight map isn't
+    available. Falls back to a simple average of populated fields."""
+    vals = [comps.pattern_fit, comps.volume, comps.trend_alignment,
+            comps.proximity, comps.structure]
+    vals += list(comps.extras.values())
+    vals = [v for v in vals if v is not None]
+    return round(sum(vals) / len(vals), 4) if vals else 0.0
 
 
 def _fetch_option_chain(broker, underlying_key: str):

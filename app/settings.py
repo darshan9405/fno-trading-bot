@@ -49,10 +49,17 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "breakout.staleness_half_life_min": 0,
     # Tier-4 calibration: alpha multiplier applied to historical win-rate; 0 disables.
     "scoring.calibration_alpha": 0.0,
-    # Tier-3 add-ons (default off; flip on once option-chain IV/OI is wired in).
-    "scoring.enable_iv": False,
-    "scoring.enable_oi": False,
-    "scoring.enable_time_of_day": False,
+    # Tier-3 add-ons:
+    #   - time_of_day: ON by default. Heston-Sadka-Sadka (2010) — strongest intraday
+    #     continuation effect, cheapest to compute (no broker call). Flows into the
+    #     composite score at lead-generation time.
+    #   - oi / iv: ON by default. They need the option chain (strike-level IV/OI),
+    #     which is already loaded in `attach_lead_plans` once the strike is resolved
+    #     — so they're computed contract-specifically (not on a guessed strike) and
+    #     added to the lead's stored score without an extra broker call.
+    "scoring.enable_iv": True,
+    "scoring.enable_oi": True,
+    "scoring.enable_time_of_day": True,
 }
 
 

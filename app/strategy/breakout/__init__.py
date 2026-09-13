@@ -78,9 +78,15 @@ class BreakoutStrategy(Strategy):
                 log.warning("breakout: trend lookup failed (%s); treating as neutral", e)
                 trend = None
 
-        # Tier-3 add-ons (IV/OI/time-of-day) are applied here when enabled.
+        # Tier-3 weight map for the generate-time composite score.
+        # - TOD is included when `now` is set (we have a real IST clock value).
+        # - IV / OI are deliberately NOT included here. They need the option
+        #   chain (strike-specific), which is loaded later in `attach_lead_plans`
+        #   once the strike is resolved. They're added then via
+        #   `tier3.reblend_with_tier3`, which re-blends the stored score.
+        enable_tod = bool(get_setting("scoring.enable_time_of_day", False)) and now is not None
         weights = available_weight_map(
-            enable_iv=False, enable_oi=False, enable_tod=False
+            enable_iv=False, enable_oi=False, enable_tod=enable_tod
         )
 
         for s in signals:

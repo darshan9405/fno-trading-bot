@@ -83,6 +83,10 @@ def attach_lead_plans(
     whose premium x lot size x lots fits `available_margin`. A lead is skipped
     (note "insufficient margin") when nothing within depth is affordable.
 
+    Tier-3 IV/OI scoring happens here: once the strike is chosen we already have
+    the option chain in hand, so the lead's stored confidence is re-blended to
+    include IV/OI evidence for the actual contract that would be traded.
+
     If `available_margin` is None the check is disabled and the ATM contract is
     used. Failures are logged and skipped so lead creation is never blocked.
     """
@@ -147,3 +151,58 @@ def attach_lead_plans(
             }
             if lead.plan["premium"] is not None:
                 lead.plan["margin_needed"] = round(lead.plan["premium"] * lead.plan["quantity"], 2)
+
+            # Tier-3 IV/OI re-blend: the strike is now known and the option chain
+            # is already loaded, so we can score IV/OI for this exact contract.
+            # Defensive — any failure leaves the lead's existing score intact.
+            try:
+                _reblend_lead_with_tier3(lead, underlying_key, contracts)
+            except Exception as e:
+                log.warning("attach_lead_plans: tier-3 re-blend failed for %s (%s)", underlying_key, e)
+
+
+def _reblend_lead_with_tier3(lead: Lead, underlying_key: str, contracts) -> None:
+    """Re-blend the lead's composite score to include IV/OI evidence for the
+    specific contract we just selected. The strike is known and the option
+    chain is already in hand, so this is the right (and only sensible) place
+    to compute IV/OI — no extra broker call, strike-specific data.
+
+    Reads the existing `components` JSON dict, rehydrates to ComponentScores,
+    adds IV/OI extras via tier3.reblend_with_tier3, and persists the updated
+    score + components back onto the lead. Silently no-ops when `components`
+    is missing or the IV/OI settings are both off.
+    """
+    from app.strategy.scoring import ComponentScores
+    from app.strategy import tier3
+
+    existing = lead.components or {}
+    if not existing:
+        return
+
+    extras = dict(existing.get("extras") or {})
+    comp = ComponentScores(
+        pattern_fit=float(existing.get("pattern_fit", 0.0)),
+        volume=float(existing.get("volume", 0.5)),
+        trend_alignment=float(existing.get("trend_alignment", 0.5)),
+        proximity=float(existing.get("proximity", 0.0)),
+        structure=float(existing.get("structure", 0.0)),
+        extras=extras,
+    )
+
+    enriched, new_score = tier3.reblend_with_tier3(
+        comp,
+        underlying_key=underlying_key,
+        direction=lead.direction,
+        signal_level=lead.signal_level,
+        contracts=contracts,
+    )
+
+    lead.confidence = round(float(new_score), 4)
+    lead.components = {
+        "pattern_fit": enriched.pattern_fit,
+        "volume": enriched.volume,
+        "trend_alignment": enriched.trend_alignment,
+        "proximity": enriched.proximity,
+        "structure": enriched.structure,
+        "extras": enriched.extras,
+    }

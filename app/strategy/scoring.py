@@ -35,10 +35,19 @@ DEFAULT_WEIGHTS: dict[str, float] = {
 
 # Tier-3 supplementary weights. These get folded into the active weight map when
 # their respective context feature is enabled.
+#
+# Research-backed defaults (sum to 0.15; Tier-1 base weights are rescaled to 0.85):
+#   - time_of_day (0.06): Heston-Sadka-Sadka (2010) — strongest intraday continuation
+#     effect, especially 10:00-11:30 IST. Cheapest feature (no broker call).
+#   - oi (0.05): Pan-Poteshman-Weisbach (2006) / Bollen-Whaley — OI build-up at the
+#     ATM strike is a directional bias that pre-dates the breakout.
+#   - iv (0.04): Mean-reversion in implied vol (Carr-Wu 2009). Breakouts from
+#     compressed IV have higher follow-through; high IV penalises the lead. Weakest
+#     of the three (smallest effect size, partly redundant with Tier-1 volatility).
 DEFAULT_TIER3_WEIGHTS: dict[str, float] = {
-    "iv":            0.05,
+    "iv":            0.04,
     "oi":            0.05,
-    "time_of_day":   0.05,
+    "time_of_day":   0.06,
 }
 
 
