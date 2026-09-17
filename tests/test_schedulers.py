@@ -1143,7 +1143,9 @@ def test_compute_trailing_sl_unit(env):
 
 
 def test_compute_trailing_sl_put_unit(env):
-    """PUT trail is symmetric: SL is above entry and moves down on retrace.
+    """PUT trail mirrors CALL: the bot is a buyer for both CE and PE, so PUT
+    risk is the premium falling. SL sits below entry and ratchets UP only as
+    the PUT premium rises (locks in profit).
     Seed a PUT trade directly because the env fixture creates a CALL."""
     from app.models import Trade
     from app.services.trade_service import compute_trailing_sl
@@ -1156,7 +1158,7 @@ def test_compute_trailing_sl_put_unit(env):
             tradingsymbol="RELIANCE 10 SEP 26 3000 PE",
             lot_size=1250, product="D", direction="PUT",
             entry_price=200.0, quantity=1250,
-            initial_sl=220.0, current_sl=220.0,
+            initial_sl=180.0, current_sl=180.0,
             trail_state="at_initial", best_price=200.0, status="open",
             entry_order_id="o-x", sl_order_id="o-y",
         )
@@ -1164,32 +1166,32 @@ def test_compute_trailing_sl_put_unit(env):
         session.flush()
         trade_id = trade.id
 
-    # activation_ltp = 220 * (1 - 0.20) = 176; ltp=180 NOT activated.
+    # activation_ltp = 180 * (1 + 0.20) = 216; ltp=215 NOT activated.
     with session_scope() as session:
         t = session.get(Trade, trade_id)
-        new_sl, state = compute_trailing_sl(t, ltp=180.0, activate_pct=20.0, gap_pct=10.0)
-        assert new_sl == 220.0 and state == "at_initial"
+        new_sl, state = compute_trailing_sl(t, ltp=215.0, activate_pct=20.0, gap_pct=10.0)
+        assert new_sl == 180.0 and state == "at_initial"
 
-    # Activate: ltp=176 → candidate = 176 * 1.10 = 193.60.
+    # Activate: ltp=216 → candidate = 216 * 0.9 = 194.40.
     with session_scope() as session:
         t = session.get(Trade, trade_id)
-        new_sl, state = compute_trailing_sl(t, ltp=176.0, activate_pct=20.0, gap_pct=10.0)
-        assert new_sl == 193.60 and state == "trailing"
+        new_sl, state = compute_trailing_sl(t, ltp=216.0, activate_pct=20.0, gap_pct=10.0)
+        assert new_sl == 194.40 and state == "trailing"
         t.current_sl = new_sl
         t.trail_state = state
 
-    # Lower ltp: candidate = 160 * 1.10 = 176.00; moves down in profitable direction.
+    # Higher ltp: candidate = 250 * 0.9 = 225.00; SL ratchets UP.
     with session_scope() as session:
         t = session.get(Trade, trade_id)
-        t.current_sl = 193.60
+        t.current_sl = 194.40
         t.trail_state = "trailing"
-        new_sl, state = compute_trailing_sl(t, ltp=160.0, activate_pct=20.0, gap_pct=10.0)
-        assert new_sl == 176.00 and state == "trailing"
+        new_sl, state = compute_trailing_sl(t, ltp=250.0, activate_pct=20.0, gap_pct=10.0)
+        assert new_sl == 225.00 and state == "trailing"
 
-    # Retrace UP — SL must not move up (PUT ratchet direction is down).
+    # Retrace DOWN — SL must not move down (PUT ratchet direction is up).
     with session_scope() as session:
         t = session.get(Trade, trade_id)
-        t.current_sl = 176.00
+        t.current_sl = 225.00
         t.trail_state = "trailing"
-        new_sl, state = compute_trailing_sl(t, ltp=190.0, activate_pct=20.0, gap_pct=10.0)
-        assert new_sl == 176.00 and state == "trailing"
+        new_sl, state = compute_trailing_sl(t, ltp=210.0, activate_pct=20.0, gap_pct=10.0)
+        assert new_sl == 225.00 and state == "trailing"

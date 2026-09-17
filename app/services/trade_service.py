@@ -326,20 +326,18 @@ def initial_sl_for(entry_price: float, direction: str, sl_pct: float,
                    instrument_tick: float = 0.0) -> float:
     """Initial SL trigger price for a CALL/PUT option.
 
-    CALL: SL below entry (price * (1 - sl_pct/100))
-    PUT : SL above entry (price * (1 + sl_pct/100))
+    The bot always BUYs options, so both CE and PE positions carry the same
+    downside risk: the premium falling below entry. The protective SL must
+    therefore be BELOW entry for both directions (price * (1 - sl_pct/100)).
 
     The trigger is snapped to the option's NSE tick band (0.05/0.10/0.50) so
     Upstox doesn't reject the order for an off-tick price.
     """
-    factor = (1.0 - sl_pct / 100.0) if direction == "CALL" else (1.0 + sl_pct / 100.0)
-    raw = entry_price * factor
+    raw = entry_price * (1.0 - sl_pct / 100.0)
     tick = option_tick_for(raw, instrument_tick)
     snapped = round_to_tick(raw, tick)
-    if direction == "CALL" and snapped >= entry_price:
+    if snapped >= entry_price:
         snapped = round_to_tick(entry_price - tick, tick)
-    elif direction == "PUT" and snapped <= entry_price:
-        snapped = round_to_tick(entry_price + tick, tick)
     return snapped
 
 
@@ -386,22 +384,23 @@ def compute_trailing_sl(trade: Trade, ltp: float, activate_pct: float, gap_pct: 
             return snapped, "trailing"
         return max(snapped, trade.current_sl), "trailing"
 
-    # PUT
-    activation_ltp = initial * (1.0 - activate_pct / 100.0)
-    if not already_trailing and ltp > activation_ltp:
+    # PUT: the bot is a buyer, so PUT risk is the premium falling — same as
+    # CALL. Profitable direction is LTP rising, so we activate when ltp climbs
+    # `activate_pct`% above the initial SL and trail `gap_pct`% below LTP,
+    # ratcheting UP only (locks profit as the PUT premium rises).
+    activation_ltp = initial * (1.0 + activate_pct / 100.0)
+    if not already_trailing and ltp < activation_ltp:
         return trade.current_sl, "at_initial"
-    candidate = ltp * (1.0 + gap_pct / 100.0)
+    candidate = ltp * (1.0 - gap_pct / 100.0)
     tick = option_tick_for(candidate, instrument_tick)
     snapped = round_to_tick(candidate, tick)
-    floor = round_to_tick(ltp + tick, tick)
-    if snapped <= floor:
-        snapped = floor + tick
+    cap = round_to_tick(ltp - tick, tick)
+    if snapped >= cap:
+        snapped = max(cap - tick, tick)
     if not already_trailing:
         return snapped, "trailing"
-    return min(snapped, trade.current_sl), "trailing"
+    return max(snapped, trade.current_sl), "trailing"
 
 
 def is_sl_hit(trade: Trade, ltp: float) -> bool:
-    if trade.direction == "CALL":
-        return ltp <= trade.current_sl
-    return ltp >= trade.current_sl
+    return ltp <= trade.current_sl
