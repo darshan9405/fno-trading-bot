@@ -12,6 +12,32 @@ from datetime import date, datetime
 
 import pandas as pd
 
+FNO_OPTION_TICK = 0.05  # NSE F&O options: uniform ₹0.05 tick across all strikes/premiums.
+
+
+def normalize_instrument_tick(raw) -> float:
+    """Coerce a broker-reported `tick_size` to a sane rupee value.
+
+    Upstox option-contract responses historically return `tick_size` as integer
+    paise (5 → ₹0.05, 10 → ₹0.10, 50 → ₹0.50). Treat values >=1 that equal an
+    integer as paise and divide by 100; consume floats directly. Out-of-range
+    values (≤0 or >100) fall back to `FNO_OPTION_TICK` so a bad contract never
+    distorts the SL or entry price.
+    """
+    if raw is None:
+        return FNO_OPTION_TICK
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return FNO_OPTION_TICK
+    if v <= 0:
+        return FNO_OPTION_TICK
+    if v >= 1 and v == int(v):
+        v = v / 100.0
+    if v > 100:
+        return FNO_OPTION_TICK
+    return round(v, 4)
+
 
 class BrokerError(Exception):
     """Raised when a broker operation fails (wraps SDK ApiException)."""

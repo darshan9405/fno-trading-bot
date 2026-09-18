@@ -84,7 +84,7 @@ def run_order_placer(broker=None, now=None):
             for lead in candidates:
                 try:
                     process_lead(session, broker, lead, sl_pct, max_div, min_days, lots, available_margin,
-                                 max_depth, fill_timeout, limit_premium_pct)
+                                 max_depth, fill_timeout, limit_premium_pct, today=now.date())
                 except Exception as e:
                     log.exception("order_placer: lead %s failed", lead.id)
                     mark_lead(session, lead, "skipped", note=str(e))
@@ -103,7 +103,8 @@ def run_order_placer(broker=None, now=None):
 
 def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min_days: int, lots: int,
                  available_margin: float | None = None, max_depth: int = 3,
-                 fill_timeout: int = 30, limit_premium_pct: float = 1.0) -> None:
+                 fill_timeout: int = 30, limit_premium_pct: float = 1.0,
+                 today=None) -> None:
     mark_lead(session, lead, "picked", note="processing")
 
     if trade_service.has_open_trade_for_underlying(session, lead.underlying_key):
@@ -122,7 +123,7 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
         mark_lead(session, lead, "skipped", note=f"price diverged {divergence:.2f}% from signal")
         return
 
-    expiry = contract_service.next_expiry(broker, lead.underlying_key, min_days)
+    expiry = contract_service.next_expiry(broker, lead.underlying_key, min_days, today=today)
     if expiry is None:
         raise BrokerError(f"no expiry >= {min_days} days for {lead.underlying_key}")
 
@@ -209,6 +210,40 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
             f"SL placement failed for {contract.instrument_key}: {e}; "
             f"sqoff={'placed ' + sqoff_id if sqoff_id else 'FAILED — manual intervention required'}"
         )
+
+    try:
+        ok, err_msg = trade_service.verify_sl_placed(
+            broker,
+            sl_order_id=sl_order_id,
+            intended_trigger=initial_sl,
+            intended_type=sl_order_type,
+            entry_price=entry_price,
+        )
+        if not ok:
+            log.critical(
+                "order_placer: SL order mismatch at broker — %s "
+                "(sl_id=%s intended_trigger=%.2f intended_type=%s entry=%.2f)",
+                err_msg, sl_order_id, initial_sl, sl_order_type, entry_price,
+            )
+            try:
+                sqoff_id = trade_service.place_defensive_sqoff(
+                    broker, contract.instrument_key, quantity, tag, limit_premium_pct,
+                )
+                log.warning("order_placer: defensive sqoff %s placed after SL mismatch", sqoff_id)
+            except Exception as sqoff_e:
+                log.error(
+                    "order_placer: defensive sqoff after SL mismatch also failed: %s "
+                    "— manual intervention required. entry_order_id=%s sl_order_id=%s",
+                    sqoff_e, entry_order_id, sl_order_id,
+                )
+            raise BrokerError(
+                f"SL order at broker failed verification: {err_msg}; "
+                f"sqoff attempted for {contract.instrument_key} x{quantity}"
+            )
+    except BrokerError:
+        raise
+    except Exception as e:
+        log.exception("order_placer: SL verification raised unexpectedly — proceeding")
 
     trade = trade_service.create_trade(
         session,

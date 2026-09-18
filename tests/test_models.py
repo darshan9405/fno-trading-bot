@@ -233,7 +233,7 @@ def test_trade_pnl_and_sl(seed, db):
     assert closed.exit_reason == "sl_hit"
     assert closed.realized_pnl == -15000.00
     assert closed.quantity == 1250
-    assert closed.initial_sl == 132.00  # above entry for a PUT
+    assert closed.initial_sl == 132.00  # legacy fixture value, retained for audit
 
 
 def test_orders_and_fills_audit(seed, db):

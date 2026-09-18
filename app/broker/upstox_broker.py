@@ -27,6 +27,7 @@ from app.broker.base import (
     OrderView,
     PositionView,
     ProfileView,
+    normalize_instrument_tick,
 )
 from app.config import Config
 
@@ -139,7 +140,7 @@ def to_instrument_view(i) -> InstrumentView:
         expiry=_dt_date(_get(i, "expiry", None)),
         strike_price=_get(i, "strike_price", None),
         lot_size=int(_get(i, "lot_size", 1) or 1),
-        tick_size=float(_get(i, "tick_size", 0.0) or 0.0),
+        tick_size=normalize_instrument_tick(_get(i, "tick_size", 0.05)),
         underlying_key=_get(i, "underlying_key", None),
     )
 
@@ -319,9 +320,9 @@ class UpstoxBroker(BrokerBase):
         if not order_ids:
             raise BrokerError("place_order: no order_id in response")
         order_id = order_ids[0]
-        log.info("upstox_broker: placed order %s: %s %s x%s at %s (tag=%s, type=%s)",
+        log.info("upstox_broker: placed order %s: %s %s x%s price=%s trigger=%s (tag=%s, type=%s)",
                  order_id, order.transaction_type, order.instrument_key, order.quantity,
-                 order.price or "MARKET", order.tag, order.order_type)
+                 order.price or "MARKET", order.trigger_price, order.tag, order.order_type)
         return order_id
 
     def modify_order(self, params: ModifyOrderParams) -> None:

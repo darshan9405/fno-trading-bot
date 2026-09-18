@@ -176,6 +176,24 @@ def place_initial_sl(session, broker, trade: Trade, sl_pct: float) -> None:
     )
     sl_tick = trade_service.option_tick_for(sl)
     sl_limit = trade_service.sl_price_below_trigger(sl, sl_tick) if sl_order_type == "SL" else 0.0
+    ok, err_msg = trade_service.verify_sl_placed(
+        broker,
+        sl_order_id=order_id,
+        intended_trigger=sl,
+        intended_type=sl_order_type,
+        entry_price=trade.entry_price,
+    )
+    if not ok:
+        log.critical(
+            "trade_tracker: SL order mismatch at broker for trade %s — %s "
+            "(intended trigger=%.2f, type=%s, entry=%.2f)",
+            trade.id, err_msg, sl, sl_order_type, trade.entry_price,
+        )
+        try:
+            broker.cancel_order(order_id)
+        except Exception as cancel_e:
+            log.warning("trade_tracker: cancel of mismatched SL %s failed: %s", order_id, cancel_e)
+        raise BrokerError(f"SL mismatch at broker: {err_msg}")
     trade.sl_order_id = order_id
     trade.sl_order_type = sl_order_type
     trade.current_sl = sl
@@ -207,6 +225,19 @@ def move_sl(broker, trade: Trade, new_sl: float, new_state: str) -> None:
             validity="DAY",
         )
     )
+    ok, err_msg = trade_service.verify_sl_placed(
+        broker,
+        sl_order_id=trade.sl_order_id,
+        intended_trigger=new_sl,
+        intended_type=order_type,
+        entry_price=trade.entry_price,
+    )
+    if not ok:
+        log.critical(
+            "trade_tracker: SL modify mismatch at broker for trade %s — %s "
+            "(intended trigger=%.2f, type=%s, entry=%.2f)",
+            trade.id, err_msg, new_sl, order_type, trade.entry_price,
+        )
     trade.current_sl = new_sl
     trade.trail_state = new_state
     log.info("trade_tracker: SL modified for trade %s | order=%s new=%.2f state=%s",

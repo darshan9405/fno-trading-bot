@@ -357,21 +357,19 @@ interface for every registered strategy.
 3. current price within `max_lead_price_divergence_pct` of `signal_level`
 4. option expiry ≥ `min_days_to_expiry` days away (`get_expiries`)
 5. strike selection: `ATM` (default) or `ITM_0.5` config; contract from `option_cache`
-6. place entry (`LIMIT` at `LTP × (1 + entry_limit_premium_pct/100)`) and poll `get_order_book` for up to `entry_order_fill_timeout_seconds`; only if it fills does it place the protective SL (`SL` with `price = trigger_price`, since NSE rejects `SL-M` for options per circular NSE/FAOP/49677 effective 27-Sep-2021), `product='D'` (delivery/NRML — Intraday `I` is not supported for F&O on Upstox), `tag='trade-<id>'`
+6. place entry (`LIMIT` at `LTP × (1 + entry_limit_premium_pct/100)`) and poll `get_order_book` for up to `entry_order_fill_timeout_seconds`; only if it fills does it place the protective SL — `SL-M` first, falling back to `SL` with `price < trigger_price` if NSE/Upstox rejects `SL-M` for the segment (UDAPI1038: `price >= trigger_price`); `product='D'` (delivery/NRML — Intraday `I` is not supported for F&O on Upstox), `tag='trade-<id>'`
 7. on entry no-fill: cancel order, mark lead `skipped` + log `errors`
-8. on SL-placement failure after entry fill: cancel entry, raise, mark lead `skipped`
+8. on SL-placement failure after entry fill: place a defensive `LIMIT SELL` sqoff at LTP × (1 − limit_premium_pct/100), then raise, mark lead `skipped`
 
 ### 7.2 Trailing SL rule (S2) — configurable (v2: activate past SL, then ltp trail)
 
 ```
-entry_price       → initial_sl  = entry_price * (1 -+ initial_sl_pct)      # - for CALL, + for PUT
+entry_price       → initial_sl  = entry_price * (1 - initial_sl_pct/100)   # both CALL and PUT (long options)
 phase 1 (at_initial): SL stays at initial_sl until ltp crosses the activation threshold
-                      CALL: activate when ltp >= initial_sl * (1 + trail_activate_pct/100)
-                      PUT : activate when ltp <= initial_sl * (1 - trail_activate_pct/100)
+                      activate when ltp >= initial_sl * (1 + trail_activate_pct/100)
 phase 2 (trailing): on every tracker tick,
-                      CALL: candidate = ltp * (1 - trail_gap_pct/100); new_sl = max(snapped, current_sl)
-                      PUT : candidate = ltp * (1 + trail_gap_pct/100); new_sl = min(snapped, current_sl)
-                      (ratchet — SL only moves in the profitable direction)
+                      candidate = ltp * (1 - trail_gap_pct/100); new_sl = max(snapped, current_sl)
+                      (ratchet — SL only moves UP, locking profit as premium rises)
 if new_sl moved by >= order_tick → broker.modify_order(SL-M order, trigger_price=new_sl)
 ```
 
@@ -379,7 +377,7 @@ Defaults: `initial_sl_pct=10`, `trail_activate_pct=20`, `trail_gap_pct=10`. For 
 trade entered at 100 with `initial_sl_pct=10` → initial SL=90, activation threshold
 = 90 × 1.20 = 108. Once `ltp >= 108`, SL = `ltp × 0.9` (snapped to the option tick
 band); SL only ever moves UP. A retracement from 115 to 104 keeps SL at 103.50
-(115 × 0.9), not 93.60. PUT is symmetric (SL above entry, ratchet DOWN).
+(115 × 0.9), not 93.60. PUT is symmetric (long option — same downside protection).
 
 Trailing is executed by **S2 via `OrderApiV3.modify_order`** (v3 `ModifyOrderRequest`
 requires the full SL-order spec — quantity/validity/price/order_type/trigger_price),

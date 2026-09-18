@@ -54,7 +54,16 @@ def build_universe(df: pd.DataFrame) -> list[dict]:
             continue
         row = spot.iloc[0]
         ts = row.get("tick_size")
-        tick_size = 0.05 if pd.isna(ts) else float(ts)
+        if pd.isna(ts):
+            tick_size = 0.05
+        else:
+            v = float(ts)
+            if v >= 1 and v == int(v):
+                tick_size = v / 100.0
+            else:
+                tick_size = v
+            if tick_size <= 0:
+                tick_size = 0.05
         lot = lots.get(sym)
         lot_size = 1 if lot is None or pd.isna(lot) else int(lot)
         universe.append(

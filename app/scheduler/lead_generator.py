@@ -98,6 +98,7 @@ def run_lead_generator(broker=None, now=None, force: bool = False) -> dict | Non
                     if created:
                         attach_lead_plans(
                             session, broker, created, min_days, lots,
+                            today=now.date(),
                             available_margin=available_margin, max_depth=max_depth,
                         )
                         created_total += len(created)

@@ -4,7 +4,7 @@ import logging
 
 from sqlalchemy import select
 
-from app.broker.base import BrokerError, InstrumentView, OrderRequest
+from app.broker.base import BrokerError, InstrumentView, OrderRequest, normalize_instrument_tick
 from app.db import session_scope
 from app.models import Lead, Order, OrderFill, Trade
 from app.services.health_service import utcnow
@@ -14,6 +14,7 @@ log = logging.getLogger(__name__)
 PRODUCT = "D"  # delivery / NRML for F&O (Upstox product code for carry-forward)
 
 DEFAULT_OPTION_TICK = 0.05
+FNO_OPTION_TICK = 0.05  # NSE F&O options: uniform ₹0.05 tick across all strikes/premiums.
 
 
 def _token_from_key(instrument_key: str) -> str:
@@ -21,15 +22,9 @@ def _token_from_key(instrument_key: str) -> str:
 
 
 def option_tick_for(price: float, instrument_tick: float = 0.0) -> float:
-    """NSE option tick band: 0.05 below ₹250, 0.10 from ₹250–1000, 0.50 above.
-    `instrument_tick` is the broker-reported tick; non-zero overrides the band."""
-    if instrument_tick and instrument_tick > 0:
-        return float(instrument_tick)
-    if price >= 1000:
-        return 0.50
-    if price >= 250:
-        return 0.10
-    return 0.05
+    """NSE F&O options have a flat ₹0.05 tick. Trust the broker-reported tick
+    when sane (sanity-clipped to rupees); fall back to FNO_OPTION_TICK."""
+    return normalize_instrument_tick(instrument_tick)
 
 
 def round_to_tick(price: float, tick: float = DEFAULT_OPTION_TICK) -> float:
@@ -50,8 +45,12 @@ def ceil_to_tick(price: float, tick: float = DEFAULT_OPTION_TICK) -> float:
 def sl_price_below_trigger(trigger: float, tick: float = DEFAULT_OPTION_TICK) -> float:
     """Return a SL limit price strictly less than `trigger` (Upstox UDAPI1038
     rejects SELL SL orders where price == trigger_price). `tick` is the option's
-    tick band at the trigger price."""
-    return round(max(trigger - tick, 0.05), 2)
+    tick at the trigger price; the limit is exactly one tick below."""
+    raw = trigger - tick
+    sl_limit = round(raw, 2)
+    if sl_limit < 0.05:
+        sl_limit = 0.05
+    return sl_limit
 
 
 # Substrings the Upstox SDK returns in the ApiException body when SL-M is
@@ -112,7 +111,11 @@ def place_stop_loss(
         )
 
     # Fallback: SL with limit strictly below trigger (UDAPI1038).
-    sl_limit = sl_price_below_trigger(trigger, option_tick_for(trigger, instrument_tick))
+    tick_for_limit = option_tick_for(trigger, instrument_tick)
+    sl_limit = sl_price_below_trigger(trigger, tick_for_limit)
+    if sl_limit > 0.05 and abs((trigger - sl_limit) - tick_for_limit) > 1e-6:
+        log.warning("trade_service: SL fallback gap != tick trigger=%.2f limit=%.2f tick=%.4f",
+                    trigger, sl_limit, tick_for_limit)
     log.info("trade_service: placing SL fallback for %s | direction=SELL qty=%s type=SL price=%.2f trigger=%.2f tag=%s",
              instrument_key, quantity, sl_limit, trigger, tag)
     order_id = broker.place_order(
@@ -129,6 +132,51 @@ def place_stop_loss(
     )
     log.info("trade_service: SL placed order_id=%s for %s", order_id, instrument_key)
     return order_id, "SL"
+
+
+def verify_sl_placed(
+    broker,
+    *,
+    sl_order_id: str,
+    intended_trigger: float,
+    intended_type: str,
+    entry_price: float,
+) -> tuple[bool, str]:
+    """Pull the just-placed SL order from the broker and compare against intent.
+
+    For SELL protective SL on a long option, invariants:
+      - transaction_type == "SELL"
+      - trigger_price == intended_trigger
+      - if order_type == "SL" (limit fallback): price < trigger and gap == 1 tick
+      - if order_type == "SL-M": trigger < entry_price (downside protection)
+
+    Returns (ok, message). `message` is empty on success.
+    """
+    try:
+        order = next((o for o in broker.get_order_book() if o.order_id == sl_order_id), None)
+    except Exception as e:
+        return False, f"get_order_book failed: {e}"
+    if order is None:
+        return False, "order not in broker order book"
+    if order.transaction_type != "SELL":
+        return False, f"transaction_type={order.transaction_type!r} (expected 'SELL')"
+    broker_trigger = order.trigger_price
+    if broker_trigger is None or abs(broker_trigger - intended_trigger) > 1e-6:
+        return False, (f"trigger mismatch: broker={broker_trigger} intended={intended_trigger}")
+    if intended_type == "SL-M":
+        if order.order_type != "SL-M":
+            return False, f"order_type={order.order_type!r} (expected 'SL-M')"
+        if broker_trigger >= entry_price:
+            return False, f"SL-M trigger {broker_trigger} not below entry {entry_price}"
+        return True, ""
+    if intended_type == "SL":
+        if order.order_type != "SL":
+            return False, f"order_type={order.order_type!r} (expected 'SL')"
+        price = order.price
+        if price is None or price >= broker_trigger:
+            return False, f"SL limit {price} not strictly below trigger {broker_trigger}"
+        return True, ""
+    return False, f"unknown intended_type {intended_type!r}"
 
 
 def place_defensive_sqoff(

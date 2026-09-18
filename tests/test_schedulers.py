@@ -71,6 +71,9 @@ class FakeBroker(BrokerBase):
         self._order_book.append(OrderView(
             order_id=oid, status=status, average_price=avg if status == "complete" else None,
             quantity=order.quantity, filled_quantity=order.quantity if status == "complete" else 0,
+            order_type=order.order_type, transaction_type=order.transaction_type,
+            price=order.price, trigger_price=order.trigger_price,
+            instrument_token=order.instrument_key, tag=order.tag,
         ))
         self.fills[oid] = [
             FillView(trade_id=f"t-{len(self.placed)}", order_id=oid, quantity=order.quantity,
@@ -84,7 +87,9 @@ class FakeBroker(BrokerBase):
         # trailing rule just changes trigger/price, not lifecycle.
         for o in self._order_book:
             if o.order_id == params.order_id and o.status == "open":
-                break
+                o.trigger_price = params.trigger_price
+                o.price = params.price
+                o.order_type = params.order_type
 
     def cancel_order(self, order_id):
         pass
@@ -884,15 +889,13 @@ def test_trade_tracker_ratchets_sl_on_retrace(env):
     assert [m.trigger_price for m in broker.modified] == [99.0]
 
 
-def test_trade_tracker_put_ratchets_down(env):
-    """Symmetric PUT: initial_sl is above entry. activation_ltp = initial_sl * 0.8.
-    After activation, SL moves DOWN only (in profitable direction)."""
+def test_trade_tracker_put_ratchets_up(env):
+    """PUT is a buyer — same downside protection as CALL. initial_sl = entry * 0.9.
+    After activation, SL ratchets UP (locks profit as premium rises)."""
     broker = _seed_broker(env)
     broker.ltp_map["NSE_FO|90111"] = 200.0  # RELIANCE PE contract for PUT leg
     broker.ltp_map["NSE_EQ|INE002A01018"] = 3000.0  # spot for divergence check
-    # RELIANCE lot=1250 × premium=200 > FakeBroker default 100k; raise margin.
     broker.get_funds = lambda: FundsView(available_margin=1_000_000.0)
-    # Seed a PUT lead manually (default test seeds a CALL for NIFTY).
     from datetime import date
     from app.models import Lead
     with session_scope() as session:
@@ -914,40 +917,39 @@ def test_trade_tracker_put_ratchets_down(env):
     with session_scope() as session:
         trade = session.execute(select(Trade).where(Trade.status == "open")).scalars().first()
         assert trade.direction == "PUT"
-        # entry 200, sl_pct 10% PUT → initial_sl = 200 * 1.10 = 220
         assert trade.entry_price == 200.0
-        assert trade.initial_sl == 220.0
+        assert trade.initial_sl == 180.0  # entry 200, sl_pct 10% → 200*(1-0.10)
 
-    # Below activation threshold: activation_ltp = 220 * (1 - 0.20) = 176.
-    broker.ltp_map["NSE_FO|90111"] = 200.0  # not activated
+    # Below activation threshold: activation_ltp = 180 * 1.20 = 216.
+    broker.ltp_map["NSE_FO|90111"] = 200.0
     run_trade_tracker(broker=broker, now=_now(11, 0))
     with session_scope() as session:
         t = session.get(Trade, trade.id)
-        assert t.current_sl == 220.0
+        assert t.current_sl == 180.0
         assert t.trail_state == "at_initial"
 
-    # Activate + first trail at ltp=176 → candidate = 176 * 1.10 = 193.6
-    broker.ltp_map["NSE_FO|90111"] = 176.0
+    # Activate + first trail at ltp=216 → candidate = 216 * 0.9 = 194.40.
+    broker.ltp_map["NSE_FO|90111"] = 216.0
     run_trade_tracker(broker=broker, now=_now(11, 1))
     with session_scope() as session:
         t = session.get(Trade, trade.id)
-        assert t.current_sl == 193.6
+        assert t.current_sl == 194.40
         assert t.trail_state == "trailing"
 
-    # Lower ltp → SL moves down: ltp=160 → candidate = 160 * 1.10 = 176.0
-    broker.ltp_map["NSE_FO|90111"] = 160.0
+    # Higher ltp → SL moves up (ratchet UP). ltp=250 → candidate = 250 * 0.9 = 225.0.
+    broker.ltp_map["NSE_FO|90111"] = 250.0
     run_trade_tracker(broker=broker, now=_now(11, 2))
     with session_scope() as session:
         t = session.get(Trade, trade.id)
-        assert t.current_sl == 176.0
+        assert t.current_sl == 225.0
 
-    # Retrace UP → SL must not move up (ratchet): ltp=190 → candidate = 190*1.10 = 209.0
-    # max(209, current 176) keeps 176 in CALL logic; symmetric for PUT we keep MIN.
-    broker.ltp_map["NSE_FO|90111"] = 190.0
+    # Retrace DOWN → SL must not move down (ratchet). ltp=210 → candidate = 189.0;
+    # max(189, current 225) keeps 225.
+    broker.ltp_map["NSE_FO|90111"] = 210.0
     run_trade_tracker(broker=broker, now=_now(11, 3))
     with session_scope() as session:
         t = session.get(Trade, trade.id)
-        assert t.current_sl == 176.0, "PUT SL must not move up on retrace"
+        assert t.current_sl == 225.0, "PUT SL must not move down on retrace"
 
 
 def test_trade_tracker_closes_on_sl_hit(env):
@@ -1188,10 +1190,142 @@ def test_compute_trailing_sl_put_unit(env):
         new_sl, state = compute_trailing_sl(t, ltp=250.0, activate_pct=20.0, gap_pct=10.0)
         assert new_sl == 225.00 and state == "trailing"
 
-    # Retrace DOWN — SL must not move down (PUT ratchet direction is up).
+# Retrace DOWN — SL must not move down (PUT ratchet direction is up).
     with session_scope() as session:
         t = session.get(Trade, trade_id)
         t.current_sl = 225.00
         t.trail_state = "trailing"
         new_sl, state = compute_trailing_sl(t, ltp=210.0, activate_pct=20.0, gap_pct=10.0)
         assert new_sl == 225.00 and state == "trailing"
+
+
+def test_normalize_instrument_tick_paise_to_rupee():
+    from app.broker.base import normalize_instrument_tick
+    assert normalize_instrument_tick(None) == 0.05
+    assert normalize_instrument_tick(0) == 0.05
+    assert normalize_instrument_tick(0.0) == 0.05
+    assert normalize_instrument_tick(5) == 0.05
+    assert normalize_instrument_tick(10) == 0.10
+    assert normalize_instrument_tick(50) == 0.50
+    assert normalize_instrument_tick(0.05) == 0.05
+    assert normalize_instrument_tick(0.50) == 0.50
+    assert normalize_instrument_tick(50000) == 0.05  # oversized paise
+
+
+def test_option_tick_for_fno_flat_0_05():
+    from app.services.trade_service import option_tick_for
+    for price in (7, 18, 100, 250, 999, 5000):
+        assert option_tick_for(price, instrument_tick=0.05) == 0.05
+        assert option_tick_for(price, instrument_tick=5) == 0.05  # paise normalized
+        assert option_tick_for(price, instrument_tick=0) == 0.05
+
+
+def test_initial_sl_for_below_entry_for_both_directions():
+    from app.services.trade_service import initial_sl_for
+    assert initial_sl_for(200.0, "CALL", 10.0) == 180.0
+    assert initial_sl_for(200.0, "PUT", 10.0) == 180.0
+
+
+def test_sl_price_below_trigger_keeps_one_tick_gap():
+    from app.services.trade_service import sl_price_below_trigger
+    assert sl_price_below_trigger(180.00, 0.05) == 179.95
+    assert sl_price_below_trigger(18.00, 0.05) == 17.95
+    assert sl_price_below_trigger(0.20, 0.05) == 0.15
+    # Floor when raw would go below ₹0.05.
+    assert sl_price_below_trigger(0.05, 0.05) == 0.05
+
+
+def test_verify_sl_placed_detects_mismatch():
+    """verify_sl_placed returns False and explains when the broker's order
+    diverges from intent (transaction_type, trigger_price, gap, etc.)."""
+    from app.services.trade_service import verify_sl_placed
+    broker = FakeBroker()
+    broker._order_book.append(OrderView(
+        order_id="o-9", status="open",
+        order_type="SL-M", transaction_type="SELL",
+        price=0.0, trigger_price=90.0,
+        quantity=50, filled_quantity=0,
+    ))
+
+    ok, msg = verify_sl_placed(
+        broker, sl_order_id="o-9",
+        intended_trigger=90.0, intended_type="SL-M", entry_price=100.0,
+    )
+    assert ok is True and msg == ""
+
+    ok, msg = verify_sl_placed(
+        broker, sl_order_id="o-9",
+        intended_trigger=91.0, intended_type="SL-M", entry_price=100.0,
+    )
+    assert ok is False and "trigger mismatch" in msg
+
+    broker._order_book[0].transaction_type = "BUY"
+    ok, msg = verify_sl_placed(
+        broker, sl_order_id="o-9",
+        intended_trigger=90.0, intended_type="SL-M", entry_price=100.0,
+    )
+    assert ok is False and "SELL" in msg
+
+
+def test_option_tick_for_fno_flat_0_05():
+    from app.services.trade_service import option_tick_for
+    for price in (7, 18, 100, 250, 999, 5000):
+        assert option_tick_for(price, instrument_tick=0.05) == 0.05
+        assert option_tick_for(price, instrument_tick=5) == 0.05  # paise normalized
+        assert option_tick_for(price, instrument_tick=0) == 0.05
+
+
+def test_initial_sl_for_below_entry_for_both_directions():
+    from app.services.trade_service import initial_sl_for
+    assert initial_sl_for(200.0, "CALL", 10.0) == 180.0
+    assert initial_sl_for(200.0, "PUT", 10.0) == 180.0
+
+
+def test_sl_price_below_trigger_keeps_one_tick_gap():
+    from app.services.trade_service import sl_price_below_trigger
+    assert sl_price_below_trigger(180.00, 0.05) == 179.95
+    assert sl_price_below_trigger(18.00, 0.05) == 17.95
+    assert sl_price_below_trigger(0.20, 0.05) == 0.15
+    # Floor when raw would go below ₹0.05.
+    assert sl_price_below_trigger(0.05, 0.05) == 0.05
+    # Paise-tick (5.0) is normalized before this helper is called by callers,
+    # but the function still produces a usable gap if invoked directly.
+    assert sl_price_below_trigger(20.0, 5.0) == 15.0
+
+
+def test_verify_sl_placed_detects_mismatch(env):
+    """verify_sl_placed returns False and explains when the broker's order
+    diverges from intent (transaction_type, trigger_price, gap, etc.)."""
+    from app.services.trade_service import verify_sl_placed
+    broker = FakeBroker()
+    OrderView(
+        order_id="o-9", status="open",
+        order_type="SL-M", transaction_type="SELL",
+        price=0.0, trigger_price=200.0,
+        quantity=50, filled_quantity=0,
+    )
+    broker._order_book.append(OrderView(
+        order_id="o-9", status="open",
+        order_type="SL-M", transaction_type="SELL",
+        price=0.0, trigger_price=90.0,
+        quantity=50, filled_quantity=0,
+    ))
+
+    ok, msg = verify_sl_placed(
+        broker, sl_order_id="o-9",
+        intended_trigger=90.0, intended_type="SL-M", entry_price=100.0,
+    )
+    assert ok is True and msg == ""
+
+    ok, msg = verify_sl_placed(
+        broker, sl_order_id="o-9",
+        intended_trigger=91.0, intended_type="SL-M", entry_price=100.0,
+    )
+    assert ok is False and "trigger mismatch" in msg
+
+    broker._order_book[0].transaction_type = "BUY"
+    ok, msg = verify_sl_placed(
+        broker, sl_order_id="o-9",
+        intended_trigger=90.0, intended_type="SL-M", entry_price=100.0,
+    )
+    assert ok is False and "SELL" in msg
