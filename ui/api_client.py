@@ -149,8 +149,9 @@ def _raw(method: str, path: str, headers: dict | None = None, **kw) -> requests.
         h["Authorization"] = f"Bearer {access}"
     if headers:
         h.update(headers)
+    timeout = kw.pop("timeout", TIMEOUT)
     try:
-        r = requests.request(method, f"{BACKEND}{path}", headers=h, timeout=TIMEOUT, **kw)
+        r = requests.request(method, f"{BACKEND}{path}", headers=h, timeout=timeout, **kw)
     except requests.RequestException:
         return None
     if r.status_code == 401:
@@ -158,7 +159,7 @@ def _raw(method: str, path: str, headers: dict | None = None, **kw) -> requests.
         if new_access:
             h["Authorization"] = f"Bearer {new_access}"
             try:
-                r = requests.request(method, f"{BACKEND}{path}", headers=h, timeout=TIMEOUT, **kw)
+                r = requests.request(method, f"{BACKEND}{path}", headers=h, timeout=timeout, **kw)
             except requests.RequestException:
                 return None
     return r
