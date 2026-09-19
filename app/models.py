@@ -128,7 +128,11 @@ class Trade(Base):
     __tablename__ = "trades"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    lead_id: Mapped[int | None] = mapped_column(ForeignKey("leads.id"), nullable=True, unique=True)
+    # `lead_id` is SET NULL on lead deletion: the cleanup scheduler removes
+    # short-lived lead rows but Trade rows are audit data we keep around.
+    lead_id: Mapped[int | None] = mapped_column(
+        ForeignKey("leads.id", ondelete="SET NULL"), nullable=True, unique=True
+    )
     underlying_key: Mapped[str] = mapped_column(String(64), index=True)
     option_instrument_key: Mapped[str] = mapped_column(String(64), index=True)  # NSE_FO|...
     option_instrument_token: Mapped[str] = mapped_column(String(32), default="")
@@ -147,12 +151,25 @@ class Trade(Base):
     entry_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     sl_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     sl_order_type: Mapped[str | None] = mapped_column(String(8), nullable=True)  # SL-M | SL (set at placement)
+    # Lifecycle stage: placed → sl_pending → sl_active → trailing → exiting → closed.
+    # Set by order_placer and trade_tracker; controls what the tracker should do
+    # next (verify, adopt, trail, close).
+    lifecycle_stage: Mapped[str] = mapped_column(String(16), default="placed")
+    # "bot" — the protective SL was placed by us. "user" — adopted from a broker
+    # SELL order the human placed via Upstox UI. NULL until a user-modified SL
+    # is observed. Ratchets only one way; tightening via the user never loosens.
+    sl_source: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    last_broker_check_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Closure sub-reason: sl_hit | trailing_sl | sqoff_session | recon_user_exit |
+    # recon_user_sl_filled | killswitch. Stored alongside exit_reason for the
+    # UI; exit_reason keeps the legacy enum.
+    closure_cause: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     status: Mapped[str] = mapped_column(String(16), default="open")  # open | closed | sqoff | killed
     entry_time: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     exit_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
-    exit_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)  # sl_hit | trailing_sl | sqoff | killswitch | manual
+    exit_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)  # sl_hit | trailing_sl | sqoff | killswitch | manual | recon_user | recon_user_sl_filled
     realized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)

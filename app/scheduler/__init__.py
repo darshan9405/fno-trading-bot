@@ -1,5 +1,17 @@
 """Scheduler package: run entry points + APScheduler manager."""
 
-from app.scheduler import lead_generator, manager, order_placer, trade_tracker
+from app.scheduler import (
+    lead_cleanup,
+    lead_generator,
+    manager,
+    order_placer,
+    trade_tracker,
+)
 
-__all__ = ["lead_generator", "manager", "order_placer", "trade_tracker"]
+__all__ = [
+    "lead_cleanup",
+    "lead_generator",
+    "manager",
+    "order_placer",
+    "trade_tracker",
+]  

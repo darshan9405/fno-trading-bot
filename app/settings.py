@@ -27,7 +27,17 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "scheduler.lead_generator_seconds": 300,
     "scheduler.trade_tracker_seconds": 30,
     "scheduler.order_placer_seconds": 30,
-    "breakout.patterns_enabled": ["volume_breakout"],
+    # Lead retention: the cleanup scheduler removes processed leads immediately,
+    # and deletes any queued lead older than this many hours.
+    "scheduler.lead_cleanup_seconds": 30,
+    "leads.retention_hours_queued": 24,
+    # Reconciliation: read broker truth (get_positions + get_order_book) and close
+    # DB trades whose position is gone. Runs every 60s by default. Trades younger
+    # than `reconciler_min_age_minutes` are skipped to give Upstox time to
+    # propagate fresh entries.
+    "scheduler.reconciler_seconds": 60,
+    "scheduler.reconciler_min_age_minutes": 1,
+    "breakout.patterns_enabled": ["horizontal_range", "trendline", "triangle", "flag_pennant", "head_shoulders", "volume_breakout"],
     "breakout.min_confidence": 0.7,
     "breakout.lookback_days": 60,
     "breakout.swing_k": 3,
@@ -40,7 +50,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "breakout.volume_window": 20,
     "breakout.volume_lookback": 5,
     "breakout.require_volume_spike": True,
-    "breakout.volume_boost": 0.15,
+    "breakout.volume_boost": 0.3,
     # Tier-2: emit the top-N signals per instrument (previously only top-1).
     "breakout.top_k_per_instrument": 2,
     # Market-alignment filter: "off" or "nifty_sma20" (trade with the NIFTY trend).

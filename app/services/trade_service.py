@@ -1,10 +1,24 @@
-"""Trade persistence + trailing-SL math shared by order_placer and trade_tracker."""
+"""Trade persistence + trailing-SL math shared by order_placer and trade_tracker.
+
+Lifecycle model (DB-side, drives trade_tracker branching):
+
+  placed      — order_placer persisted the trade after entry fill, SL not yet placed.
+  sl_pending  — SL order placed at the broker but tracker has not yet observed its open state.
+  sl_active   — SL at the broker is open with our intended trigger. Protective.
+  trailing    — compute_trailing_sl has flipped the trade into trailing mode at least once.
+  exiting     — broker order flipped terminal (complete/rejected/cancelled) or position is gone.
+  closed      — terminal (status="closed", exit_* populated).
+
+The tracker takes the broker as the source of truth on closure: it never closes a
+trade based on its own LTP-vs-current_sl check (the broker SL trigger handles the
+exit). Adoption of human-modified SL is single-direction: only tighten, never loosen.
+"""
 
 import logging
 
 from sqlalchemy import select
 
-from app.broker.base import BrokerError, InstrumentView, OrderRequest, normalize_instrument_tick
+from app.broker.base import BrokerError, InstrumentView, OrderRequest, OrderView, normalize_instrument_tick
 from app.db import session_scope
 from app.models import Lead, Order, OrderFill, Trade
 from app.services.health_service import utcnow
@@ -15,6 +29,20 @@ PRODUCT = "D"  # delivery / NRML for F&O (Upstox product code for carry-forward)
 
 DEFAULT_OPTION_TICK = 0.05
 FNO_OPTION_TICK = 0.05  # NSE F&O options: uniform ₹0.05 tick across all strikes/premiums.
+
+LIFECYCLE_PLACED = "placed"
+LIFECYCLE_SL_PENDING = "sl_pending"
+LIFECYCLE_SL_ACTIVE = "sl_active"
+LIFECYCLE_TRAILING = "trailing"
+LIFECYCLE_EXITING = "exiting"
+LIFECYCLE_CLOSED = "closed"
+
+CLOSURE_CAUSE_SL_HIT = "sl_hit"
+CLOSURE_CAUSE_TRAILING_SL = "trailing_sl"
+CLOSURE_CAUSE_SQOFF_SESSION = "sqoff_session"
+CLOSURE_CAUSE_RECON_USER_EXIT = "recon_user_exit"
+CLOSURE_CAUSE_RECON_USER_SL_FILLED = "recon_user_sl_filled"
+CLOSURE_CAUSE_KILLSWITCH = "killswitch"
 
 
 def _token_from_key(instrument_key: str) -> str:
@@ -243,6 +271,8 @@ def create_trade(session, *, lead: Lead, contract: InstrumentView, direction: st
         trail_state="at_initial",
         best_price=entry_price,
         status="open",
+        lifecycle_stage=LIFECYCLE_PLACED if sl_order_id is None else LIFECYCLE_SL_PENDING,
+        sl_source="bot" if sl_order_id is not None else None,
         entry_order_id=entry_order_id,
         sl_order_id=sl_order_id,
         entry_time=utcnow(),
@@ -317,11 +347,15 @@ def has_traded_underlying_today(session, underlying_key: str) -> bool:
     ).scalars().first() is not None
 
 
-def close_trade(session, trade: Trade, *, exit_price: float, exit_reason: str) -> None:
+def close_trade(session, trade: Trade, *, exit_price: float, exit_reason: str,
+                closure_cause: str | None = None) -> None:
     trade.status = "closed"
     trade.exit_time = utcnow()
     trade.exit_price = exit_price
     trade.exit_reason = exit_reason
+    if closure_cause:
+        trade.closure_cause = closure_cause
+    trade.lifecycle_stage = LIFECYCLE_CLOSED
     trade.realized_pnl = (exit_price - trade.entry_price) * trade.quantity
     # Tier-4 calibration: record this outcome so future leads carrying the
     # same (pattern, underlying) get a calibrated score at rank time.
@@ -344,10 +378,30 @@ def close_trade(session, trade: Trade, *, exit_price: float, exit_reason: str) -
             log.warning("trade_service: calibration upsert failed for trade %s (%s)", trade.id, e)
 
 
-def square_off(session, broker, trade: Trade, reason: str = "sqoff") -> float:
-    """Exit an open trade with a market SELL, record the order, close the trade."""
+def square_off(session, broker, trade: Trade, reason: str = "sqoff",
+               closure_cause: str | None = CLOSURE_CAUSE_SQOFF_SESSION) -> float:
+    """Exit an open trade with a market SELL, record the order, close the trade.
+
+    Cancels the open SL first to prevent a double-exit (the broker SL trigger
+    could fire milliseconds after we send the cancel). The cancel is best-effort:
+    a failure to cancel is logged but does NOT stop the square-off — leaving the
+    SL armed would still close the position (it just means a possible second
+    order that we'll ignore via idempotent close).
+    """
     log.info("trade_service: defensive square-off trade %s | reason=%s qty=%s price=%.2f",
              trade.id, reason, trade.quantity, trade.entry_price)
+    if trade.sl_order_id:
+        try:
+            broker.cancel_order(trade.sl_order_id)
+            log.info("trade_service: pre-sqoff cancel of SL %s for trade %s succeeded",
+                     trade.sl_order_id, trade.id)
+        except Exception as e:
+            log.warning("trade_service: pre-sqoff cancel of SL %s failed (continuing): %s",
+                        trade.sl_order_id, e)
+        # Detach the SL locally so a trailing tick doesn't try to interact with
+        # a now-stale order id at the broker.
+        trade.sl_order_id = None
+    trade.lifecycle_stage = LIFECYCLE_EXITING
     order_id = broker.place_order(
         OrderRequest(
             instrument_key=trade.option_instrument_key,
@@ -364,10 +418,134 @@ def square_off(session, broker, trade: Trade, reason: str = "sqoff") -> float:
         instrument_token=trade.option_instrument_key, quantity=trade.quantity, tag=f"trade-{trade.id}",
         average_price=exit_price, tradingsymbol=trade.tradingsymbol,
     )
-    close_trade(session, trade, exit_price=exit_price, exit_reason=reason)
+    close_trade(session, trade, exit_price=exit_price, exit_reason=reason, closure_cause=closure_cause)
     log.info("trade_service: square-off completed trade %s | exit=%.2f pnl=%.2f",
              trade.id, exit_price, trade.realized_pnl)
     return exit_price
+
+
+def set_lifecycle_stage(trade: Trade, stage: str) -> None:
+    """Transition the trade's lifecycle stage. Idempotent — caller decides when."""
+    trade.lifecycle_stage = stage
+
+
+def sync_order_status(session, broker, order_id: str) -> OrderView | None:
+    """Pull the broker view for `order_id` and update our `Order` row in place.
+
+    Returns the live OrderView (or None if unknown) so the caller can branch on
+    status. Keeps `status`, `status_message`, `average_price`, `filled_quantity`,
+    `order_timestamp`, and `exchange_timestamp` in sync. Idempotent; safe to call
+    every tracker tick.
+
+    If our row says `status_message` was set by manual intervention, we still
+    overwrite — the broker is the source of truth.
+    """
+    try:
+        book = broker.get_order_book()
+    except Exception as e:
+        log.warning("trade_service: get_order_book for sync failed: %s", e)
+        return None
+    view = next((o for o in book if o.order_id == order_id), None)
+    if view is None:
+        return None
+    order = session.get(Order, order_id)
+    if order is None:
+        return view
+    if order.status != view.status:
+        log.info("trade_service: order %s status %s -> %s", order_id, order.status, view.status)
+    order.status = view.status
+    order.status_message = view.status_message
+    if view.average_price is not None:
+        order.average_price = view.average_price
+    order.filled_quantity = int(view.filled_quantity or 0)
+    if view.order_timestamp is not None:
+        order.order_timestamp = view.order_timestamp
+    if view.exchange_timestamp is not None:
+        order.exchange_timestamp = view.exchange_timestamp
+    order.trigger_price = view.trigger_price if view.trigger_price is not None else order.trigger_price
+    order.price = float(view.price or 0.0)
+    return view
+
+
+def collect_orders_for_trade(broker, trade: Trade) -> list[OrderView]:
+    """Return broker order_views for `trade.option_instrument_key` SELL orders.
+
+    Intentionally NOT filtered by tag — we want to see user-placed orders too
+    (tag won't match ours, but the instrument does). The bot orders are
+    identified by `order_id == trade.sl_order_id`; everything else is treated
+    as external (user-placed).
+    """
+    try:
+        book = broker.get_order_book()
+    except Exception as e:
+        log.warning("trade_service: get_order_book for collect failed: %s", e)
+        return []
+    return [
+        o for o in book
+        if o.instrument_token == trade.option_instrument_key
+        and o.transaction_type == "SELL"
+    ]
+
+
+def adopt_external_sl(trade: Trade, view: OrderView) -> bool:
+    """If `view` looks like a TIGHTER open SELL SL order placed by the user,
+    adopt its `trigger_price` as the new `current_sl` (ratchet only).
+
+    For an option-buying bot, "tighter" means a HIGHER trigger_price (closer
+    to current LTP). The bot never loosens — if the user-set trigger is
+    below our current_sl, we keep the higher floor (our ratchet value).
+    Returns True iff we tightened/adopted, False if the trigger is no tighter
+    than current or unavailable. Updates `trade.sl_source` so the UI can
+    show the user that their manual change is in effect.
+    """
+    if view.status != "open":
+        return False
+    if view.order_id == trade.sl_order_id:
+        return False  # ours; the trail loop modifies it directly
+    if view.trigger_price is None:
+        return False
+    new_sl = float(view.trigger_price)
+    if new_sl <= float(trade.current_sl or 0.0):
+        return False  # user proposed a looser SL — keep our floor
+    log.info(
+        "trade_service: adopting external SL order %s trigger=%.2f for trade %s "
+        "(previous current_sl=%.2f, sl_source=%s)",
+        view.order_id, new_sl, trade.id, trade.current_sl, trade.sl_source,
+    )
+    trade.current_sl = new_sl
+    trade.sl_source = "user"
+    return True
+
+
+def drift_broker_sl(trade: Trade, view: OrderView) -> bool:
+    """Sync bot-placed SL when the broker rounds-trips its trigger_price back
+    different from `trade.current_sl`. Only tighten (ratchet up).
+
+    Called after each `modify_order` to confirm the broker accepted the new
+    trigger and our local view matches. Returns True if we adjusted.
+    """
+    if view.order_id != trade.sl_order_id:
+        return False
+    if view.trigger_price is None:
+        return False
+    broker_trigger = float(view.trigger_price)
+    if abs(broker_trigger - float(trade.current_sl or 0.0)) < 1e-6:
+        return False
+    if broker_trigger > float(trade.current_sl or 0.0):
+        # Broker reports a TIGHTER trigger than we asked for — adopt it.
+        log.info(
+            "trade_service: bot SL drift on trade %s: broker=%.2f > local=%.2f (tightening to broker)",
+            trade.id, broker_trigger, trade.current_sl,
+        )
+        trade.current_sl = broker_trigger
+        return True
+    # Broker reports a LOOSER trigger than we asked for — keep our ratchet
+    # value so we don't widen the protective stop.
+    log.info(
+        "trade_service: broker SL trigger (%.2f) is looser than trade.current_sl (%.2f) for trade %s; keeping local",
+        broker_trigger, trade.current_sl, trade.id,
+    )
+    return False
 
 
 def initial_sl_for(entry_price: float, direction: str, sl_pct: float,

@@ -384,6 +384,60 @@ requires the full SL-order spec — quantity/validity/price/order_type/trigger_p
 not GTT — Upstox GTT `trailing_gap` has a minimum of 10% of (LTP − SL), too coarse
 for a 5% trail. GTT remains an optional redundant exit.
 
+### 7.3 Trade lifecycle (broker is the source of truth on closure)
+
+Every open trade has an explicit `lifecycle_stage` (string column on `Trade`):
+
+```
+placed → sl_pending → sl_active → trailing → exiting → closed
+```
+
+- **placed** — `order_placer` persisted the trade after the LIMIT BUY entry fill; SL not yet attempted.
+- **sl_pending** — bot SL has been placed at the broker; not yet observed as `open` by the tracker.
+- **sl_active** — bot SL is open at the broker with our intended trigger. The trade is protected.
+- **trailing** — `compute_trailing_sl` has run and flipped `trail_state="trailing"` at least once.
+- **exiting** — broker order flipped terminal, or position is gone (per `get_positions`).
+- **closed** — terminal: `status="closed"`, `exit_*` populated, `closure_cause` set.
+
+The tracker **never closes a trade based on the bot's own LTP-vs-current_sl check** —
+that would race with the broker SL trigger. Closure is driven exclusively by broker
+order-status reconciliation:
+
+- `/api/trades/recon` (manual) and the `reconciler` scheduler (every 60 s,
+  configurable) read `get_positions`. If a trade is open in DB but the position
+  is gone at the broker, close the trade with `closure_cause="recon_user_exit"` and
+  `exit_reason="recon"`. Exit price comes from any SELL fill on the same instrument
+  or, failing that, the live LTP.
+- `trade_tracker.process_trade` runs the same per-trade reconciliation on every tick
+  (fast-path) for the trades it already has in memory.
+
+### 7.4 User-modified SL is adopted (ratchet-only)
+
+When a human modifies the SL of an open trade directly on Upstox, the tracker
+observes the order on the next tick via `get_order_book()`. The bot:
+
+- For any SELL order on our `option_instrument_key` whose `order_id` is NOT our
+  `sl_order_id` and whose `trigger_price` is HIGHER (tighter) than our
+  `current_sl`: adopt the trigger; set `trade.sl_source = "user"`. The bot will
+  NOT place or modify a competing SL-M.
+- If the human's proposed trigger is LOWER than our ratchet floor: ignore it
+  (the ratchet is the source of truth — we never widen the protective stop).
+- Whenever the bot's `modify_order` succeeds or is rejected, drift-check the
+  broker view: if the broker-side trigger drifted HIGHER than our local
+  `current_sl`, adopt it (tightens); if LOWER, keep our floor.
+
+If the user-placed SL fills at the broker, the tracker observes the fill and
+closes the trade with `closure_cause="recon_user_sl_filled"` and a SL-derived
+exit price — never a phantom LTP guess.
+
+### 7.5 Order-status audit (`orders` table mirrors broker view each tick)
+
+`trade_tracker.process_trade` calls `trade_service.sync_order_status` on every
+order with our `tag=trade-<id>` after each tick. The local `orders` row reflects
+broker `status`, `status_message`, `average_price`, `filled_quantity`,
+`order_timestamp`, `exchange_timestamp`. Status messages from `place_stop_loss`
+rejections are surfaced in the audit table.
+
 ---
 
 ## 8. Authentication (Stage 3)

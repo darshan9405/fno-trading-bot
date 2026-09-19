@@ -256,6 +256,11 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
         entry_order_id=entry_order_id,
         sl_order_id=sl_order_id,
     )
+    # After entry fill + SL verify_at_broker accepted, the trade is fully
+    # protected; promote it to `sl_active` so trade_tracker starts trailing.
+    trade.lifecycle_stage = trade_service.LIFECYCLE_SL_ACTIVE
+    trade.sl_source = "bot"
+    trade.last_broker_check_at = health_service.utcnow()
 
     trade_service.record_order(
         session, order_id=entry_order_id, trade_id=trade.id, order_type="LIMIT", transaction_type="BUY",

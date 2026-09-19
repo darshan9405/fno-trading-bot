@@ -1,6 +1,6 @@
 """API integration tests (Stages 5-7): killswitch, trades, P&L, health, config."""
 
-from datetime import date
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
@@ -336,25 +336,97 @@ def test_pnl_requires_upstox_token(env):
     assert r.status_code == 502  # no Upstox token stored -> BrokerError
 
 
-def test_leads_generate_endpoint(env, monkeypatch):
+def test_leads_generate_endpoint_dispatches(env, monkeypatch):
+    """POST /leads/generate hands the work to a background job and returns 202
+    with the job id so the UI can attach and poll for completion.
+    """
     client, token, cfg = env
-    from app.scheduler import lead_generator as lg
+    from app.scheduler import lead_jobs
 
+    fake_job = lead_jobs.JobState(
+        id="abc123",
+        status="running",
+        submitted_at=datetime(2026, 9, 19, 10, 0, 0, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(lead_jobs, "submit_manual_job", lambda: (fake_job, True))
+
+    r = client.post("/api/trades/leads/generate", headers=_headers(token))
+    assert r.status_code == 202
+    body = r.get_json()
+    assert body["data"]["id"] == "abc123"
+    assert body["data"]["status"] == "running"
+
+
+def test_leads_generate_endpoint_rejects_concurrent(env, monkeypatch):
+    """A second POST while one run is in flight returns 409 with the existing
+    job id so the UI can attach to the same status stream instead of
+    dispatching a duplicate run."""
+    client, token, cfg = env
+    from app.scheduler import lead_jobs
+
+    fake_job = lead_jobs.JobState(
+        id="abc123",
+        status="running",
+        submitted_at=datetime(2026, 9, 19, 10, 0, 0, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(lead_jobs, "submit_manual_job", lambda: (fake_job, False))
+
+    r = client.post("/api/trades/leads/generate", headers=_headers(token))
+    assert r.status_code == 409
+    body = r.get_json()
+    assert body["error"]["code"] == "lead_generation_in_progress"
+    assert body["data"]["id"] == "abc123"
+    assert body["data"]["status"] == "running"
+
+
+def test_leads_generate_status_unknown(env):
+    client, token, cfg = env
+    r = client.get("/api/trades/leads/generate/unknown-id", headers=_headers(token))
+    assert r.status_code == 404
+    assert r.get_json()["error"]["code"] == "lead_generation_job_not_found"
+
+
+def test_leads_generate_status_terminal(env, monkeypatch):
+    """End-to-end happy path: real job registry, broker call stubbed out, the
+    background thread runs to completion and the status endpoint reflects the
+    final result with the generated/checked counts."""
+    import time
+
+    client, token, cfg = env
+    from app.scheduler import lead_jobs
+
+    # The job registry is module-level; trim state from any earlier test.
+    monkeypatch.setattr(lead_jobs, "_jobs", {})
+    monkeypatch.setattr(lead_jobs, "_active_id", None)
+
+    import app.scheduler.lead_generator as lg
     monkeypatch.setattr(
         lg, "run_lead_generator",
-        lambda broker=None, now=None, force=False: {"created": 3, "checked": 1},
+        lambda broker=None, now=None, force=False: {"created": 5, "checked": 2},
     )
-    r = client.post("/api/trades/leads/generate", headers=_headers(token))
-    assert r.status_code == 200
-    assert r.get_json()["data"] == {"generated": 3, "checked": 1}
 
-    monkeypatch.setattr(
-        lg, "run_lead_generator",
-        lambda broker=None, now=None, force=False: {"error": "boom"},
-    )
     r = client.post("/api/trades/leads/generate", headers=_headers(token))
-    assert r.status_code == 502
-    assert r.get_json()["error"]["code"] == "lead_generation_failed"
+    assert r.status_code == 202
+    job_id = r.get_json()["data"]["id"]
+
+    # Background thread is daemon=True; poll until terminal or timeout.
+    deadline = time.monotonic() + 2.0
+    status = None
+    while time.monotonic() < deadline:
+        rs = client.get(f"/api/trades/leads/generate/{job_id}", headers=_headers(token))
+        assert rs.status_code == 200
+        status = rs.get_json()["data"]["status"]
+        if status in ("done", "error"):
+            break
+        time.sleep(0.05)
+    assert status == "done"
+
+    final = client.get(
+        f"/api/trades/leads/generate/{job_id}", headers=_headers(token)
+    ).get_json()["data"]
+    assert final["result"] == {"generated": 5, "checked": 2}
+    assert final["error"] is None
+    assert final["finished_at"] is not None
 
 
 def test_leads_include_fno_plan(env):
@@ -453,8 +525,8 @@ def test_leads_include_components_breakdown(env):
     assert total_contrib == pytest.approx(0.85, abs=0.05)
 
 
-def test_leads_sort_param_orders_by_score_desc(env):
-    """`?sort=score` orders by `confidence DESC, created_at DESC`."""
+def test_leads_endpoint_orders_by_score_desc(env):
+    """The leads endpoint sorts by `confidence DESC, created_at DESC` by default."""
     client, token, cfg = env
     from app.models import Instrument, Lead
     from datetime import datetime, timedelta, timezone
@@ -480,10 +552,16 @@ def test_leads_sort_param_orders_by_score_desc(env):
                  created_at=base + timedelta(minutes=3)),
         ])
 
-    r = client.get("/api/trades/leads?sort=score", headers=_headers(token))
+    # No params — the endpoint sorts by score by default.
+    r = client.get("/api/trades/leads", headers=_headers(token))
     rows = r.get_json()["data"]["leads"]
     confidences = [row["confidence"] for row in rows]
     assert confidences == sorted(confidences, reverse=True)
+    # Legacy filter params are silently accepted and ignored.
+    r2 = client.get("/api/trades/leads?sort=score&date=2026-09-04&status=queued",
+                    headers=_headers(token))
+    assert r2.status_code == 200
+    assert len(r2.get_json()["data"]["leads"]) == len(rows)
 
 
 # --- health + config -----------------------------------------------------
@@ -505,6 +583,14 @@ def test_health_and_config(env, monkeypatch):
     # Upstox token expiry surfaced (SSO in the fixture stored a token)
     assert "token_valid_until" in data["broker"]
     assert data["broker"]["token_expired"] is False
+
+    # ISO 8601 contract: every timestamp the UI renders with ``_utc_to_ist_hm``
+    # must be ``fromisoformat``-able. RFC 1123 (Flask default) silently turns
+    # those rows into the ``—`` placeholder.
+    assert datetime.fromisoformat(data["broker"]["token_valid_until"])
+    for hb in data["heartbeats"].values():
+        if hb["last_run_at"] is not None:
+            assert datetime.fromisoformat(hb["last_run_at"])
 
     r = client.get("/api/config", headers=_headers(token))
     cfg_data = r.get_json()["data"]

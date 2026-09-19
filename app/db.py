@@ -49,6 +49,10 @@ _MIGRATIONS = [
     ("leads", "plan", "TEXT"),
     ("leads", "components", "TEXT"),
     ("trades", "sl_order_type", "VARCHAR(8)"),
+    ("trades", "lifecycle_stage", "VARCHAR(16) DEFAULT 'placed'"),
+    ("trades", "sl_source", "VARCHAR(8)"),
+    ("trades", "last_broker_check_at", "DATETIME"),
+    ("trades", "closure_cause", "VARCHAR(32)"),
 ]   
 
 def _run_sqlite_migrations(engine):

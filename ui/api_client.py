@@ -5,6 +5,7 @@ falls back to the bootstrap->session_state header path (dev, different ports).
 Sends Authorization: Bearer <jwt>; silent-refreshes on 401.
 """
 
+import json
 import os
 
 import requests
@@ -13,6 +14,10 @@ import streamlit as st
 BACKEND = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
 PUBLIC_API = os.getenv("PUBLIC_API_URL", "http://localhost:8000").rstrip("/")
 TIMEOUT = 10
+# /api/trades/leads/generate dispatches to a background thread server-side and
+# returns 202 immediately, so a 5s ceiling here is enough: a failed POST just
+# means the request itself couldn't reach the server, not that the run is slow.
+LEAD_GEN_TIMEOUT = 5
 
 
 # --- token helpers -------------------------------------------------------
@@ -52,23 +57,49 @@ def login_url() -> str:
     return f"{PUBLIC_API}/api/auth/upstox/login"
 
 
-def logout() -> None:
-    """Log out by redirecting to the backend logout endpoint.
+def _ensure_top_link(href: str, link_id: str) -> str:
+    return (
+        "<script>(function(){"
+        f"var D=window.top.document;"
+        f"var a=D.getElementById({json.dumps(link_id)});"
+        "if(!a){"
+        "a=D.createElement('a');"
+        f"a.id={json.dumps(link_id)};"
+        "a.target='_top';"
+        "a.rel='noopener noreferrer';"
+        "a.style.display='none';"
+        "D.body.appendChild(a);"
+        "}"
+        f"if(a.href!=={json.dumps(href)})a.href={json.dumps(href)};"
+        "})();</script>"
+    )
 
-    Uses `<meta http-equiv="refresh">` so the navigation fires from the
-    HTML head and is robust against framework-side stripping of inline
-    `<script>` tags. A relative URL is used so it works through any
-    reverse proxy (nginx, Cloudflare, etc.) — the browser hits
-    `<current-origin>/api/auth/logout`, which is proxied to the backend,
-    clears the HttpOnly cookies via the response headers, and the
-    backend redirects back to the frontend.
+
+def _click_top_link(link_id: str) -> str:
+    return (
+        "<script>window.top.document.getElementById("
+        f"{json.dumps(link_id)}"
+        ").click();</script>"
+    )
+
+
+SSO_LOGOUT_LINK_ID = "__sso_logout_link"
+LOGOUT_URL = "/api/auth/logout"
+
+
+def logout() -> None:
+    """Log out by navigating the top browser tab to the backend logout endpoint.
+
+    Streamlit's app iframe is sandboxed without `allow-top-navigation`, so a
+    plain `<script>window.location.replace(...)</script>` from inside the iframe
+    would either be a no-op or pop a new tab. We append a hidden `<a target="_top">`
+    to `window.top.document` and click it from the iframe — the click navigates the
+    real browser tab, so the SSO/logout round-trip stays in one tab. A relative URL
+    is used so it works through any reverse proxy (nginx, Cloudflare, etc.).
     """
     clear_tokens()
-    st.markdown(
-        """<meta http-equiv="refresh" content="0;url=/api/auth/logout">
-<script>window.location.replace("/api/auth/logout");</script>""",
-        unsafe_allow_html=True,
-    )
+    st.markdown(_ensure_top_link(LOGOUT_URL, SSO_LOGOUT_LINK_ID), unsafe_allow_html=True)
+    st.markdown(_click_top_link(SSO_LOGOUT_LINK_ID), unsafe_allow_html=True)
 
 
 def bootstrap_from_query() -> None:
@@ -179,7 +210,18 @@ def get_leads(status: str | None = None, date: str | None = None, sort: str | No
 
 
 def generate_leads():
-    return api("POST", "/api/trades/leads/generate")
+    """Kick off a manual lead-generation run.
+
+    The endpoint now dispatches the work on the server and returns 202
+    immediately, so we use a short timeout — a failed POST only means the
+    server is unreachable, not that the run itself is slow. The actual wait
+    happens via :func:`get_lead_gen_status` polling.
+    """
+    return api("POST", "/api/trades/leads/generate", timeout=LEAD_GEN_TIMEOUT)
+
+
+def get_lead_gen_status(job_id: str):
+    return api("GET", f"/api/trades/leads/generate/{job_id}", timeout=LEAD_GEN_TIMEOUT)
 
 
 def get_instruments():

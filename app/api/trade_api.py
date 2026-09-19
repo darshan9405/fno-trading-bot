@@ -4,7 +4,7 @@ import logging
 from datetime import timezone
 from zoneinfo import ZoneInfo
 
-from flask import Blueprint, request
+from flask import Blueprint, jsonify, request
 from sqlalchemy import select
 
 from app.api.common import broker_error, error, ok
@@ -43,6 +43,10 @@ def _trade_dict(trade: Trade, ltp: float | None = None) -> dict:
         "exit_reason": trade.exit_reason,
         "realized_pnl": trade.realized_pnl,
         "unrealised_pnl": unrealised,
+        "lifecycle_stage": getattr(trade, "lifecycle_stage", None),
+        "sl_source": getattr(trade, "sl_source", None),
+        "closure_cause": getattr(trade, "closure_cause", None),
+        "last_broker_check_at": getattr(trade, "last_broker_check_at", None),
     }
 
 
@@ -116,25 +120,24 @@ def pnl():
 @bp.get("/leads")
 @jwt_required
 def leads():
-    date_filter = request.args.get("date")
-    status_filter = request.args.get("status")
-    sort = (request.args.get("sort") or "score").lower()  # "score" | "time"
+    """Return the latest set of generated leads, sorted by composite score.
+
+    The cleanup scheduler (`app.scheduler.lead_cleanup`) keeps the table
+    small — it deletes processed leads almost immediately and queued leads
+    older than `leads.retention_hours_queued` (default 24h). The UI therefore
+    does not need date/status filters; whatever this endpoint returns is
+    always the actionable, current set.
+    """
     # Build the response INSIDE the session to avoid DetachedInstanceError
     # on `lead.instrument` lazy-load after the session is gone.
     with session_scope() as session:
-        q = select(Lead)
-        if date_filter:
-            q = q.where(Lead.created_at.like(f"{date_filter}%"))
-        if status_filter:
-            q = q.where(Lead.status == status_filter)
-        # Tier-5: rank by score (composite confidence) so the operator sees
-        # the best leads first; fall back to "time" when explicitly requested.
-        if sort == "time":
-            q = q.order_by(Lead.created_at.desc())
-        else:
-            q = q.order_by(Lead.confidence.desc(), Lead.created_at.desc())
-        q = q.limit(200)
-        rows = list(session.execute(q).scalars())
+        rows = list(
+            session.execute(
+                select(Lead)
+                .order_by(Lead.confidence.desc(), Lead.created_at.desc())
+                .limit(200)
+            ).scalars()
+        )
         data = [_lead_dict(l) for l in rows]
     return ok({"count": len(data), "leads": data})
 
@@ -142,17 +145,72 @@ def leads():
 @bp.post("/leads/generate")
 @jwt_required
 def generate_leads():
-    """Manually run the lead generator (bypasses the trading-window gate).
+    """Dispatch a manual lead-generation run on a background thread.
 
     Historical candles and option chains are available off-hours, so leads can
-    be generated on demand from the UI even when the market is closed.
-    """
-    from app.scheduler.lead_generator import run_lead_generator
+    be generated on demand from the UI even when the market is closed. The
+    actual broker/DB work lives in
+    ``app.scheduler.lead_generator.run_lead_generator(force=True)`` — running
+    it inline would block this request for tens of seconds and trip the
+    client-side timeout, so we hand it off to a daemon thread and return 202
+    immediately. The companion ``GET /leads/generate/<job_id>`` endpoint lets
+    the UI poll for terminal status.
 
-    result = run_lead_generator(force=True) or {}
-    if result.get("error"):
-        return error("lead_generation_failed", result["error"], 502)
-    return ok({"generated": result.get("created", 0), "checked": result.get("checked", 0)})
+    409: another manual run is already in flight (the existing job id is
+    returned so the UI can attach to its status stream).
+    """
+    from app.scheduler.lead_jobs import submit_manual_job
+
+    job, started = submit_manual_job()
+    body = job.to_dict()
+    if started:
+        return ok(body), 202
+    return (
+        jsonify({
+            "status": "error",
+            "error": {
+                "code": "lead_generation_in_progress",
+                "message": "A lead-generation run is already in progress.",
+            },
+            "data": body,
+        }),
+        409,
+    )
+
+
+@bp.get("/leads/generate/<job_id>")
+@jwt_required
+def leads_generate_status(job_id: str):
+    """Return the current state of a manual lead-generation job.
+
+    The job registry is module-level and bounded (last 5 jobs), so any unknown
+    ``job_id`` — including ids retired by the registry trim — returns 404.
+    """
+    from app.scheduler.lead_jobs import get_job
+
+    job = get_job(job_id)
+    if job is None:
+        return error("lead_generation_job_not_found", f"Unknown job id: {job_id}", 404)
+    return ok(job.to_dict())
+
+
+@bp.post("/recon")
+@jwt_required
+def reconcile():
+    """Run the broker-truth reconciler on demand.
+
+    Useful from the UI to immediately close DB trades whose Upstox position is
+    gone (e.g., user exited at the Upstox UI). Normally the `reconciler`
+    scheduler covers this every 60 s; this endpoint just exposes it manually.
+    """
+    from app.services import recon_service
+
+    try:
+        broker = get_broker(Config())
+        result = recon_service.reconcile_open_trades(broker)
+    except BrokerError as e:
+        return broker_error(e)
+    return ok(result)
 
 
 def _lead_dict(l: Lead) -> dict:

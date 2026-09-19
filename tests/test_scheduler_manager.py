@@ -56,18 +56,30 @@ def test_manager_uses_default_intervals_when_settings_absent(_patched_scheduler)
     assert jobs["lead_generator"]["seconds"] == scheduler.DEFAULT_LEAD_GENERATOR_SECONDS
     assert jobs["trade_tracker"]["seconds"] == scheduler.DEFAULT_TRADE_TRACKER_SECONDS
     assert jobs["order_placer"]["seconds"] == scheduler.DEFAULT_ORDER_PLACER_SECONDS
+    assert jobs["lead_cleanup"]["seconds"] == scheduler.DEFAULT_LEAD_CLEANUP_SECONDS
 
 
 def test_manager_reads_intervals_from_settings(_patched_scheduler):
     set_setting("scheduler.lead_generator_seconds", 120)
     set_setting("scheduler.trade_tracker_seconds", 15)
     set_setting("scheduler.order_placer_seconds", 45)
+    set_setting("scheduler.lead_cleanup_seconds", 7)
 
     scheduler.init_scheduler()
     jobs = {j["id"]: j for j in _FakeScheduler.instances[-1].jobs}
     assert jobs["lead_generator"]["seconds"] == 120
     assert jobs["trade_tracker"]["seconds"] == 15
     assert jobs["order_placer"]["seconds"] == 45
+    assert jobs["lead_cleanup"]["seconds"] == 7
+
+
+def test_manager_registers_all_six_jobs(_patched_scheduler):
+    scheduler.init_scheduler()
+    ids = {j["id"] for j in _FakeScheduler.instances[-1].jobs}
+    assert ids == {"lead_generator", "trade_tracker", "order_placer", "lead_cleanup", "reconciler"}
+    cleanup = next(j for j in _FakeScheduler.instances[-1].jobs if j["id"] == "lead_cleanup")
+    assert cleanup["max_instances"] == 1
+    assert cleanup["coalesce"] is True
 
 
 def test_manager_is_idempotent(_patched_scheduler):

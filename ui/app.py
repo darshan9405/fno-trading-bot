@@ -15,6 +15,7 @@ Enhanced for ease of use:
 - Global: empty-state hints, tooltips, loading spinners
 """
 
+import json
 from datetime import datetime, time, timezone
 from zoneinfo import ZoneInfo
 
@@ -513,6 +514,34 @@ def _stat_tile(label: str, value: str, color: str = "#e2e8f0") -> str:
 
 # --- auth ----------------------------------------------------------------
 
+SSO_LOGIN_LINK_ID = "__sso_login_link"
+
+
+def _ensure_top_link(href: str, link_id: str) -> str:
+    return (
+        "<script>(function(){"
+        f"var D=window.top.document;"
+        f"var a=D.getElementById({json.dumps(link_id)});"
+        "if(!a){"
+        "a=D.createElement('a');"
+        f"a.id={json.dumps(link_id)};"
+        "a.target='_top';"
+        "a.rel='noopener noreferrer';"
+        "a.style.display='none';"
+        "D.body.appendChild(a);"
+        "}"
+        f"if(a.href!=={json.dumps(href)})a.href={json.dumps(href)};"
+        "})();</script>"
+    )
+
+
+def _click_top_link(link_id: str) -> str:
+    return (
+        "<script>window.top.document.getElementById("
+        f"{json.dumps(link_id)}"
+        ").click();</script>"
+    )
+
 
 def render_login():
     st.markdown(
@@ -529,12 +558,16 @@ def render_login():
     if auth_error:
         st.error(f"SSO failed: {auth_error}")
         st.query_params.clear()
-    st.markdown(
-        f"<a href='{api.login_url()}' style='display:block;text-align:center;"
-        f"background:{PRIMARY};color:#fff;padding:12px;border-radius:10px;"
-        f"text-decoration:none;font-weight:600;'>Login with Upstox</a>",
-        unsafe_allow_html=True,
-    )
+
+    st.markdown(_ensure_top_link(api.login_url(), SSO_LOGIN_LINK_ID), unsafe_allow_html=True)
+    if st.button(
+        "Login with Upstox",
+        use_container_width=True,
+        type="primary",
+        key="sso_login",
+    ):
+        st.markdown(_click_top_link(SSO_LOGIN_LINK_ID), unsafe_allow_html=True)
+        st.stop()
     st.caption("You'll be redirected to Upstox, then back to this dashboard.")
 
 
@@ -738,12 +771,15 @@ def render_token_status():
         "<div class='ks-banner' style='background:#fee2e2;border-color:#fca5a5;color:#991b1b;'>"
         "Upstox token expired — the bot cannot trade until you re-login.</div>"
     )
-    st.markdown(
-        f"<a href='{api.login_url()}' style='display:block;text-align:center;"
-        f"background:{PRIMARY};color:#fff;padding:10px;border-radius:8px;"
-        f"text-decoration:none;font-weight:600;'>Login with Upstox</a>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(_ensure_top_link(api.login_url(), SSO_LOGIN_LINK_ID), unsafe_allow_html=True)
+    if st.button(
+        "Login with Upstox",
+        use_container_width=True,
+        type="primary",
+        key="sso_login_token_expired",
+    ):
+        st.markdown(_click_top_link(SSO_LOGIN_LINK_ID), unsafe_allow_html=True)
+        st.stop()
 
 
 def render_killswitch_setup():
@@ -814,10 +850,12 @@ def render_dashboard():
     _render_day_stats()
 
     st.markdown("#### Today's queued signals")
-    today = datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
-    leads = api.get_leads(status="queued", date=today)
-    if leads.get("status") == "ok":
-        rows = leads["data"]["leads"]
+    # The leads API no longer accepts status/date params; fetch the current
+    # set and filter for queued on the client. The cleanup scheduler keeps
+    # this list small (only active queued signals survive).
+    leads_resp = api.get_leads()
+    if leads_resp.get("status") == "ok":
+        rows = [r for r in leads_resp["data"]["leads"] if r.get("status") == "queued"]
         if rows:
             df = pd.DataFrame(
                 [
@@ -932,21 +970,24 @@ def _render_position_card(r: dict):
     pnl = r.get("unrealised_pnl") or 0
     sl = r.get("current_sl")
     trail = r.get("trail_state") or "—"
+    sl_source = r.get("sl_source")
+    lifecycle = r.get("lifecycle_stage")
 
     pct = None
     if entry and ltp:
         try:
             base = float(entry)
             cur = float(ltp)
-            pct = ((cur - base) / base * 100.0) * (1 if direction == "CALL" else -1)
+            pct = (cur - base) / base * 100.0
         except (TypeError, ValueError):
             pct = None
 
-    # Distance to SL as % of entry
+    # SL is below entry for both CALL and PUT (option-buying bot).
+    # sl_pct = total adverse buffer size, expressed as % of entry.
     sl_pct = None
     if entry and sl:
         try:
-            sl_pct = abs((float(sl) - float(entry)) / float(entry) * 100.0)
+            sl_pct = abs((float(entry) - float(sl)) / float(entry) * 100.0)
         except (TypeError, ValueError):
             sl_pct = None
 
@@ -954,18 +995,27 @@ def _render_position_card(r: dict):
     dir_kind = "up" if direction == "CALL" else "down"
 
     sl_bar = ""
-    if sl_pct is not None and pct is not None:
-        # Show how close price is to SL (filled = farther, empty = closer to SL)
-        used = max(0.0, min(100.0, (pct / sl_pct) * 100.0)) if sl_pct else 0
-        bar_color = LOSS if used < 30 else (WARN if used < 70 else PROFIT)
+    if sl_pct is not None and pct is not None and sl_pct > 0:
+        # How much of the SL buffer has been consumed by adverse price movement.
+        # pct < 0 means LTP has fallen from entry (toward SL) for both directions.
+        consumed_pct = max(0.0, -pct)
+        used = max(0.0, min(100.0, (consumed_pct / sl_pct) * 100.0))
+        # Higher fill = more danger (closer to SL trigger).
+        bar_color = PROFIT if used < 30 else (WARN if used < 70 else LOSS)
         sl_bar = (
-            f"<div class='conf-bar' style='margin-top:6px;'>"
+            f"<div class='conf-bar' style='margin-top:6px;' title='LTP vs SL'>"
             f"<div class='conf-fill' style='width:{used:.0f}%;background:{bar_color}'></div>"
             f"</div>"
             f"<div class='muted' style='font-size:0.72rem;margin-top:2px;'>"
-            f"{used:.0f}% of SL range used"
+            f"{used:.0f}% of SL buffer consumed"
             f"</div>"
         )
+
+    sl_chip_label = "bot SL" if sl_source == "bot" else ("user SL" if sl_source == "user" else "—")
+    chip_kind = "muted" if sl_source != "user" else "up"
+    lifecycle_chip = (
+        f" {_badge(lifecycle, 'muted')}" if lifecycle else ""
+    )
 
     _html(
         f"""
@@ -973,7 +1023,7 @@ def _render_position_card(r: dict):
           <div class='row' style='justify-content:space-between;'>
             <div>
               <div style='font-size:1.05rem;font-weight:700;'>{sym} {_badge(direction, '{dir_kind}')}</div>
-              <div class='muted'>{_badge(trail, 'muted')}</div>
+              <div class='muted'>{_badge(trail, 'muted')}{lifecycle_chip}</div>
             </div>
             <div style='text-align:right;'>
               <div style='font-size:1.15rem;font-weight:700;color:{_pnl_color(pnl)}'>{_money(pnl)}</div>
@@ -983,7 +1033,7 @@ def _render_position_card(r: dict):
           <div class='row' style='margin-top:8px;gap:18px;flex-wrap:wrap;'>
             <div><span class='muted'>Entry</span> <b>{_num(entry)}</b></div>
             <div><span class='muted'>LTP</span> <b>{_num(ltp)}</b></div>
-            <div><span class='muted'>SL</span> <b>{_num(sl)}</b></div>
+            <div><span class='muted'>SL</span> <b>{_num(sl)}</b> {_badge(sl_chip_label, '{chip_kind}')}</div>
           </div>
           <div class='muted' style='font-size:0.72rem;margin-top:4px;'>
             Entered {_utc_to_ist_hm(r.get('entry_time'))} IST
@@ -997,38 +1047,74 @@ def _render_position_card(r: dict):
 def render_leads():
     st.subheader("Leads")
 
-    top = st.columns([3, 1, 1, 1, 1])
-    with top[0]:
-        q = st.text_input("Search", placeholder="Filter by symbol or instrument…",
-                          label_visibility="collapsed", key="leads_q")
-    with top[1]:
-        status_f = st.selectbox("Status", ["All", "queued", "placed", "skipped", "filled"],
-                                label_visibility="collapsed", key="leads_status")
-    with top[2]:
-        dir_f = st.selectbox("Direction", ["All", "CALL", "PUT"],
-                             label_visibility="collapsed", key="leads_dir")
-    with top[3]:
-        sort_f = st.selectbox("Sort", ["score", "time"],
-                              label_visibility="collapsed", key="leads_sort",
-                              help="score: composite (best first) · time: newest first")
-    with top[4]:
-        breakdown = st.toggle("Show breakdown", value=False, key="leads_breakdown",
-                              help="Show why each lead scored the way it did.")
-
-    c1, c2 = st.columns([4, 1])
-    with c2:
+    # The lead_cleanup scheduler keeps this view small and current
+    # (processed leads are deleted almost immediately and queued leads
+    # age-out at 24h). The API already sorts by composite score, so no
+    # filters/status toggles are needed.
+    _left, _right = st.columns([4, 1])
+    with _right:
         if st.button("Generate now", type="primary", use_container_width=True,
                      help="Run the lead generator manually (works outside trading hours)."):
-            with st.spinner("Scanning for setups…"):
-                resp = api.generate_leads()
+            # Manual runs now dispatch on the server (background thread) and
+            # return 202 immediately, so we just record the job id here and
+            # let the status fragment below poll for completion. This keeps
+            # the rest of the page responsive while generation is in flight.
+            resp = api.generate_leads()
             if resp.get("status") == "ok":
-                generated = resp["data"].get("generated", 0)
-                st.success(f"Generated {generated} lead(s).")
+                st.session_state["lead_job"] = {
+                    "id": resp["data"]["id"],
+                    "submitted_at": resp["data"]["submitted_at"],
+                }
+                st.toast("Lead generation started.", icon=":material/hourglass_top:")
+            elif resp.get("error", {}).get("code") == "lead_generation_in_progress":
+                # Attach to the existing job rather than spinning up a second.
+                existing = (resp.get("data") or {}).get("id")
+                if existing:
+                    st.session_state["lead_job"] = {
+                        "id": existing,
+                        "submitted_at": (resp.get("data") or {}).get("submitted_at"),
+                    }
+                st.toast("A generation run is already in progress.", icon=":material/hourglass_top:")
             else:
                 st.error(resp.get("error", {}).get("message", "Generation failed."))
-            st.rerun()
 
-    resp = api.get_leads(sort=sort_f)
+    # Independently re-running status fragment so polling the server doesn't
+    # also re-render the full leads list / spinner.
+    _lead_gen_status_fragment()
+
+
+@st.fragment(run_every="2s")
+def _lead_gen_status_fragment():
+    job = st.session_state.get("lead_job")
+    if not job:
+        return
+
+    job_id = job.get("id")
+    if not job_id:
+        return
+
+    resp = api.get_lead_gen_status(job_id)
+    if resp.get("status") != "ok":
+        # Network blip / server reload lost the job. Clear so we don't loop.
+        st.session_state.pop("lead_job", None)
+        return
+
+    data = resp["data"]
+    status = data.get("status")
+    if status == "running":
+        st.info("⏳ Lead generation in progress…", icon=":material/hourglass_top:")
+        return
+
+    st.session_state.pop("lead_job", None)
+    if status == "done":
+        result = data.get("result") or {}
+        generated = result.get("generated", 0)
+        st.toast(f"Generated {generated} lead(s).", icon=":material/check_circle:")
+    elif status == "error":
+        st.error(f"Generation failed: {data.get('error') or 'unknown error'}")
+    st.rerun()
+
+    resp = api.get_leads()
     if resp.get("status") != "ok":
         st.warning("Could not load leads.")
         return
@@ -1037,39 +1123,12 @@ def render_leads():
         st.info("No leads. Try **Generate now**, or enable more underlyings in **Instruments**.")
         return
 
-    # Apply filters
-    q_lower = (q or "").strip().lower()
-    if q_lower:
-        rows = [r for r in rows if q_lower in (r.get("symbol", "").lower())
-                or q_lower in (r.get("trading_symbol", "") or "").lower()
-                or q_lower in (r.get("underlying", "") or "").lower()]
-    if status_f != "All":
-        rows = [r for r in rows if r.get("status") == status_f]
-    if dir_f != "All":
-        rows = [r for r in rows if r.get("direction") == dir_f]
-
-    if not rows:
-        st.info("No leads match the current filters.")
-        return
-
-    # Server already returns rows sorted by `sort_f` (score or created_at desc).
-    # Apply final client-side ordering: actionable queued first, then by the
-    # chosen axis within each bucket.
-    status_priority = {"queued": 0, "picked": 1, "placed": 2, "filled": 3, "skipped": 4, "expired": 5}
-    if sort_f == "score":
-        rows = sorted(rows, key=lambda r: (status_priority.get(r.get("status"), 99), -(float(r.get("confidence") or 0))))
-    else:
-        rows = sorted(rows, key=lambda r: (status_priority.get(r.get("status"), 99), -(r.get("created_at_ts") or 0)))
-
     _html("<div class='row' style='margin-bottom:12px;align-items:center;'>")
-    _html(f"<span class='muted'>Showing <b>{len(rows)}</b> {'lead' if len(rows) == 1 else 'leads'} · sort=<b>{sort_f}</b></span>")
+    _html(f"<span class='muted'>Showing <b>{len(rows)}</b> {'lead' if len(rows) == 1 else 'leads'} · sorted by score</span>")
     _html(f"</div>")
 
     for r in rows:
-        if breakdown:
-            c1, c2, c3 = st.columns([3, 1, 3])
-        else:
-            c1, c2, c3 = st.columns([4, 1, 2])
+        c1, c2, c3 = st.columns([4, 1, 2])
         with c1:
             created_ist = (
                 r.get("created_at_ist_label")
@@ -1136,22 +1195,6 @@ def render_leads():
         with c3:
             if r.get("note"):
                 st.caption(r["note"])
-            if breakdown:
-                breakdown_rows = r.get("score_breakdown") or []
-                if breakdown_rows:
-                    breakdown_df = pd.DataFrame([
-                        {
-                            "Component": row.get("label", row["key"]),
-                            "Value": round(float(row["value"]) * 100, 1),
-                            "Weight": round(float(row["weight"]) * 100, 1),
-                            "Contribution": round(float(row["contribution"]) * 100, 2),
-                        }
-                        for row in breakdown_rows
-                    ])
-                    st.dataframe(
-                        breakdown_df, use_container_width=True, hide_index=True,
-                        height=min(40 + 35 * len(breakdown_df), 220),
-                    )
 
 
 def render_instruments():

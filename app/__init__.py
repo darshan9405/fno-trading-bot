@@ -1,8 +1,9 @@
 import logging
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from flask import Flask, jsonify
+from flask.json.provider import DefaultJSONProvider
 from flask_cors import CORS
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -25,6 +26,28 @@ class _ISTFormatter(logging.Formatter):
         if datefmt:
             return ts.strftime(datefmt)
         return ts.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+class _ISOJSONProvider(DefaultJSONProvider):
+    """JSON provider that emits ISO 8601 for every date/time/td object.
+
+    Flask's default provider formats ``datetime`` as RFC 1123
+    (e.g. ``"Sat, 19 Sep 2026 14:37:00 GMT"``), which the UI's
+    ``datetime.fromisoformat`` helper rejects and renders as ``—``.
+    Emitting ISO 8601 keeps every timestamp in the API contract
+    ``fromisoformat``-compatible across the board.
+    """
+
+    def default(self, o):  # type: ignore[override]
+        if isinstance(o, datetime):
+            return o.isoformat()
+        if isinstance(o, date):
+            return o.isoformat()
+        if isinstance(o, time):
+            return o.isoformat()
+        if isinstance(o, timedelta):
+            return o.total_seconds()
+        return super().default(o)
 
 
 def configure_logging(config: Config) -> None:
@@ -56,6 +79,10 @@ def create_app(config: Config | None = None) -> Flask:
     config = config or Config()
     app = Flask(__name__)
     app.config.from_object(config)
+
+    # Emit ISO 8601 for datetime/date/time so the UI's ``fromisoformat`` helper
+    # can render every timestamp in IST instead of falling back to ``—``.
+    app.json = _ISOJSONProvider(app)
 
     # Trust X-Forwarded-* (nginx behind Cloudflare Tunnel): 1 proxy hop.
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
