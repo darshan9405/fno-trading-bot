@@ -15,7 +15,6 @@ Enhanced for ease of use:
 - Global: empty-state hints, tooltips, loading spinners
 """
 
-import json
 from datetime import datetime, time, timezone
 from zoneinfo import ZoneInfo
 
@@ -197,6 +196,19 @@ def _css() -> str:
     [data-testid="stButton"] button[kind="primary"]:hover {{
         background: #818cf8; border-color: #818cf8;
     }}
+
+    /* SSO login: a real <a target="_top"> styled like the primary button.
+       A real user click on a real link is the only cross-frame top-nav
+       pattern that works inside Streamlit's sandboxed iframe — JS-clicking
+       a hidden top-frame anchor is silently dropped by modern browsers. */
+    .sso-login-btn {{
+        display: block; text-align: center;
+        background: {PRIMARY}; color: #fff;
+        padding: 0.55rem 1rem; border-radius: 0.5rem;
+        font-weight: 600; font-size: 0.95rem;
+        text-decoration: none; margin: 6px 0;
+    }}
+    .sso-login-btn:hover {{ background: #818cf8; color: #fff; }}
 
     /* Bigger sidebar controls (navigation + buttons) */
     [data-testid="stSidebar"] [data-testid="stRadio"] label {{
@@ -514,35 +526,6 @@ def _stat_tile(label: str, value: str, color: str = "#e2e8f0") -> str:
 
 # --- auth ----------------------------------------------------------------
 
-SSO_LOGIN_LINK_ID = "__sso_login_link"
-
-
-def _ensure_top_link(href: str, link_id: str) -> str:
-    return (
-        "<script>(function(){"
-        f"var D=window.top.document;"
-        f"var a=D.getElementById({json.dumps(link_id)});"
-        "if(!a){"
-        "a=D.createElement('a');"
-        f"a.id={json.dumps(link_id)};"
-        "a.target='_top';"
-        "a.rel='noopener noreferrer';"
-        "a.style.display='none';"
-        "D.body.appendChild(a);"
-        "}"
-        f"if(a.href!=={json.dumps(href)})a.href={json.dumps(href)};"
-        "})();</script>"
-    )
-
-
-def _click_top_link(link_id: str) -> str:
-    return (
-        "<script>window.top.document.getElementById("
-        f"{json.dumps(link_id)}"
-        ").click();</script>"
-    )
-
-
 def render_login():
     st.markdown(
         f"""
@@ -559,15 +542,15 @@ def render_login():
         st.error(f"SSO failed: {auth_error}")
         st.query_params.clear()
 
-    st.markdown(_ensure_top_link(api.login_url(), SSO_LOGIN_LINK_ID), unsafe_allow_html=True)
-    if st.button(
-        "Login with Upstox",
-        use_container_width=True,
-        type="primary",
-        key="sso_login",
-    ):
-        st.markdown(_click_top_link(SSO_LOGIN_LINK_ID), unsafe_allow_html=True)
-        st.stop()
+    # Real <a target="_top"> — a user click on a real link is the only
+    # top-frame navigation pattern that works inside Streamlit's sandboxed
+    # iframe. JS-clicking a hidden top-doc anchor is silently dropped by
+    # modern browsers (no allow-top-navigation).
+    st.markdown(
+        f'<a href="{api.login_url()}" target="_top" class="sso-login-btn">'
+        f'Login with Upstox</a>',
+        unsafe_allow_html=True,
+    )
     st.caption("You'll be redirected to Upstox, then back to this dashboard.")
 
 
@@ -771,15 +754,11 @@ def render_token_status():
         "<div class='ks-banner' style='background:#fee2e2;border-color:#fca5a5;color:#991b1b;'>"
         "Upstox token expired — the bot cannot trade until you re-login.</div>"
     )
-    st.markdown(_ensure_top_link(api.login_url(), SSO_LOGIN_LINK_ID), unsafe_allow_html=True)
-    if st.button(
-        "Login with Upstox",
-        use_container_width=True,
-        type="primary",
-        key="sso_login_token_expired",
-    ):
-        st.markdown(_click_top_link(SSO_LOGIN_LINK_ID), unsafe_allow_html=True)
-        st.stop()
+    st.markdown(
+        f'<a href="{api.login_url()}" target="_top" class="sso-login-btn">'
+        f'Login with Upstox</a>',
+        unsafe_allow_html=True,
+    )
 
 
 def render_killswitch_setup():
