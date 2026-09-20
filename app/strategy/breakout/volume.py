@@ -51,7 +51,11 @@ def _volume_quality(df, multiplier: float, window: int, lookback: int) -> float:
 
 def detect_volume(df, multiplier: float = 4.0, window: int = 20, lookback: int = 5,
                   proximity_pct: float = 0.5, recent_highs: int = 20) -> list[PatternSignal]:
-    """Volume spike + price break of recent highs (CALL) / lows (PUT)."""
+    """Volume spike + price break of recent highs (CALL) / lows (PUT).
+
+    At most one signal per bar; direction is the side actually broken. A close
+    sitting inside the band with a volume spike is intentionally not a signal.
+    """
     spike = volume_spike(df, multiplier, window, lookback)
     if not spike:
         return []
@@ -63,26 +67,21 @@ def detect_volume(df, multiplier: float = 4.0, window: int = 20, lookback: int =
     lower = float(hist["low"].min())
     close = float(df["close"].iloc[-1])
 
-    signals = []
-    # pattern_fit=0.85 reflects that volume_breakout passes TWO gates
-    # (volume spike AND price breakout), making it materially stronger than
-    # price-only patterns at the same proximity.
-    if upper > 0 and close >= upper * (1 - proximity_pct / 100.0):
-        components = ComponentScores(
-            pattern_fit=0.85,
-            volume=vol_quality,
-            trend_alignment=0.5,
-            proximity=1.0,
-            structure=vol_quality,
-        )
-        signals.append(PatternSignal("CALL", "volume_breakout", round(upper, 2), 0.8, components))
-    if lower > 0 and close <= lower * (1 + proximity_pct / 100.0):
-        components = ComponentScores(
-            pattern_fit=0.85,
-            volume=vol_quality,
-            trend_alignment=0.5,
-            proximity=1.0,
-            structure=vol_quality,
-        )
-        signals.append(PatternSignal("PUT", "volume_breakout", round(lower, 2), 0.8, components))
-    return signals
+    # pattern_fit=0.85 reflects that volume_breakout passes two gates
+    # (spike AND price break), making it stronger than price-only patterns.
+    components_template = ComponentScores(
+        pattern_fit=0.85,
+        volume=vol_quality,
+        trend_alignment=0.5,
+        proximity=1.0,
+        structure=vol_quality,
+    )
+
+    broke_above = upper > 0 and close > upper * (1 + proximity_pct / 100.0)
+    broke_below = lower > 0 and close < lower * (1 - proximity_pct / 100.0)
+
+    if broke_above and not broke_below:
+        return [PatternSignal("CALL", "volume_breakout", round(upper, 2), 0.8, components_template)]
+    if broke_below and not broke_above:
+        return [PatternSignal("PUT", "volume_breakout", round(lower, 2), 0.8, components_template)]
+    return []  # close inside band, or both sides broken (ambiguous)

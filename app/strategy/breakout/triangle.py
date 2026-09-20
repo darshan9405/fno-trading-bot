@@ -1,8 +1,8 @@
 """Triangle breakout.
 
-Best-fit lines through the last M swing highs (upper) and swing lows (lower)
-must converge. When the price is at the converging envelope, a break above the
-upper line -> CALL; below the lower line -> PUT.
+Accepts symmetrical, ascending, and descending shapes; rejects only
+near-parallel fits. Direction comes from which line was breached.
+`proximity_pct` is the directional break tolerance.
 """
 
 from app.strategy.breakout.signals import PatternSignal
@@ -11,7 +11,11 @@ from app.strategy.breakout.trendline import _fit
 from app.strategy.scoring import ComponentScores
 
 
+_PARALLEL_SLOPE_EPS = 1e-9
+
+
 def detect_triangle(df, k: int = 3, min_points: int = 3, proximity_pct: float = 0.5) -> list[PatternSignal]:
+    """Directional triangle breakout across the three classical shapes."""
     highs = find_swing_highs(df, k)
     lows = find_swing_lows(df, k)
     if len(highs) < min_points or len(lows) < min_points:
@@ -24,27 +28,30 @@ def detect_triangle(df, k: int = 3, min_points: int = 3, proximity_pct: float = 
 
     su, iu, r2u = upper
     sl, il, r2l = lower
-    if su >= sl:  # diverging or parallel — not a triangle
+    if abs(su - sl) <= _PARALLEL_SLOPE_EPS:
         return []
 
     n = len(df)
     up_now = su * (n - 1) + iu
     lo_now = sl * (n - 1) + il
+    if up_now <= 0 or lo_now <= 0:
+        return []
+
     close = float(df["close"].iloc[-1])
+    tolerance = max(0.0, float(proximity_pct)) / 100.0
     r2 = max(0.0, min(1.0, float(min(r2u, r2l))))
-    pattern_fit = r2
     components = ComponentScores(
-        pattern_fit=pattern_fit,
+        pattern_fit=r2,
         volume=0.5,
         trend_alignment=0.5,
         proximity=1.0,
-        structure=pattern_fit,
+        structure=r2,
     )
-    conf_lambda = lambda: round(min(0.9, 0.55 + 0.15 * r2), 2)  # noqa: E731
+    confidence = round(min(0.9, 0.55 + 0.15 * r2), 2)
 
     signals = []
-    if up_now > 0 and abs(close - up_now) / up_now * 100.0 <= proximity_pct:
-        signals.append(PatternSignal("CALL", "triangle", round(up_now, 2), conf_lambda(), components))
-    if lo_now > 0 and abs(close - lo_now) / lo_now * 100.0 <= proximity_pct:
-        signals.append(PatternSignal("PUT", "triangle", round(lo_now, 2), conf_lambda(), components))
+    if close > up_now * (1.0 + tolerance):
+        signals.append(PatternSignal("CALL", "triangle", round(up_now, 2), confidence, components))
+    if close < lo_now * (1.0 - tolerance):
+        signals.append(PatternSignal("PUT", "triangle", round(lo_now, 2), confidence, components))
     return signals

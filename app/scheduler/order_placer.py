@@ -23,8 +23,9 @@ from app.services import contract_service, health_service, market_calendar, trad
 from app.services.calibration import calibration_multiplier
 from app.services.killswitch_service import is_killswitch_active
 from app.services.lead_service import mark_lead
-from app.services.score_decay import decayed_score
+from app.services.score_decay import decay_factor
 from app.settings import get_setting
+from app.strategy import tier3
 
 log = logging.getLogger(__name__)
 
@@ -72,19 +73,39 @@ def run_order_placer(broker=None, now=None):
             candidates = list(session.execute(
                 select(Lead).where(Lead.status == "queued")
             ).scalars())
+            # Per-tick option chain cache: rank loop and process_lead must
+            # agree on the same snapshot, otherwise IV/OI evidence drifts
+            # between rank time and placement time (M6).
+            option_chain_cache: dict = _warm_option_chain_cache(
+                broker, candidates, min_days, today=now.date(),
+            )
+
             def _rank_key(lead):
-                decayed = decayed_score(lead, half_life_min, now)
+                cached = option_chain_cache.get(lead.underlying_key)
+                if cached is None:
+                    fresh_base = float(getattr(lead, "confidence", 0.0) or 0.0)
+                else:
+                    _, contracts = cached
+                    try:
+                        fresh_base = tier3.fresh_reblend_score(lead, contracts, now=now)
+                    except Exception as e:
+                        log.debug("order_placer: fresh_reblend_score failed for lead %s (%s); using stored confidence",
+                                  getattr(lead, "id", None), e)
+                        fresh_base = float(getattr(lead, "confidence", 0.0) or 0.0)
+                fresh_base = max(0.0, min(1.0, fresh_base))
+                decay = decay_factor(getattr(lead, "created_at", None), now, half_life_min) if half_life_min > 0 else 1.0
                 mult = calibration_multiplier(
                     lead.signal_type or "",
                     lead.underlying_key or "",
                     calibration_alpha,
                 ) if calibration_alpha > 0 else 1.0
-                return (-(decayed * mult), lead.created_at or 0)
+                return (-(fresh_base * decay * mult), lead.created_at or 0)
             candidates.sort(key=_rank_key)
             for lead in candidates:
                 try:
                     process_lead(session, broker, lead, sl_pct, max_div, min_days, lots, available_margin,
-                                 max_depth, fill_timeout, limit_premium_pct, today=now.date())
+                                 max_depth, fill_timeout, limit_premium_pct, today=now.date(),
+                                 option_chain_cache=option_chain_cache)
                 except Exception as e:
                     log.exception("order_placer: lead %s failed", lead.id)
                     mark_lead(session, lead, "skipped", note=str(e))
@@ -104,15 +125,18 @@ def run_order_placer(broker=None, now=None):
 def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min_days: int, lots: int,
                  available_margin: float | None = None, max_depth: int = 3,
                  fill_timeout: int = 30, limit_premium_pct: float = 1.0,
-                 today=None) -> None:
+                 today=None, option_chain_cache: dict | None = None) -> None:
+    # Skip reasons at this stage, in order:
+    #   - open trade already exists for underlying (H4 policy: max one open per
+    #     underlying; same-day closed/failed trades do NOT block re-entry)
+    #   - price diverged beyond threshold
+    #   - no expiry >= min_days
+    # All of these land lead.status="skipped" with a distinguishing note so the
+    # cleanup scheduler can tell policy-blocks from market/data misses.
     mark_lead(session, lead, "picked", note="processing")
 
     if trade_service.has_open_trade_for_underlying(session, lead.underlying_key):
         mark_lead(session, lead, "skipped", note="open trade already exists for underlying")
-        return
-
-    if trade_service.has_traded_underlying_today(session, lead.underlying_key):
-        mark_lead(session, lead, "skipped", note="underlying already traded today")
         return
 
     ltp = (broker.get_ltp([lead.underlying_key]) or {}).get(lead.underlying_key)
@@ -127,8 +151,17 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
     if expiry is None:
         raise BrokerError(f"no expiry >= {min_days} days for {lead.underlying_key}")
 
-    # Margin-aware strike: prefer ATM; walk toward cheaper OTM until affordable.
-    contracts = broker.get_option_contracts(lead.underlying_key, expiry=expiry)
+    cached = (option_chain_cache or {}).get(lead.underlying_key)
+    if cached is not None:
+        expiry_cached, contracts_cached = cached
+        if expiry_cached is not None:
+            expiry = expiry_cached
+            contracts = contracts_cached or contracts
+        else:
+            # Cache recorded "no expiry for this underlying": don't bypass upstream state change.
+            contracts = broker.get_option_contracts(lead.underlying_key, expiry=expiry)
+    else:
+        contracts = broker.get_option_contracts(lead.underlying_key, expiry=expiry)
     wanted = "CE" if lead.direction == "CALL" else "PE"
     matches = [c for c in contracts if c.instrument_type == wanted]
     candidates = list(contract_service.walk_candidates(matches, lead.direction, ltp, max_depth))
@@ -168,14 +201,29 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
     log.info("order_placer: entry order %s placed for lead=%s instrument=%s",
              entry_order_id, lead.id, contract.instrument_key)
 
-    entry_price, status = _wait_for_fill(broker, entry_order_id, fill_timeout)
-    if entry_price is None:
+    entry_price, status, filled_qty = _wait_for_fill(broker, entry_order_id, fill_timeout)
+    if entry_price is None or filled_qty <= 0:
         _safe_cancel_if_open(broker, entry_order_id, status)
         verb = "already terminal" if status in _TERMINAL_STATUSES else "cancelled"
         raise BrokerError(
             f"entry LIMIT {entry_order_id} for {contract.instrument_key} did not fill"
             f" within {fill_timeout}s (status={status or 'unknown'}); {verb}, no trade opened"
         )
+
+    requested_qty = quantity
+    if filled_qty < requested_qty:
+        # Partial fill. Cancel the remaining unfilled portion (no-op if the
+        # broker already flipped it terminal) so we don't keep accumulating,
+        # then size the SL and Trade to what we actually got.
+        log.warning(
+            "order_placer: entry %s partial fill %s/%s; cancelling remainder, capping trade/sl qty",
+            entry_order_id, filled_qty, requested_qty,
+        )
+        if status not in _TERMINAL_STATUSES:
+            _safe_cancel_if_open(broker, entry_order_id, status)
+        quantity = filled_qty
+    else:
+        quantity = filled_qty
 
     initial_sl = trade_service.initial_sl_for(entry_price, lead.direction, sl_pct)
     instrument_tick = getattr(contract, "tick_size", 0.0) or 0.0
@@ -255,6 +303,7 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
         initial_sl=initial_sl,
         entry_order_id=entry_order_id,
         sl_order_id=sl_order_id,
+        sl_order_type=sl_order_type,
     )
     # After entry fill + SL verify_at_broker accepted, the trade is fully
     # protected; promote it to `sl_active` so trade_tracker starts trailing.
@@ -265,7 +314,7 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
     trade_service.record_order(
         session, order_id=entry_order_id, trade_id=trade.id, order_type="LIMIT", transaction_type="BUY",
         instrument_token=contract.instrument_key, quantity=quantity, tag=tag, average_price=entry_price,
-        tradingsymbol=contract.trading_symbol,
+        tradingsymbol=contract.trading_symbol, filled_quantity=quantity,
     )
     trade_service.record_order(
         session, order_id=sl_order_id, trade_id=trade.id, order_type=sl_order_type, transaction_type="SELL",
@@ -289,25 +338,54 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
              trade.id, lead.underlying_key, entry_price, initial_sl, limit_price, sl_order_type)
 
 
-def _wait_for_fill(broker, order_id: str, timeout_seconds: int) -> tuple[float | None, str | None]:
-    """Poll `broker.get_order_book()` until the order fills, rejects, or `timeout_seconds` elapses.
+def _wait_for_fill(broker, order_id: str, timeout_seconds: int) -> tuple[float | None, str | None, int]:
+    """Poll `broker.get_order_book()` until the order fills, rejects, cancels, or
+    `timeout_seconds` elapses.
 
-    Returns `(avg_fill_price, status)`. `avg_fill_price is None` on non-fill.
+    Returns `(avg_fill_price, status, filled_quantity)`.
+
+    A partial fill (broker reports `status` not terminal and `filled_quantity <
+    quantity`, or terminal status with `filled_quantity > 0`) is surfaced as
+    `(partial_avg_price, status, partial_filled_qty)` so the caller can cap the
+    SL quantity and Trade.quantity to what was actually filled instead of
+    leaving an orphan long position with no protective stop.
+
+    A truly zero-fill result returns `(None, status, 0)`.
     """
     deadline = time.monotonic() + timeout_seconds
     status: str | None = None
+    filled_qty: int = 0
+    last_order = None
     while time.monotonic() < deadline:
         order = next((o for o in broker.get_order_book() if o.order_id == order_id), None)
-        status = order.status if order else None
+        if order is not None:
+            last_order = order
+            status = order.status or "open"
+            filled_qty = int(getattr(order, "filled_quantity", 0) or 0)
         if status in ("complete", "traded"):
-            entry_price = trade_service.avg_fill_price(broker.get_trades_by_order(order_id))
-            if entry_price is None and order and order.average_price:
-                entry_price = order.average_price
-            return entry_price, status
+            return _fill_price_from(broker, order_id, last_order), status, filled_qty
         if status in ("rejected", "cancelled"):
-            return None, status
+            if filled_qty > 0:
+                return _fill_price_from(broker, order_id, last_order), status, filled_qty
+            return None, status, 0
         time.sleep(1)
-    return None, status
+    # Timeout. If we have any partial fill, hand it back so the caller can
+    # cancel the remainder and proceed with a smaller, fully protected trade.
+    if filled_qty > 0 and last_order is not None:
+        return _fill_price_from(broker, order_id, last_order), status or "open", filled_qty
+    return None, status or "open", 0
+
+
+def _fill_price_from(broker, order_id: str, last_order) -> float | None:
+    """Best-effort avg fill price: fills endpoint first, then order.average_price."""
+    try:
+        price = trade_service.avg_fill_price(broker.get_trades_by_order(order_id))
+    except Exception as e:
+        log.warning("order_placer: get_trades_by_order failed for %s (%s)", order_id, e)
+        price = None
+    if price is None and last_order is not None:
+        price = getattr(last_order, "average_price", None)
+    return price
 
 
 _TERMINAL_STATUSES = {"complete", "traded", "rejected", "cancelled", "canceled"}
@@ -332,3 +410,35 @@ def _safe_cancel_if_open(broker, order_id: str, known_status: str | None = None)
         broker.cancel_order(order_id)
     except Exception as e:
         log.warning("order_placer: could not cancel order %s (status=%s): %s", order_id, status, e)
+
+
+def _warm_option_chain_cache(broker, leads, min_days: int, today) -> dict:
+    """Fetch (expiry, contracts) once per underlying for the queued leads.
+
+    Cache value is None on broker failure or no qualifying expiry —
+    callers fall back to the stored confidence and per-lead broker call.
+    """
+    cache: dict = {}
+    by_underlying: dict[str, list] = {}
+    for lead in leads:
+        key = getattr(lead, "underlying_key", None)
+        if key:
+            by_underlying.setdefault(key, []).append(lead)
+    for underlying_key in by_underlying.keys():
+        try:
+            expiry = contract_service.next_expiry(broker, underlying_key, min_days, today=today)
+        except Exception as e:
+            log.debug("order_placer: next_expiry failed for %s (%s); cache miss for rank", underlying_key, e)
+            cache[underlying_key] = None
+            continue
+        if expiry is None:
+            cache[underlying_key] = None
+            continue
+        try:
+            contracts = broker.get_option_contracts(underlying_key, expiry=expiry) or []
+        except Exception as e:
+            log.debug("order_placer: get_option_contracts failed for %s (%s); cache miss for rank", underlying_key, e)
+            cache[underlying_key] = None
+            continue
+        cache[underlying_key] = (expiry, contracts)
+    return cache

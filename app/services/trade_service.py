@@ -254,7 +254,9 @@ def derive_exit_price(broker, trade: Trade, sqoff_id: str | None = None) -> floa
 
 
 def create_trade(session, *, lead: Lead, contract: InstrumentView, direction: str, entry_price: float,
-                 quantity: int, initial_sl: float, entry_order_id: str, sl_order_id: str | None = None) -> Trade:
+                 quantity: int, initial_sl: float, entry_order_id: str,
+                 sl_order_id: str | None = None,
+                 sl_order_type: str | None = None) -> Trade:
     trade = Trade(
         lead_id=lead.id,
         underlying_key=lead.underlying_key,
@@ -275,6 +277,7 @@ def create_trade(session, *, lead: Lead, contract: InstrumentView, direction: st
         sl_source="bot" if sl_order_id is not None else None,
         entry_order_id=entry_order_id,
         sl_order_id=sl_order_id,
+        sl_order_type=sl_order_type,
         entry_time=utcnow(),
     )
     session.add(trade)
@@ -285,7 +288,10 @@ def create_trade(session, *, lead: Lead, contract: InstrumentView, direction: st
 def record_order(session, *, order_id: str, trade_id: int, order_type: str, transaction_type: str,
                  instrument_token: str, quantity: int, tag: str | None, status: str = "complete",
                  price: float = 0.0, average_price: float | None = None,
-                 trigger_price: float | None = None, tradingsymbol: str | None = None) -> Order:
+                 trigger_price: float | None = None, tradingsymbol: str | None = None,
+                 filled_quantity: int | None = None) -> Order:
+    if filled_quantity is None:
+        filled_quantity = quantity if status == "complete" else 0
     order = Order(
         order_id=order_id,
         trade_id=trade_id,
@@ -297,7 +303,7 @@ def record_order(session, *, order_id: str, trade_id: int, order_type: str, tran
         trigger_price=trigger_price,
         average_price=average_price,
         quantity=quantity,
-        filled_quantity=quantity if status == "complete" else 0,
+        filled_quantity=filled_quantity,
         instrument_token=instrument_token,
         tradingsymbol=tradingsymbol,
         exchange="NSE",
@@ -332,18 +338,10 @@ def get_open_trades() -> list[Trade]:
 
 
 def has_open_trade_for_underlying(session, underlying_key: str) -> bool:
+    """H4: max one OPEN trade per underlying. Same-day closed/failed trades
+    do NOT block re-entry."""
     return session.execute(
         select(Trade).where(Trade.underlying_key == underlying_key, Trade.status == "open")
-    ).scalars().first() is not None
-
-
-def has_traded_underlying_today(session, underlying_key: str) -> bool:
-    """True when the underlying already has any trade today (open or closed)."""
-    from datetime import datetime, time as dtime
-
-    day_start = datetime.combine(utcnow().date(), dtime.min)
-    return session.execute(
-        select(Trade).where(Trade.underlying_key == underlying_key, Trade.created_at >= day_start)
     ).scalars().first() is not None
 
 

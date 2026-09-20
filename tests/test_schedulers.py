@@ -35,6 +35,7 @@ class FakeBroker(BrokerBase):
     def __init__(self):
         self.placed = []
         self.modified = []
+        self.cancelled = []
         self.ltp_map = {}
         self.expiries = []
         self.contracts = []
@@ -92,7 +93,7 @@ class FakeBroker(BrokerBase):
                 o.order_type = params.order_type
 
     def cancel_order(self, order_id):
-        pass
+        self.cancelled.append(order_id)
 
     def exit_all(self, tag=None, segment=None):
         pass
@@ -193,8 +194,8 @@ def env(tmp_path):
     dispose()
 
 
-def _seed_broker(env):
-    broker = FakeBroker()
+def _seed_broker(env, broker_cls=FakeBroker):
+    broker = broker_cls()
     broker.expiries = [__import__("datetime").date(2026, 9, 10), __import__("datetime").date(2026, 9, 17)]
     broker.contracts = [
         InstrumentView(instrument_key="NSE_FO|84123", trading_symbol="NIFTY 10 SEP 26 26800 CE",
@@ -721,7 +722,7 @@ def test_order_placer_unfilled_entry_does_not_block_retry(env, monkeypatch):
         call_count["n"] += 1
         # First call (LIMIT that doesn't fill): bail immediately.
         if call_count["n"] == 1:
-            return None, "open"
+            return None, "open", 0
         # Subsequent calls (the retry after regeneration): use the real poll.
         return real_wait(broker, order_id, timeout)
 
@@ -760,6 +761,57 @@ def test_order_placer_skips_on_price_divergence(env):
         assert "diverged" in skipped[0].note
 
 
+def test_order_placer_opens_partial_fill_with_capped_quantity(env, monkeypatch):
+    """C2: a partial LIMIT fill must size Trade.qty and SL.qty to the actual
+    fill, AND cancel the unfilled remainder so the broker isn't left holding
+    an unprotected long leg."""
+    from app.scheduler import order_placer as _op
+
+    class PartialFillingBroker(FakeBroker):
+        def place_order(self, order):
+            oid = super().place_order(order)
+            if order.order_type == "LIMIT" and order.transaction_type == "BUY":
+                for o in self._order_book:
+                    if o.order_id == oid:
+                        o.status = "open"
+                        o.average_price = order.price
+                        o.filled_quantity = 30
+                self.fills[oid] = [
+                    FillView(trade_id=f"t-{oid}", order_id=oid, quantity=30,
+                             average_price=order.price, transaction_type=order.transaction_type)
+                ]
+            return oid
+
+    def fake_wait(broker_, order_id, timeout_seconds):
+        for o in broker_.get_order_book():
+            if o.order_id == order_id:
+                price = o.average_price if o.average_price is not None else 100.0
+                return float(price), o.status, int(getattr(o, "filled_quantity", 0) or 0)
+        return None, "open", 0
+
+    monkeypatch.setattr(_op, "_wait_for_fill", fake_wait)
+
+    broker = _seed_broker(env, broker_cls=PartialFillingBroker)
+    run_lead_generator(broker=broker, now=_now(10, 30))
+    run_order_placer(broker=broker, now=_now(10, 35))
+
+    with session_scope() as session:
+        trade = session.execute(select(Trade).where(Trade.status == "open")).scalars().first()
+        assert trade is not None, "partial fill must produce a Trade row"
+        assert trade.quantity == 30, f"trade.quantity should equal partial fill qty, got {trade.quantity}"
+        entry_order = session.execute(
+            select(Order).where(Order.order_id == trade.entry_order_id)
+        ).scalars().first()
+        assert entry_order is not None
+        assert entry_order.filled_quantity == 30
+        sl_order = session.execute(
+            select(Order).where(Order.order_id == trade.sl_order_id)
+        ).scalars().first()
+        assert sl_order is not None
+        assert sl_order.quantity == 30, "SL order quantity must match partial-fill quantity"
+        assert len(broker.cancelled) >= 1
+
+
 def test_order_placer_halts_on_killswitch(env):
     broker = _seed_broker(env)
     activate_killswitch(reason="test")
@@ -770,12 +822,14 @@ def test_order_placer_halts_on_killswitch(env):
     assert health_service.last_heartbeat("order_placer").note == "killswitch active"
 
 
-def test_order_placer_skips_when_underlying_already_traded_today(env):
+def test_order_placer_allows_reentry_after_same_day_closed_trade(env):
+    # H4: per-underlying cap is "max one OPEN trade"; same-day closed/failed
+    # trades must not block re-entry.
     broker = _seed_broker(env)
     with session_scope() as session:
         inst = session.execute(select(Instrument).where(Instrument.symbol == "NIFTY")).scalars().first()
         lead = Lead(instrument_id=inst.id, underlying_key="NSE_INDEX|Nifty 50", direction="CALL",
-                    strategy="breakout", signal_type="test", signal_level=26800.0,
+                    strategy="breakout", signal_type="test", signal_level=100.0,
                     confidence=0.9, chart_interval="day", status="queued")
         session.add(lead)
         session.flush()
@@ -784,14 +838,52 @@ def test_order_placer_skips_when_underlying_already_traded_today(env):
                           tradingsymbol="NIFTY 10 SEP 26 26800 CE", lot_size=50, product="D",
                           direction="CALL", entry_price=100.0, quantity=50,
                           initial_sl=90.0, current_sl=90.0, trail_state="at_initial",
-                          status="closed", entry_order_id="o-x", sl_order_id="o-y"))
+                          status="closed", entry_order_id="o-x", sl_order_id="o-y",
+                          exit_reason="sl_hit"))
 
     run_order_placer(broker=broker, now=_now(10, 35))
     with session_scope() as session:
-        skipped = session.execute(select(Lead).where(Lead.status == "skipped")).scalars().first()
+        skipped = session.execute(
+            select(Lead).where(Lead.status == "skipped")
+        ).scalars().all()
+        assert not any("already traded today" in (s.note or "") for s in skipped), (
+            "closed same-day trade must not block re-entry"
+        )
+        placed = session.execute(select(Lead).where(Lead.status == "placed")).scalars().all()
+        assert any(p.underlying_key == "NSE_INDEX|Nifty 50" for p in placed)
+        open_trades = session.execute(select(Trade).where(Trade.status == "open")).scalars().all()
+        closed_trades = session.execute(select(Trade).where(Trade.status == "closed")).scalars().all()
+        assert len(open_trades) == 1
+        assert len(closed_trades) == 1
+        assert closed_trades[0].exit_reason == "sl_hit"
+
+
+def test_order_placer_skips_when_open_trade_exists_for_underlying(env):
+    # H4 companion: an open trade on the underlying still blocks the new lead.
+    broker = _seed_broker(env)
+    with session_scope() as session:
+        inst = session.execute(select(Instrument).where(Instrument.symbol == "NIFTY")).scalars().first()
+        lead = Lead(instrument_id=inst.id, underlying_key="NSE_INDEX|Nifty 50", direction="CALL",
+                    strategy="breakout", signal_type="test", signal_level=100.0,
+                    confidence=0.9, chart_interval="day", status="queued")
+        session.add(lead)
+        session.flush()
+        session.add(Trade(lead_id=None, underlying_key="NSE_INDEX|Nifty 50",
+                          option_instrument_key="NSE_FO|84123", option_instrument_token="84123",
+                          tradingsymbol="NIFTY 10 SEP 26 26800 CE", lot_size=50, product="D",
+                          direction="CALL", entry_price=100.0, quantity=50,
+                          initial_sl=90.0, current_sl=90.0, trail_state="at_initial",
+                          status="open", entry_order_id="o-x", sl_order_id="o-y"))
+
+    run_order_placer(broker=broker, now=_now(10, 35))
+    with session_scope() as session:
+        skipped = session.execute(
+            select(Lead).where(Lead.status == "skipped")
+        ).scalars().first()
         assert skipped is not None
-        assert "already traded today" in (skipped.note or "")
-        assert session.execute(select(Trade).where(Trade.status == "open")).scalars().first() is None
+        assert "open trade already exists for underlying" in (skipped.note or "")
+        # Only the seeded open trade remains; no new trade was opened.
+        assert len(session.execute(select(Trade).where(Trade.status == "open")).scalars().all()) == 1
 
 
 def test_lead_generator_regenerates_after_skip(env):
@@ -1329,3 +1421,199 @@ def test_verify_sl_placed_detects_mismatch(env):
         intended_trigger=90.0, intended_type="SL-M", entry_price=100.0,
     )
     assert ok is False and "SELL" in msg
+
+
+# --- M6 ---
+
+
+class _IVContract:
+    """Stand-in for InstrumentView with optional `iv` / `oi` hints."""
+
+    def __init__(self, *, instrument_key, trading_symbol, underlying_key,
+                 instrument_type, strike_price, lot_size, iv=None, oi=None):
+        self.instrument_key = instrument_key
+        self.trading_symbol = trading_symbol
+        self.underlying_key = underlying_key
+        self.instrument_type = instrument_type
+        self.strike_price = strike_price
+        self.lot_size = lot_size
+        self.iv = iv
+        self.oi = oi
+
+
+def _seed_iv_chain(env, broker, iv_map):
+    """Install NIFTY + a synthetic second underlying seeded with `iv_map` IVs."""
+    synth_key = "NSE_EQ|TESTM6"
+    broker.expiries = [__import__("datetime").date(2026, 9, 10),
+                       __import__("datetime").date(2026, 9, 17)]
+    broker.contracts = [
+        _IVContract(
+            instrument_key="NSE_FO|84123",
+            trading_symbol="NIFTY 10 SEP 26 26800 CE",
+            underlying_key="NSE_INDEX|Nifty 50",
+            instrument_type="CE", strike_price=26800.0, lot_size=50,
+            iv=iv_map.get("NSE_INDEX|Nifty 50"),
+        ),
+        _IVContract(
+            instrument_key="NSE_FO|M6SYN",
+            trading_symbol="TST-M6 10 SEP 26 100 CE",
+            underlying_key=synth_key,
+            instrument_type="CE", strike_price=100.0, lot_size=50,
+            iv=iv_map.get(synth_key),
+        ),
+        _IVContract(
+            instrument_key="NSE_FO|M6SYNPE",
+            trading_symbol="TST-M6 10 SEP 26 100 PE",
+            underlying_key=synth_key,
+            instrument_type="PE", strike_price=100.0, lot_size=50,
+            iv=iv_map.get(synth_key),
+        ),
+    ]
+    broker.ltp_map = {
+        "NSE_INDEX|Nifty 50": 100.0,
+        synth_key: 100.0,
+        "NSE_FO|84123": 100.0,
+        "NSE_FO|M6SYN": 100.0,
+        "NSE_FO|M6SYNPE": 100.0,
+    }
+    with session_scope() as session:
+        from app.models import Instrument
+        if session.execute(select(Instrument).where(Instrument.symbol == "TST-M6")).scalars().first() is None:
+            session.add(Instrument(
+                symbol="TST-M6", exchange="NSE", segment="NSE_EQ",
+                spot_instrument_key=synth_key, instrument_token="M6SYN",
+                trading_symbol="TST-M6", lot_size=50, enabled=True,
+            ))
+    return synth_key
+
+
+def test_fresh_reblend_score_strips_stale_iv_extras(env):
+    """M6: stale IV/oi/time_of_day extras on a lead must be replaced by the
+    live option chain snapshot (`tier3._iv_score` maps 0.45 -> 0.4 — bearish)."""
+    from app.strategy import tier3
+
+    stale_components = {
+        "pattern_fit": 0.7,
+        "volume": 0.6,
+        "trend_alignment": 0.6,
+        "proximity": 1.0,
+        "structure": 0.7,
+        "extras": {"iv": 0.95, "oi": 0.95, "time_of_day": 0.95},
+    }
+
+    class _Stub:
+        def __init__(self, components, confidence, direction="CALL",
+                     underlying_key="NSE_INDEX|Nifty 50", signal_level=100.0):
+            self.components = components
+            self.confidence = confidence
+            self.direction = direction
+            self.underlying_key = underlying_key
+            self.signal_level = signal_level
+
+    lead_stale = _Stub(stale_components, confidence=0.9)
+    live_chain = [_IVContract(
+        instrument_key="NSE_FO|LIVE", trading_symbol="X", underlying_key="NSE_INDEX|Nifty 50",
+        instrument_type="CE", strike_price=100.0, lot_size=50, iv=0.45,
+    )]
+
+    fresh = tier3.fresh_reblend_score(lead_stale, live_chain, now=_now(10, 30))
+    assert fresh < 0.9, f"expected fresh score < stored (live IV=0.45 should penalise); got {fresh}"
+
+    no_iv_chain = [_IVContract(
+        instrument_key="NSE_FO|EMPTY", trading_symbol="X", underlying_key="NSE_INDEX|Nifty 50",
+        instrument_type="CE", strike_price=100.0, lot_size=50, iv=None,
+    )]
+    fresh_neutral = tier3.fresh_reblend_score(lead_stale, no_iv_chain, now=_now(10, 30))
+    assert fresh_neutral > fresh, (
+        f"expected fresh_neutral > fresh (no IV > bearish IV); got {fresh_neutral} vs {fresh}"
+    )
+
+
+def test_fresh_reblend_score_returns_stored_confidence_when_components_missing(env):
+    """Legacy leads without a `components` dict fall back to stored confidence."""
+    from app.strategy import tier3
+
+    class _Stub:
+        components = None
+        confidence = 0.77
+
+    fresh = tier3.fresh_reblend_score(_Stub(), contracts=[], now=_now(10, 30))
+    assert fresh == pytest.approx(0.77)
+
+
+def test_order_placer_ranks_by_fresh_tier3_evidence_across_runs(env):
+    """M6: identical stored scores + identical stale bullish `iv` extras on
+    two leads; live IV differs. The lower-live-IV lead wins the rank slot."""
+    from app.settings import set_setting
+
+    broker = _seed_broker(env)
+    seed_iv_map = {"NSE_INDEX|Nifty 50": 0.45}
+    synth_key = _seed_iv_chain(env, broker, seed_iv_map)
+    for c in broker.contracts:
+        if c.underlying_key == synth_key:
+            c.iv = 0.10
+    broker.get_funds = lambda: type("_F", (), {"available_margin": 100_000.0})()
+    set_setting("scoring.enable_iv", True)
+    set_setting("scoring.enable_oi", True)
+
+    with session_scope() as session:
+        nifty = session.execute(select(Instrument).where(Instrument.symbol == "NIFTY")).scalars().first()
+        synth = session.execute(select(Instrument).where(Instrument.symbol == "TST-M6")).scalars().first()
+        session.add_all([
+            Lead(instrument_id=nifty.id, underlying_key="NSE_INDEX|Nifty 50",
+                 direction="CALL", strategy="test", signal_type="horizontal_range",
+                 signal_level=100.0, confidence=0.7, chart_interval="day",
+                 status="queued",
+                 components={
+                     "pattern_fit": 0.7, "volume": 0.6, "trend_alignment": 0.6,
+                     "proximity": 1.0, "structure": 0.7,
+                     "extras": {"iv": 0.95, "oi": 0.95, "time_of_day": 0.95},
+                 }),
+            Lead(instrument_id=synth.id, underlying_key=synth_key,
+                 direction="CALL", strategy="test", signal_type="horizontal_range",
+                 signal_level=100.0, confidence=0.7, chart_interval="day",
+                 status="queued",
+                 components={
+                     "pattern_fit": 0.7, "volume": 0.6, "trend_alignment": 0.6,
+                     "proximity": 1.0, "structure": 0.7,
+                     "extras": {"iv": 0.95, "oi": 0.95, "time_of_day": 0.95},
+                 }),
+        ])
+
+    run_order_placer(broker=broker, now=_now(10, 35))
+
+    entry_orders = [o for o in broker.placed if o.order_type == "LIMIT"]
+    assert entry_orders, "expected at least one LIMIT entry order per M6 setup"
+    assert entry_orders[0].instrument_key == "NSE_FO|M6SYN", (
+        f"lead with live compressed IV should win the rank slot (M6); "
+        f"got first LIMIT instrument={entry_orders[0].instrument_key}"
+    )
+
+
+def test_order_placer_fetches_option_chain_once_per_underlying_per_tick(env):
+    """The per-tick option chain cache is reused by both ranking and process_lead."""
+    broker = _seed_broker(env)
+    broker.get_funds = lambda: type("_F", (), {"available_margin": 100_000.0})()
+    call_count = {"n": 0}
+    real_get = broker.get_option_contracts
+
+    def counting_get(underlying_key, expiry=None):
+        call_count["n"] += 1
+        return real_get(underlying_key, expiry=expiry)
+
+    broker.get_option_contracts = counting_get
+
+    with session_scope() as session:
+        nifty = session.execute(select(Instrument).where(Instrument.symbol == "NIFTY")).scalars().first()
+        session.add(Lead(instrument_id=nifty.id, underlying_key="NSE_INDEX|Nifty 50",
+                         direction="CALL", strategy="test", signal_type="horizontal_range",
+                         signal_level=100.0, confidence=0.9, chart_interval="day",
+                         status="queued"))
+
+    broker.ltp_map["NSE_FO|84123"] = 100.0
+    run_order_placer(broker=broker, now=_now(10, 35))
+
+    assert call_count["n"] == 1, (
+        f"option chain should be fetched once per underlying per placer tick; "
+        f"got {call_count['n']} calls"
+    )

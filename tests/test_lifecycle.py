@@ -386,6 +386,36 @@ def test_drift_adopts_broker_trigger_on_rejected_modify(env):
         assert t.current_sl >= 97.20
 
 
+def test_drift_holds_tighter_after_successful_modify(env):
+    """C4: when the broker rounds a tighten request UP, the ratchet must
+    keep the broker's tighter trigger rather than overwriting it back to
+    the looser value we asked for."""
+    broker = _BookBroker(ltp_map={"NSE_FO|84123": 108.0})  # activation threshold
+    trade_id = _seed_open_trade(broker, entry=100.0, sl=90.0)
+
+    with session_scope() as session:
+        sl_id = session.get(Trade, trade_id).sl_order_id
+
+    original_modify = broker.modify_order
+    ROUND_UP = 0.05
+
+    def rounding_modify(params):
+        original_modify(params)
+        for o in broker._book:
+            if o.order_id == params.order_id and o.status == "open":
+                o.trigger_price = float(params.trigger_price) + ROUND_UP
+
+    broker.modify_order = rounding_modify
+
+    run_trade_tracker(broker=broker, now=_now(11, 0))
+
+    with session_scope() as session:
+        t = session.get(Trade, trade_id)
+        assert abs(t.current_sl - 97.25) < 1e-6, (
+            f"current_sl must keep the broker's tighter 97.25, got {t.current_sl}"
+        )
+
+
 def test_trade_tracker_does_not_double_close(env):
     """Idempotency: if both a broker SL fill and the per-trade reconcile
     would close the trade, only one close happens."""

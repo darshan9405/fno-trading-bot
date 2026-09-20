@@ -1,9 +1,8 @@
 """Trendline breakout.
 
-Fit a regression line through the last M swing lows (ascending support) or the
-last M swing highs (descending resistance). Signal when the price is at the
-line — a break below ascending support -> PUT; a break above descending
-resistance -> CALL. Confidence reflects fit quality (R^2).
+Directional break: a close *beyond* the fitted line (lower bound for ascending
+support, upper bound for descending resistance) fires a signal; touching the
+line is a setup, not a breakdown.
 """
 
 import numpy as np
@@ -27,17 +26,19 @@ def _fit(points: list[tuple[int, float]]) -> tuple[float, float, float] | None:
 
 
 def detect_trendline(df, k: int = 3, min_points: int = 3, proximity_pct: float = 0.5) -> list[PatternSignal]:
+    """Directional trendline break; `proximity_pct` is the break tolerance."""
     highs = find_swing_highs(df, k)
     lows = find_swing_lows(df, k)
     n = len(df)
     close = float(df["close"].iloc[-1])
+    tolerance = max(0.0, float(proximity_pct)) / 100.0
     signals = []
 
     if len(lows) >= min_points:
         res = _fit([(i, float(df["low"].iloc[i])) for i in lows[-min_points:]])
         if res and res[0] > 0:  # ascending support
             line_now = res[0] * (n - 1) + res[1]
-            if line_now > 0 and abs(close - line_now) / line_now * 100.0 <= proximity_pct:
+            if line_now > 0 and close < line_now * (1.0 - tolerance):
                 r2 = max(0.0, min(1.0, float(res[2])))
                 components = ComponentScores(
                     pattern_fit=r2,
@@ -55,7 +56,7 @@ def detect_trendline(df, k: int = 3, min_points: int = 3, proximity_pct: float =
         res = _fit([(i, float(df["high"].iloc[i])) for i in highs[-min_points:]])
         if res and res[0] < 0:  # descending resistance
             line_now = res[0] * (n - 1) + res[1]
-            if line_now > 0 and abs(close - line_now) / line_now * 100.0 <= proximity_pct:
+            if line_now > 0 and close > line_now * (1.0 + tolerance):
                 r2 = max(0.0, min(1.0, float(res[2])))
                 components = ComponentScores(
                     pattern_fit=r2,

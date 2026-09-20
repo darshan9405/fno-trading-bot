@@ -303,12 +303,12 @@ def _modify_sl_safely(session, broker, trade: Trade, new_sl: float, new_state: s
                 if not ok:
                     log.critical(
                         "trade_tracker: SL modify mismatch at broker for trade %s — %s "
-                        "(intended trigger=%.2f, type=%s, entry=%.2f); adopting broker trigger",
+"(intended trigger=%.2f, type=%s, entry=%.2f); adopting broker trigger",
                         trade.id, err_msg, new_sl, order_type, trade.entry_price,
                     )
-                    # The drift helper above already tightened current_sl if the
+                    # Drift helper above already tightened current_sl if the
                     # broker shows a different (tighter) value.
-        trade.current_sl = new_sl
+        trade.current_sl = max(float(new_sl), float(trade.current_sl or 0.0))
         trade.trail_state = new_state
         log.info("trade_tracker: SL modified for trade %s | order=%s new=%.2f state=%s",
                  trade.id, trade.sl_order_id, new_sl, new_state)

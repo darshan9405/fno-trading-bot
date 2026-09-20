@@ -171,6 +171,85 @@ def reblend_with_tier3(comps: ComponentScores, underlying_key: str,
         return comps, _approx_score(comps)
 
 
+# Tier-3 keys written into `ComponentScores.extras` at lead generation.
+# Streak/stale across generator runs when the placer re-ranks; strip them
+# before re-blending so the score reflects only the live option chain.
+TIER3_REBLEND_KEYS = ("iv", "oi", "time_of_day")
+
+
+def fresh_reblend_score(lead, contracts, now=None) -> float:
+    """Re-blend a queued lead's composite score against the LIVE option chain.
+
+    Differs from `reblend_with_tier3`: that helper writes a tier-3-blended
+    score onto the lead at generate time, then never refreshes it. Across
+    multiple generator runs in the same day, the older leads carry stale
+    IV/OI evidence. This helper recomputes against the option chain the
+    caller passes in (the placer's per-tick snapshot) and the caller's
+    `now` for time-of-day, after stripping any tier-3 extras already on
+    the lead's `components`.
+
+    Falls back to `lead.confidence` when components is empty (legacy leads
+    inserted directly without a breakdown) or when tier-3 is disabled,
+    so callers never lose the signal entirely.
+    """
+    try:
+        existing = getattr(lead, "components", None) or {}
+        if not existing:
+            return float(getattr(lead, "confidence", 0.0) or 0.0)
+
+        from app.settings import get_setting
+        enable_iv = bool(get_setting("scoring.enable_iv", False))
+        enable_oi = bool(get_setting("scoring.enable_oi", False))
+        enable_tod = bool(get_setting("scoring.enable_time_of_day", False))
+    except Exception:
+        return float(getattr(lead, "confidence", 0.0) or 0.0)
+
+    if not (enable_iv or enable_oi or (enable_tod and now is not None)):
+        return float(getattr(lead, "confidence", 0.0) or 0.0)
+
+    try:
+        from app.strategy.scoring import (
+            ComponentScores,
+            available_weight_map,
+            composite,
+        )
+
+        original_extras = (existing.get("extras") or {})
+        base_extras = {
+            k: float(v)
+            for k, v in original_extras.items()
+            if k not in TIER3_REBLEND_KEYS
+        }
+        base = ComponentScores(
+            pattern_fit=float(existing.get("pattern_fit", 0.0)),
+            volume=float(existing.get("volume", 0.5)),
+            trend_alignment=float(existing.get("trend_alignment", 0.5)),
+            proximity=float(existing.get("proximity", 0.0)),
+            structure=float(existing.get("structure", 0.0)),
+            extras=base_extras,
+        )
+
+        refreshed = base
+        if enable_tod and now is not None:
+            refreshed = refreshed.with_extra(time_of_day=float(time_of_day_score(now)))
+        # broker=None tells enrich_for_order_placement to not re-fetch.
+        refreshed = enrich_for_order_placement(
+            refreshed,
+            broker=None,
+            underlying_key=str(getattr(lead, "underlying_key", "") or ""),
+            direction=str(getattr(lead, "direction", "CALL") or "CALL"),
+            signal_level=float(getattr(lead, "signal_level", 0.0) or 0.0),
+            contracts=contracts if contracts is not None else [],
+        )
+
+        weights = available_weight_map(
+            enable_iv=enable_iv, enable_oi=enable_oi, enable_tod=enable_tod,
+        )
+        return composite(refreshed, weights)
+    except Exception:
+        return float(getattr(lead, "confidence", 0.0) or 0.0)
+
+
 def _approx_score(comps: ComponentScores) -> float:
     """Best-effort current score for fallback when the weight map isn't
     available. Falls back to a simple average of populated fields."""

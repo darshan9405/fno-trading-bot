@@ -9,6 +9,8 @@ from app.strategy.breakout.head_shoulders import detect_head_shoulders
 from app.strategy.breakout.horizontal import detect_horizontal
 from app.strategy.breakout.flag_pennant import detect_flag
 from app.strategy.breakout.swing import find_swing_highs, find_swing_lows
+from app.strategy.breakout.trendline import detect_trendline
+from app.strategy.breakout.triangle import detect_triangle
 from app.strategy.breakout.volume import detect_volume, volume_spike
 from app.strategy import StrategyRegistry
 
@@ -286,3 +288,103 @@ def test_breakout_strategy_flat_market_no_lead(db_env):
 
     instrument = SimpleNamespace(id=1, symbol="NIFTY", spot_instrument_key="NSE_INDEX|Nifty 50")
     assert strategy.generate(instrument, df, now=None) == []
+
+
+# --- trendline (H1) ------------------------------------------------------
+
+
+def test_trendline_ascending_support_put_only_on_break_below():
+    """PUT fires when close crosses BELOW ascending support."""
+    closes = _interp([
+        (0, 100), (6, 115), (12, 90), (18, 110), (24, 95),
+        (30, 115), (36, 100), (42, 115), (50, 80),
+    ])
+    df = _df(closes)
+    signals = detect_trendline(df)
+    assert signals and len(signals) == 1
+    assert signals[0].direction == "PUT"
+    assert signals[0].signal_type == "trendline"
+
+
+def test_trendline_ascending_support_no_signal_when_price_holds():
+    """Price above ascending support is a buy-the-dip setup, not a breakdown."""
+    closes = _interp([
+        (0, 100), (6, 115), (12, 90), (18, 110), (24, 95),
+        (30, 115), (36, 100), (40, 130),
+    ])
+    df = _df(closes)
+    assert detect_trendline(df) == []
+
+
+def test_trendline_descending_resistance_call_only_on_break_above():
+    """CALL fires when close crosses ABOVE descending resistance."""
+    closes = _interp([
+        (0, 130), (6, 100), (12, 130), (18, 105), (24, 125),
+        (30, 100), (36, 120), (40, 90), (44, 130),
+    ])
+    df = _df(closes)
+    signals = detect_trendline(df)
+    assert signals and len(signals) == 1
+    assert signals[0].direction == "CALL"
+    assert signals[0].signal_type == "trendline"
+
+
+def test_trendline_descending_resistance_no_signal_when_price_holds():
+    """Testing resistance from below is consolidation, not a CALL."""
+    closes = _interp([
+        (0, 130), (6, 100), (12, 130), (18, 105), (24, 125),
+        (30, 100), (36, 120), (40, 90), (44, 90),
+    ])
+    df = _df(closes)
+    assert detect_trendline(df) == []
+
+
+# --- triangle (H2) -------------------------------------------------------
+
+
+def test_triangle_descending_emits_put_on_break_below():
+    """Descending triangle: PUT on break below the falling floor (was
+    wrongly excluded by the strict-convergence gate)."""
+    closes = _interp([
+        (0, 100), (6, 110), (12, 90), (18, 110), (24, 80),
+        (30, 110), (36, 70), (42, 110), (50, 30),
+    ])
+    df = _df(closes)
+    signals = detect_triangle(df)
+    assert signals and len(signals) == 1
+    assert signals[0].direction == "PUT"
+    assert signals[0].signal_type == "triangle"
+
+
+def test_triangle_ascending_emits_call_on_break_above():
+    """Ascending triangle: CALL on break above the flat ceiling."""
+    closes = _interp([
+        (0, 80), (6, 110), (12, 90), (18, 110), (24, 95),
+        (30, 110), (36, 100), (40, 130),
+    ])
+    df = _df(closes)
+    signals = detect_triangle(df)
+    assert signals and len(signals) == 1
+    assert signals[0].direction == "CALL"
+    assert signals[0].signal_type == "triangle"
+
+
+def test_triangle_symmetrical_call_on_upper_break():
+    """Classical symmetrical triangle still fires CALL on upper break."""
+    closes = _interp([
+        (0, 110), (6, 130), (12, 85), (18, 125), (24, 95),
+        (30, 120), (36, 105), (40, 135),
+    ])
+    df = _df(closes)
+    signals = detect_triangle(df)
+    assert any(s.direction == "CALL" and s.signal_type == "triangle" for s in signals)
+
+
+def test_triangle_parallel_lines_rejected():
+    """Parallel envelopes have no triangle shape — no signal."""
+    closes = _interp([
+        (0, 100), (6, 110), (12, 100), (18, 110), (24, 100),
+        (30, 110), (36, 100), (40, 100),
+    ])
+    df = _df(closes)
+    assert detect_triangle(df) == []
