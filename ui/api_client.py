@@ -57,49 +57,16 @@ def login_url() -> str:
     return f"{PUBLIC_API}/api/auth/upstox/login"
 
 
-def _ensure_top_link(href: str, link_id: str) -> str:
-    return (
-        "<script>(function(){"
-        f"var D=window.top.document;"
-        f"var a=D.getElementById({json.dumps(link_id)});"
-        "if(!a){"
-        "a=D.createElement('a');"
-        f"a.id={json.dumps(link_id)};"
-        "a.target='_top';"
-        "a.rel='noopener noreferrer';"
-        "a.style.display='none';"
-        "D.body.appendChild(a);"
-        "}"
-        f"if(a.href!=={json.dumps(href)})a.href={json.dumps(href)};"
-        "})();</script>"
-    )
+def logout_url() -> str:
+    """Absolute backend URL for the SSO logout endpoint.
 
-
-def _click_top_link(link_id: str) -> str:
-    return (
-        "<script>window.top.document.getElementById("
-        f"{json.dumps(link_id)}"
-        ").click();</script>"
-    )
-
-
-SSO_LOGOUT_LINK_ID = "__sso_logout_link"
-LOGOUT_URL = "/api/auth/logout"
-
-
-def logout() -> None:
-    """Log out by navigating the top browser tab to the backend logout endpoint.
-
-    Streamlit's app iframe is sandboxed without `allow-top-navigation`, so a
-    plain `<script>window.location.replace(...)</script>` from inside the iframe
-    would either be a no-op or pop a new tab. We append a hidden `<a target="_top">`
-    to `window.top.document` and click it from the iframe — the click navigates the
-    real browser tab, so the SSO/logout round-trip stays in one tab. A relative URL
-    is used so it works through any reverse proxy (nginx, Cloudflare, etc.).
+    MUST be rendered as a real `<a target="_top">` (not a programmatic JS .click()
+    inside the iframe): Streamlit's sandboxed iframe does not allow top-frame
+    navigation triggered from JS without `allow-top-navigation-by-user-activation`,
+    so a hidden anchor + `.click()` is silently dropped by modern browsers. A real
+    user click on the link is what actually navigates the top frame.
     """
-    clear_tokens()
-    st.markdown(_ensure_top_link(LOGOUT_URL, SSO_LOGOUT_LINK_ID), unsafe_allow_html=True)
-    st.markdown(_click_top_link(SSO_LOGOUT_LINK_ID), unsafe_allow_html=True)
+    return f"{PUBLIC_API}/api/auth/logout"
 
 
 def bootstrap_from_query() -> None:

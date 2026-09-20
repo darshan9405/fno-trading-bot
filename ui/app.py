@@ -210,6 +210,23 @@ def _css() -> str:
     }}
     .sso-login-btn:hover {{ background: #818cf8; color: #fff; }}
 
+    /* Sidebar logout: matches the sidebar button height/weight so the
+       Logout row looks identical to the Refresh-now row above it. */
+    .sidebar-logout-btn {{
+        display: block; text-align: center;
+        background: #18243a; color: #e2e8f0;
+        border: 1px solid transparent; border-radius: 10px;
+        padding: 0.55rem 1rem; margin: 4px 0 6px 0;
+        height: 44px; line-height: 28px;
+        font-size: 1.0rem; font-weight: 600;
+        text-decoration: none;
+        transition: background .15s ease, border-color .15s ease, color .15s ease;
+        box-sizing: border-box;
+    }}
+    .sidebar-logout-btn:hover {{
+        background: #1f2e4a; border-color: rgba(239, 68, 68, .55); color: #fca5a5;
+    }}
+
     /* Bigger sidebar controls (navigation + buttons) */
     [data-testid="stSidebar"] [data-testid="stRadio"] label {{
         font-size: 1.05rem; padding: 8px 8px; border-radius: 8px;
@@ -674,8 +691,14 @@ def render_sidebar() -> str:
         st.markdown("### Controls")
         if st.button("Refresh now", use_container_width=True, help="Force-refresh the current view."):
             st.rerun()
-        if st.button("Logout", use_container_width=True, help="End the Upstox session and clear tokens."):
-            api.logout()
+        # Real <a target="_top"> — a user click on a real link is the only
+        # top-frame navigation pattern that works inside Streamlit's sandboxed
+        # iframe (JS-clicking a hidden top-doc anchor is silently dropped).
+        st.markdown(
+            f'<a href="{api.logout_url()}" target="_top" class="sidebar-logout-btn" '
+            f'title="End the Upstox session and clear tokens">Logout</a>',
+            unsafe_allow_html=True,
+        )
 
     return page
 
