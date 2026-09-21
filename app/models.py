@@ -103,7 +103,7 @@ class Lead(Base):
     instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"), index=True)
     underlying_key: Mapped[str] = mapped_column(String(64), index=True)
     direction: Mapped[str] = mapped_column(String(8))  # CALL | PUT
-    strategy: Mapped[str] = mapped_column(String(32), default="breakout")
+    strategy: Mapped[str] = mapped_column(String(32), default="llm_breakout")
     signal_type: Mapped[str] = mapped_column(String(32))  # strategy-specific label, e.g. horizontal_range | trendline | ...
     signal_level: Mapped[float] = mapped_column(Float)  # the trigger price that fired the signal
     confidence: Mapped[float] = mapped_column(Float, default=0.0)

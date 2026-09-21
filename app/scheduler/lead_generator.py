@@ -11,8 +11,10 @@ import logging
 import random
 import threading
 import traceback
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import timedelta
+from typing import Callable
 
 from sqlalchemy import select
 
@@ -28,6 +30,11 @@ from app.strategy import StrategyRegistry
 log = logging.getLogger(__name__)
 
 CANDLE_LOOKBACK_DAYS = 300
+
+# Cap on how many per-instrument events we keep in the progress snapshot.
+# The UI polls every 2s; sending more than 5 would dominate the payload and
+# doesn't add information once a run has been running for a while.
+_RECENT_CAP = 5
 
 
 def _process_one(inst, broker, strategy_cls, strategy_interval, from_date, now):
@@ -57,15 +64,63 @@ def _process_one(inst, broker, strategy_cls, strategy_interval, from_date, now):
         return (inst, [], (str(e), traceback.format_exc()))
 
 
-def run_lead_generator(broker=None, now=None, force: bool = False) -> dict | None:
+def _emit_progress(
+    on_progress: Callable[[dict], None] | None,
+    *,
+    phase: str,
+    scanned: int,
+    total: int,
+    created: int,
+    checked: int,
+    errors: int,
+    current: str | None,
+    recent: deque,
+    strategy: str,
+) -> None:
+    """Hand a progress snapshot to the UI callback. No-op when `on_progress`
+    is None (scheduler-driven runs don't expose a job state). The callback is
+    expected to be cheap and lock-safe — the caller controls thread safety."""
+    if on_progress is None:
+        return
+    on_progress({
+        "phase": phase,
+        "scanned": scanned,
+        "total": total,
+        "created": created,
+        "checked": checked,
+        "errors": errors,
+        "current": current,
+        # `deque` isn't JSON-serialisable, and the UI only cares about the
+        # tail. Materialise as a list, newest-first.
+        "recent": list(recent),
+        "strategy": strategy,
+    })
+
+
+def run_lead_generator(
+    broker=None,
+    now=None,
+    force: bool = False,
+    on_progress: Callable[[dict], None] | None = None,
+) -> dict | None:
     """Run one lead-generation pass. Returns `{"created": n, "checked": n}` on
     success (or `{"error": ...}` on failure); None when skipped (outside window).
 
     `force=True` bypasses the trading-window gate so leads can be generated
     manually from the UI (historical candles + option chains work off-hours).
+
+    `on_progress(patch)` is invoked from the main thread with progress
+    snapshots at three points: once before the pool is fanned out (phase=
+    "starting"), once per completed future (phase="analyzing"), and once
+    after the pool drains (phase="finalizing"). The callback may be called
+    many times in quick succession; callers should keep the callback cheap
+    (the manual-job path locks a small dict under the registry lock).
     """
     now = now or health_service.now_ist()
-    strategy_name = get_setting("strategy", "breakout")
+    # Fall back to the only built-in strategy that's currently registered.
+    # The old `"breakout"` default trips `Unknown strategy: 'breakout'` for
+    # fresh installs because that legacy package was removed.
+    strategy_name = get_setting("strategy", "llm_breakout")
     source = "scheduler.lead_generator"
 
     try:
@@ -117,6 +172,7 @@ def run_lead_generator(broker=None, now=None, force: bool = False) -> dict | Non
         hit_cap = False
         scanned = 0
         strategy_interval = strategy.required_interval
+        recent: deque = deque(maxlen=_RECENT_CAP)
 
         with session_scope() as session:
             instruments = session.execute(
@@ -124,6 +180,22 @@ def run_lead_generator(broker=None, now=None, force: bool = False) -> dict | Non
             ).scalars().all()
             if shuffle_instruments:
                 random.shuffle(instruments)
+
+        # Announce the fan-out before submitting any futures so the UI can
+        # render "scanned 0 / N" immediately instead of flashing the previous
+        # run's totals.
+        _emit_progress(
+            on_progress,
+            phase="starting",
+            scanned=0,
+            total=len(instruments),
+            created=0,
+            checked=0,
+            errors=0,
+            current=None,
+            recent=recent,
+            strategy=strategy_name,
+        )
 
         # Fan out (fetch candles + run strategy) across a thread pool so the
         # LLM round-trips overlap. Per-instrument DB writes stay on the main
@@ -145,16 +217,70 @@ def run_lead_generator(broker=None, now=None, force: bool = False) -> dict | Non
                     inst_obj, candidates, err = future.result()
                     if err is not None:
                         pending_errors.append(err)
+                        recent.appendleft({
+                            "symbol": getattr(inst_obj, "symbol", "?"),
+                            "status": "error",
+                            "leads": 0,
+                            "error": str(err[0])[:120] if err else None,
+                        })
+                        _emit_progress(
+                            on_progress,
+                            phase="analyzing",
+                            scanned=scanned,
+                            total=len(instruments),
+                            created=created_total,
+                            checked=checked,
+                            errors=len(pending_errors),
+                            current=getattr(inst_obj, "symbol", None),
+                            recent=recent,
+                            strategy=strategy_name,
+                        )
                         continue
                     results.append((inst_obj, candidates))
                     # Persist eagerly, one instrument at a time, so the lead
                     # cap (`max_leads_per_run`) is respected as soon as it is
                     # hit instead of waiting for the whole pool to drain.
                     if not candidates:
+                        recent.appendleft({
+                            "symbol": getattr(inst_obj, "symbol", "?"),
+                            "status": "empty",
+                            "leads": 0,
+                            "error": None,
+                        })
+                        _emit_progress(
+                            on_progress,
+                            phase="analyzing",
+                            scanned=scanned,
+                            total=len(instruments),
+                            created=created_total,
+                            checked=checked,
+                            errors=len(pending_errors),
+                            current=getattr(inst_obj, "symbol", None),
+                            recent=recent,
+                            strategy=strategy_name,
+                        )
                         continue
                     with cap_lock:
                         if max_leads_per_run and created_total >= max_leads_per_run:
                             hit_cap = True
+                            recent.appendleft({
+                                "symbol": getattr(inst_obj, "symbol", "?"),
+                                "status": "cap",
+                                "leads": 0,
+                                "error": None,
+                            })
+                            _emit_progress(
+                                on_progress,
+                                phase="analyzing",
+                                scanned=scanned,
+                                total=len(instruments),
+                                created=created_total,
+                                checked=checked,
+                                errors=len(pending_errors),
+                                current=getattr(inst_obj, "symbol", None),
+                                recent=recent,
+                                strategy=strategy_name,
+                            )
                             continue
                     with session_scope() as session:
                         created = create_leads_from_candidates(
@@ -169,10 +295,35 @@ def run_lead_generator(broker=None, now=None, force: bool = False) -> dict | Non
                             with cap_lock:
                                 created_total += len(created)
                             checked += 1
+                            recent.appendleft({
+                                "symbol": getattr(inst_obj, "symbol", "?"),
+                                "status": "leads",
+                                "leads": len(created),
+                                "error": None,
+                            })
                             log.info(
                                 "lead_generator: %d lead(s) for %s (%s)",
                                 len(created), inst_obj.symbol, strategy_name,
                             )
+                        else:
+                            recent.appendleft({
+                                "symbol": getattr(inst_obj, "symbol", "?"),
+                                "status": "empty",
+                                "leads": 0,
+                                "error": None,
+                            })
+                        _emit_progress(
+                            on_progress,
+                            phase="analyzing",
+                            scanned=scanned,
+                            total=len(instruments),
+                            created=created_total,
+                            checked=checked,
+                            errors=len(pending_errors),
+                            current=getattr(inst_obj, "symbol", None),
+                            recent=recent,
+                            strategy=strategy_name,
+                        )
             finally:
                 # Drain remaining futures so workers don't leak. Any work that
                 # arrived after the cap was hit is recorded but not persisted.
@@ -180,6 +331,21 @@ def run_lead_generator(broker=None, now=None, force: bool = False) -> dict | Non
                     for f in futures:
                         if not f.done():
                             f.cancel()
+
+        # Final snapshot — fires once the pool has fully drained but before
+        # error logging, so the UI can show the "finishing up" state.
+        _emit_progress(
+            on_progress,
+            phase="finalizing",
+            scanned=scanned,
+            total=len(instruments),
+            created=created_total,
+            checked=checked,
+            errors=len(pending_errors),
+            current=None,
+            recent=recent,
+            strategy=strategy_name,
+        )
 
         # Log after the transaction commits (SQLite allows a single writer).
         for message, stack in pending_errors:

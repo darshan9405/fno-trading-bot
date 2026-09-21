@@ -51,13 +51,29 @@ class JobState:
     id: str
     status: JobStatus
     submitted_at: datetime
+    started_at: datetime | None = None
     finished_at: datetime | None = None
+    # Live progress snapshot updated by the generator thread via
+    # `_run_in_thread`'s callback. Shape (all keys optional, but always set
+    # together once the first callback fires):
+    #   {
+    #     "phase": "starting" | "analyzing" | "finalizing",
+    #     "scanned": int, "total": int,
+    #     "created": int, "checked": int, "errors": int,
+    #     "current": str | None,
+    #     "recent": [{"symbol": str, "status": "ok"|"leads"|"empty"|"error",
+    #                 "leads": int, "error": str | None}, ...],   # capped at 5
+    #     "strategy": str,
+    #   }
+    progress: dict = field(default_factory=dict)
     result: dict | None = None
     error: str | None = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
         d["submitted_at"] = self.submitted_at.isoformat()
+        if self.started_at is not None:
+            d["started_at"] = self.started_at.isoformat()
         if self.finished_at is not None:
             d["finished_at"] = self.finished_at.isoformat()
         return d
@@ -157,13 +173,23 @@ def _mark_done_no_lock(job: JobState, status: JobStatus, error: str | None = Non
 def _run_in_thread(job: JobState) -> None:
     from app.scheduler.lead_generator import run_lead_generator
 
+    def _on_progress(patch: dict) -> None:
+        # The background thread may interleave with the polling HTTP thread;
+        # take `_lock` so `job.progress` updates aren't torn (a `dict.update`
+        # is not atomic in CPython). The dict is small, so contention is fine.
+        with _lock:
+            job.progress.update(patch)
+
+    with _lock:
+        job.started_at = _now()
+
     # The generator lock is acquired inside `run_lead_generator` itself — we
     # must NOT re-acquire it here or the inner acquire returns False and the
     # manual run silently exits with no leads. If another run started between
     # `submit_manual_job`'s pre-flight check and our entry into this thread,
     # `run_lead_generator` returns None; surface that as a busy error.
     try:
-        result = run_lead_generator(force=True)
+        result = run_lead_generator(force=True, on_progress=_on_progress)
     except Exception as e:
         log.exception("manual lead-generator job %s crashed", job.id)
         _finish_job(job, "error", error=str(e) or e.__class__.__name__)
@@ -228,3 +254,24 @@ def submit_manual_job() -> tuple[JobState, bool]:
 def get_job(job_id: str) -> JobState | None:
     with _lock:
         return _jobs.get(job_id)
+
+
+def active_job_id() -> str | None:
+    """Id of the currently-running manual job, if any.
+
+    Distinct from `_active_job()` (which synthesises a fake "scheduler"
+    sentinel when a scheduler-driven run holds the flag): the manual-attach
+    endpoint only wants to point the UI at a job_id the GET-status route can
+    actually answer for. Returns None when the active run is scheduler-driven
+    or there is nothing in flight — both cases the UI treats as "no manual
+    job to attach to".
+    """
+    with _lock:
+        aid = _active_id
+    if aid is None:
+        return None
+    with _lock:
+        job = _jobs.get(aid)
+    if job is None or job.status != "running":
+        return None
+    return job.id

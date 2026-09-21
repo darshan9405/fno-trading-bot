@@ -1,5 +1,6 @@
 """API integration tests (Stages 5-7): killswitch, trades, P&L, health, config."""
 
+import threading
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
@@ -402,7 +403,7 @@ def test_leads_generate_status_terminal(env, monkeypatch):
     import app.scheduler.lead_generator as lg
     monkeypatch.setattr(
         lg, "run_lead_generator",
-        lambda broker=None, now=None, force=False: {"created": 5, "checked": 2},
+        lambda broker=None, now=None, force=False, on_progress=None: {"created": 5, "checked": 2},
     )
 
     r = client.post("/api/trades/leads/generate", headers=_headers(token))
@@ -427,6 +428,105 @@ def test_leads_generate_status_terminal(env, monkeypatch):
     assert final["result"] == {"generated": 5, "checked": 2}
     assert final["error"] is None
     assert final["finished_at"] is not None
+
+
+def test_leads_generate_active_returns_404_when_nothing_in_flight(env):
+    """The GET-active endpoint is the UI's lifeline after a page reload —
+    if it 200s incorrectly when no manual job exists, the UI will poll a
+    dead job id and silently 404 forever."""
+    client, token, cfg = env
+    from app.scheduler import lead_jobs
+
+    monkeypatch_reset = {lead_jobs: {"_jobs": {}, "_active_id": None}}
+    for mod, attrs in monkeypatch_reset.items():
+        for k, v in attrs.items():
+            setattr(mod, k, v)
+
+    r = client.get("/api/trades/leads/generate/active", headers=_headers(token))
+    assert r.status_code == 404
+    assert r.get_json()["error"]["code"] == "lead_generation_no_active_job"
+
+
+def test_leads_generate_active_returns_running_job(env, monkeypatch):
+    """When a manual job is in flight, GET-active hands the UI the same
+    job_id that POST /generate returned — completing the re-attach path."""
+    import time
+
+    client, token, cfg = env
+    from app.scheduler import lead_jobs
+
+    monkeypatch.setattr(lead_jobs, "_jobs", {})
+    monkeypatch.setattr(lead_jobs, "_active_id", None)
+
+    # Stub run_lead_generator so the daemon thread doesn't hit the real
+    # broker. Sleep a tiny bit so we can observe the "running" state.
+    started = threading.Event()
+
+    def slow_run(broker=None, now=None, force=False, on_progress=None):
+        started.set()
+        time.sleep(0.5)
+        return {"created": 0, "checked": 0}
+
+    import app.scheduler.lead_generator as lg
+    monkeypatch.setattr(lg, "run_lead_generator", slow_run)
+
+    r = client.post("/api/trades/leads/generate", headers=_headers(token))
+    assert r.status_code == 202
+    job_id = r.get_json()["data"]["id"]
+
+    r2 = client.get("/api/trades/leads/generate/active", headers=_headers(token))
+    assert r2.status_code == 200
+    assert r2.get_json()["data"]["id"] == job_id
+
+    started.wait(timeout=2.0)
+
+
+def test_leads_generate_status_includes_progress(env, monkeypatch):
+    """The UI's progress panel relies on `progress` and `started_at` being
+    present in the status payload. Verify both fields round-trip through
+    the GET-status endpoint while the job is running."""
+    import time
+
+    client, token, cfg = env
+    from app.scheduler import lead_jobs
+
+    monkeypatch.setattr(lead_jobs, "_jobs", {})
+    monkeypatch.setattr(lead_jobs, "_active_id", None)
+
+    # Emit one progress patch, then complete — the test polls during the
+    # brief window so we can observe the live payload.
+    started = threading.Event()
+    release = threading.Event()
+
+    def run_with_progress(broker=None, now=None, force=False, on_progress=None):
+        started.set()
+        on_progress({
+            "phase": "analyzing", "scanned": 1, "total": 4,
+            "created": 1, "checked": 1, "errors": 0,
+            "current": "FOO", "strategy": "test",
+            "recent": [{"symbol": "FOO", "status": "leads",
+                        "leads": 1, "error": None}],
+        })
+        release.wait(timeout=2.0)
+        return {"created": 1, "checked": 1}
+
+    import app.scheduler.lead_generator as lg
+    monkeypatch.setattr(lg, "run_lead_generator", run_with_progress)
+
+    r = client.post("/api/trades/leads/generate", headers=_headers(token))
+    job_id = r.get_json()["data"]["id"]
+
+    started.wait(timeout=2.0)
+    rs = client.get(f"/api/trades/leads/generate/{job_id}", headers=_headers(token))
+    assert rs.status_code == 200
+    payload = rs.get_json()["data"]
+    assert payload["status"] == "running"
+    assert payload["progress"]["phase"] == "analyzing"
+    assert payload["progress"]["total"] == 4
+    assert payload["progress"]["recent"][0]["symbol"] == "FOO"
+    assert payload["started_at"] is not None
+
+    release.set()
 
 
 def test_leads_include_fno_plan(env):
@@ -562,6 +662,84 @@ def test_leads_endpoint_orders_by_score_desc(env):
                     headers=_headers(token))
     assert r2.status_code == 200
     assert len(r2.get_json()["data"]["leads"]) == len(rows)
+
+
+def test_delete_all_leads_requires_jwt(env):
+    client, token, cfg = env
+    client.delete_cookie("upstox_at", path="/")
+    client.delete_cookie("upstox_rt", path="/api/auth")
+    r = client.delete("/api/trades/leads")
+    assert r.status_code == 401
+
+
+def test_delete_all_leads_purges_rows_and_preserves_trades(env):
+    """DELETE /api/trades/leads must remove every lead row regardless of
+    status, null out Trade.lead_id on dependent trades, and leave Trade
+    audit rows intact."""
+    client, token, cfg = env
+    from app.models import Instrument, Lead, Trade
+
+    with session_scope() as session:
+        inst = Instrument(symbol="NIFTY", exchange="NSE", segment="NSE_INDEX",
+                          spot_instrument_key="NSE_INDEX|Nifty 50", instrument_token="26000",
+                          trading_symbol="NIFTY", lot_size=50, enabled=True)
+        session.add(inst)
+        session.flush()
+        # Two queued leads and one processed lead; a Trade is attached to the
+        # processed one so we can assert FK nulling.
+        queued_a = Lead(
+            instrument_id=inst.id, underlying_key="NSE_INDEX|Nifty 50",
+            direction="CALL", strategy="breakout", signal_type="horizontal_range",
+            signal_level=100.0, confidence=0.7, status="queued",
+        )
+        queued_b = Lead(
+            instrument_id=inst.id, underlying_key="NSE_INDEX|Nifty 50",
+            direction="PUT", strategy="breakout", signal_type="trendline",
+            signal_level=100.0, confidence=0.6, status="queued",
+        )
+        processed = Lead(
+            instrument_id=inst.id, underlying_key="NSE_INDEX|Nifty 50",
+            direction="CALL", strategy="breakout", signal_type="volume_breakout",
+            signal_level=100.0, confidence=0.8, status="placed",
+        )
+        session.add_all([queued_a, queued_b, processed])
+        session.flush()
+        trade = Trade(
+            lead_id=processed.id, underlying_key="NSE_INDEX|Nifty 50",
+            option_instrument_key="NSE_FO|123", option_instrument_token="123",
+            tradingsymbol="NIFTY 10 SEP 26 100 CE", lot_size=50,
+            direction="CALL", entry_price=100.0, quantity=50,
+            initial_sl=90.0, current_sl=90.0, trail_state="init",
+            status="closed", entry_time=datetime(2026, 9, 10, 10, 0, tzinfo=timezone.utc),
+            exit_time=datetime(2026, 9, 10, 11, 0, tzinfo=timezone.utc),
+            exit_price=110.0, exit_reason="target", realized_pnl=500.0,
+        )
+        session.add(trade)
+        session.flush()
+        trade_id = trade.id
+
+    r = client.delete("/api/trades/leads", headers=_headers(token))
+    assert r.status_code == 200
+    assert r.get_json()["data"]["deleted"] == 3
+
+    with session_scope() as session:
+        assert session.execute(select(Lead).limit(1)).scalars().all() == []
+        surviving_trade = session.get(Trade, trade_id)
+        assert surviving_trade is not None
+        assert surviving_trade.lead_id is None
+        assert surviving_trade.realized_pnl == 500.0
+
+    # GET should now report zero rows.
+    r = client.get("/api/trades/leads", headers=_headers(token))
+    assert r.get_json()["data"]["count"] == 0
+
+
+def test_delete_all_leads_when_empty(env):
+    """Calling DELETE with no rows must be a no-op (returns deleted=0)."""
+    client, token, cfg = env
+    r = client.delete("/api/trades/leads", headers=_headers(token))
+    assert r.status_code == 200
+    assert r.get_json()["data"]["deleted"] == 0
 
 
 # --- health + config -----------------------------------------------------

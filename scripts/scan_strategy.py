@@ -204,7 +204,7 @@ def main() -> int:
 
     log.info("constructing Upstox broker")
     broker = UpstoxBroker(cfg, access_token=token)
-    strategy_name = get_setting("strategy", "breakout")
+    strategy_name = get_setting("strategy", "llm_breakout")
     strategy = StrategyRegistry.get(strategy_name)()
     cap = args.max_calls or int(get_setting("llm.max_calls_per_run", 50))
     strategy.begin_run(cap)

@@ -5,7 +5,7 @@ from datetime import timezone
 from zoneinfo import ZoneInfo
 
 from flask import Blueprint, jsonify, request
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 
 from app.api.common import broker_error, error, ok
 from app.auth import jwt_required
@@ -16,6 +16,8 @@ from app.db import session_scope
 from app.extensions import limiter
 from app.models import Lead, Trade
 from app.services.health_service import utcnow
+
+log = logging.getLogger(__name__)
 
 bp = Blueprint("trade", __name__, url_prefix="/api/trades")
 
@@ -142,6 +144,31 @@ def leads():
     return ok({"count": len(data), "leads": data})
 
 
+@bp.delete("/leads")
+@limiter.limit("10 per minute")
+@jwt_required
+def delete_all_leads():
+    """Purge every row in the `leads` table regardless of status.
+
+    Trade rows that point to a deleted lead are detached (lead_id -> NULL)
+    first, so the audit trail in `trades` survives intact. The frontend
+    exposes this through a typed-confirmation dialog so a stray click
+    cannot wipe queued signals.
+    """
+    with session_scope() as session:
+        ids = list(session.execute(select(Lead.id)).scalars())
+        if not ids:
+            return ok({"deleted": 0})
+        session.execute(
+            update(Trade).where(Trade.lead_id.in_(ids)).values(lead_id=None)
+        )
+        deleted = session.execute(
+            delete(Lead).where(Lead.id.in_(ids))
+        ).rowcount
+    log.info("purge_leads: deleted %d lead row(s)", deleted)
+    return ok({"deleted": int(deleted)})
+
+
 @bp.post("/leads/generate")
 @jwt_required
 def generate_leads():
@@ -192,6 +219,31 @@ def leads_generate_status(job_id: str):
     if job is None:
         return error("lead_generation_job_not_found", f"Unknown job id: {job_id}", 404)
     return ok(job.to_dict())
+
+
+@bp.get("/leads/generate/active")
+@jwt_required
+def leads_generate_active():
+    """Return the currently-running manual lead-generation job, if any.
+
+    The UI calls this on page load (and whenever it loses its session_state
+    entry) so a tab reload while a run is in flight can re-attach to the
+    same job instead of dispatching a duplicate (the POST endpoint would
+    just 409 anyway, but the UX is much worse — the user sees a toast that
+    says "already running" without any context).
+
+    404: nothing manual is running right now. The caller should fall through
+    to the normal "Generate now" affordance. A scheduler-driven run that
+    happens to be in flight also returns 404 — those jobs aren't visible to
+    the manual-attach endpoint by design (the UI shouldn't try to poll for
+    status on a job_id it never received).
+    """
+    from app.scheduler.lead_jobs import active_job_id
+
+    job_id = active_job_id()
+    if job_id is None:
+        return error("lead_generation_no_active_job", "No manual lead-generation run in progress.", 404)
+    return ok({"id": job_id})
 
 
 @bp.post("/recon")

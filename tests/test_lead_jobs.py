@@ -2,6 +2,7 @@
 coordination with the scheduler-driven run.
 """
 
+import threading
 from datetime import datetime, timezone
 from threading import Thread
 
@@ -197,7 +198,7 @@ def test_run_in_thread_does_not_double_acquire_the_lock(env, monkeypatch):
     _reset_state()
     calls = []
 
-    def fake_run_lead_generator(broker=None, now=None, force=False):
+    def fake_run_lead_generator(broker=None, now=None, force=False, on_progress=None):
         calls.append((broker, now, force))
         # Mimic the scheduler-held case: `_run_in_thread` sees None and the
         # call budget wasn't wasted calling begin_run on a strategy.
@@ -228,7 +229,7 @@ def test_run_in_thread_reports_generated_lead_count(env, monkeypatch):
 
     _reset_state()
 
-    def fake_run_lead_generator(broker=None, now=None, force=False):
+    def fake_run_lead_generator(broker=None, now=None, force=False, on_progress=None):
         return {"created": 3, "checked": 5}
 
     monkeypatch.setattr(
@@ -245,3 +246,122 @@ def test_run_in_thread_reports_generated_lead_count(env, monkeypatch):
     assert job.status == "done"
     assert job.result == {"generated": 3, "checked": 5}
     assert lead_jobs.is_generator_active() is False
+
+
+def test_job_state_to_dict_includes_progress_and_timestamps(env):
+    """The UI polls JobState.to_dict() to render the live progress panel.
+    Ensure the new `progress` and `started_at` fields round-trip through the
+    serialiser — a regression here would silently hide progress from the UI.
+    """
+    from datetime import datetime, timezone
+
+    submitted = datetime(2026, 9, 22, 5, 0, 0, tzinfo=timezone.utc)
+    started = datetime(2026, 9, 22, 5, 0, 1, tzinfo=timezone.utc)
+    job = lead_jobs.JobState(
+        id="abc",
+        status="running",
+        submitted_at=submitted,
+        started_at=started,
+        progress={"phase": "analyzing", "scanned": 3, "total": 8,
+                  "created": 1, "checked": 1, "errors": 0,
+                  "current": "NIFTY", "strategy": "llm_breakout",
+                  "recent": []},
+    )
+    d = job.to_dict()
+    assert d["submitted_at"] == submitted.isoformat()
+    assert d["started_at"] == started.isoformat()
+    assert d["finished_at"] is None
+    assert d["progress"]["phase"] == "analyzing"
+    assert d["progress"]["total"] == 8
+    assert d["progress"]["recent"] == []
+
+
+def test_run_in_thread_pipes_progress_to_job_state(env, monkeypatch):
+    """The `_run_in_thread` callback must copy each progress patch into
+    `job.progress` under the registry lock so the UI sees live updates
+    even though it polls from a different thread."""
+
+    _reset_state()
+
+    def fake_run_lead_generator(broker=None, now=None, force=False, on_progress=None):
+        assert on_progress is not None, "manual path must pass a callback"
+        # Simulate the three callbacks the real generator emits.
+        on_progress({"phase": "starting", "scanned": 0, "total": 4,
+                     "created": 0, "checked": 0, "errors": 0,
+                     "current": None, "recent": [], "strategy": "test"})
+        on_progress({"phase": "analyzing", "scanned": 1, "total": 4,
+                     "created": 1, "checked": 1, "errors": 0,
+                     "current": "FOO", "strategy": "test",
+                     "recent": [{"symbol": "FOO", "status": "leads",
+                                 "leads": 1, "error": None}]})
+        return {"created": 1, "checked": 1}
+
+    monkeypatch.setattr(
+        "app.scheduler.lead_generator.run_lead_generator",
+        fake_run_lead_generator,
+    )
+
+    job = lead_jobs.JobState(
+        id="manual-3",
+        status="running",
+        submitted_at=lead_jobs._now(),
+    )
+    lead_jobs._run_in_thread(job)
+
+    # Final state: the second patch must have landed on the job's `progress`
+    # field. The callback path doesn't accumulate — each `update()` replaces
+    # the same keys — so we observe the most recent patch.
+    assert job.progress["phase"] == "analyzing"
+    assert job.progress["scanned"] == 1
+    assert job.progress["created"] == 1
+    assert job.progress["recent"][0]["symbol"] == "FOO"
+    assert job.started_at is not None
+    assert job.status == "done"
+
+
+def test_active_job_id_returns_none_when_nothing_in_flight(env):
+    """The new manual-attach endpoint relies on `active_job_id()` returning
+    None when no manual job is running (even if the generator lock happens
+    to be held by a scheduler-driven run).
+    """
+    _reset_state()
+    assert lead_jobs.active_job_id() is None
+
+    # Schedule-driven run holds the lock — still no manual job to attach to.
+    assert lead_jobs.acquire_generator_lock() is True
+    try:
+        assert lead_jobs.active_job_id() is None
+    finally:
+        lead_jobs.release_generator_lock()
+
+
+def test_active_job_id_returns_running_manual_job(env, monkeypatch):
+    """While a manual job is in flight, `active_job_id()` must return its id
+    so the GET-active endpoint can hand it to the UI."""
+
+    _reset_state()
+    # Hold the daemon thread inside the fake run until the test has
+    # finished asserting on the registry. Without this, the stub returns
+    # instantly and the spawned thread races ahead to mark the job done
+    # before our `active_job_id()` check.
+    blocker = threading.Event()
+
+    def fake_run_lead_generator(*a, **kw):
+        blocker.wait(timeout=2.0)
+        return {"created": 0, "checked": 0}
+
+    monkeypatch.setattr(
+        "app.scheduler.lead_generator.run_lead_generator",
+        fake_run_lead_generator,
+    )
+
+    job, started = lead_jobs.submit_manual_job()
+    assert started is True
+
+    assert lead_jobs.active_job_id() == job.id
+
+    # Finish it via the helper that mimics the thread's terminal path.
+    lead_jobs._finish_job(job, "done", result={"generated": 0, "checked": 0})
+    assert lead_jobs.active_job_id() is None
+
+    blocker.set()

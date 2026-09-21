@@ -192,6 +192,28 @@ def get_lead_gen_status(job_id: str):
     return api("GET", f"/api/trades/leads/generate/{job_id}", timeout=LEAD_GEN_TIMEOUT)
 
 
+def purge_leads():
+    """Delete every row in the `leads` table regardless of status.
+
+    The backend nulls out `Trade.lead_id` first so audit data survives. The
+    caller is expected to gate this through a typed-confirmation dialog so
+    a stray click can't wipe queued signals.
+    """
+    return api("DELETE", "/api/trades/leads", timeout=15)
+
+
+def get_active_lead_gen_job():
+    """Look up the in-flight manual lead-generation job, if any.
+
+    Used on page load to recover the running-job handle after a tab reload
+    — without this, a Streamlit page refresh clears session_state and the
+    "Generate now" button silently re-enables even though a run is mid-flight.
+    Returns ``{"status": "error", "error": {"code": "lead_generation_no_active_job"}}``
+    when nothing is running; callers treat that as "no job to attach to".
+    """
+    return api("GET", "/api/trades/leads/generate/active", timeout=LEAD_GEN_TIMEOUT)
+
+
 def get_instruments():
     return api("GET", "/api/instruments")
 

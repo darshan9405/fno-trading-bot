@@ -521,6 +521,59 @@ def _css() -> str:
     }}
     .lead-toolbar .stButton > button {{ width: 100%; }}
 
+    /* --- Lead-generation live progress panel (rendered inside the 2s
+       polling fragment; CSS lives here so the panel styles stay co-located
+       with the rest of the leads theme). --- */
+    .lg-panel {{
+        background: {CARD}; border: 1px solid {BORDER}; border-radius: 12px;
+        padding: 12px 14px; margin: 6px 0 12px 0;
+    }}
+    .lg-head {{
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 10px; margin-bottom: 8px;
+    }}
+    .lg-phase {{
+        display: flex; align-items: center; gap: 8px;
+        color: #e2e8f0; font-size: 0.92rem;
+    }}
+    .lg-elapsed {{
+        font-variant-numeric: tabular-nums; font-size: 0.85rem;
+    }}
+    .lg-spinner {{
+        display: inline-block; width: 14px; height: 14px;
+        border-radius: 50%;
+        border: 2px solid {BORDER};
+        border-top-color: {PRIMARY};
+        animation: lg-spin 0.9s linear infinite;
+    }}
+    @keyframes lg-spin {{
+        to {{ transform: rotate(360deg); }}
+    }}
+    .lg-bar {{
+        height: 6px; border-radius: 4px; background: {BORDER}; overflow: hidden;
+        margin-bottom: 8px;
+    }}
+    .lg-fill {{
+        height: 6px; border-radius: 4px;
+        transition: width 0.4s ease;
+    }}
+    .lg-meta {{
+        display: flex; gap: 14px; flex-wrap: wrap;
+        font-size: 0.78rem; margin-bottom: 8px;
+    }}
+    .lg-current {{
+        font-size: 0.82rem; margin: 4px 0 8px 0;
+        color: {SECONDARY};
+    }}
+    .lg-recent {{
+        display: flex; flex-direction: column; gap: 3px;
+        border-top: 1px solid {BORDER}; padding-top: 8px;
+    }}
+    .lg-recent-row {{
+        display: flex; align-items: center; gap: 8px;
+        font-size: 0.82rem; padding: 2px 0;
+    }}
+
     @media (max-width: 768px) {{
         .lead-section-header {{
             margin: 14px 0 8px 0; padding-bottom: 6px;
@@ -1197,37 +1250,92 @@ def render_leads():
     # - Queued leads age out at 24h
     # - Processed leads (skipped/placed/expired) retained for 7 days
 
-    # Action button in its own row so it stays full-width on mobile
-    # (a side column would shrink to ~20% of the screen width).
-    _html("<div class='lead-toolbar'>")
-    if st.button("Generate now", type="primary", use_container_width=True,
-                 help="Run the lead generator manually (works outside trading hours)."):
-        resp = api.generate_leads()
-        if resp.get("status") == "ok":
+    # Recover an in-flight run after a page reload. Streamlit wipes
+    # `session_state` on every browser refresh, so without this the
+    # "Generate now" button silently re-enables mid-run.
+    if "lead_job" not in st.session_state:
+        active = api.get_active_lead_gen_job()
+        active_data = active.get("data") if active.get("status") == "ok" else None
+        if active_data and active_data.get("id"):
             st.session_state["lead_job"] = {
-                "id": resp["data"]["id"],
-                "submitted_at": resp["data"]["submitted_at"],
+                "id": active_data["id"],
+                "submitted_at": active_data.get("submitted_at"),
             }
-            st.toast("Lead generation started.", icon=":material/hourglass_top:")
-        elif resp.get("error", {}).get("code") == "lead_generation_in_progress":
-            existing = (resp.get("data") or {}).get("id")
-            if existing:
-                st.session_state["lead_job"] = {
-                    "id": existing,
-                    "submitted_at": (resp.get("data") or {}).get("submitted_at"),
-                }
-            st.toast("A generation run is already in progress.", icon=":material/hourglass_top:")
-        else:
-            st.error(resp.get("error", {}).get("message", "Generation failed."))
-    _html("</div>")
 
-    _lead_gen_status_fragment()
+    job = st.session_state.get("lead_job")
+    is_running = _is_job_running(job)
 
+    # Fetch the lead list once and reuse it for both the toolbar (to size
+    # the destructive-action confirmation) and the section rendering.
     resp = api.get_leads()
     if resp.get("status") != "ok":
         st.warning("Could not load leads.")
         return
     rows = resp["data"].get("leads", [])
+    lead_count = len(rows)
+
+    # Action buttons in their own column so each stays full-width on mobile
+    # (a side column would shrink to ~20% of the screen width).
+    _html("<div class='lead-toolbar'>")
+    button_label = "Generating…" if is_running else "Generate now"
+    if st.button(
+        button_label,
+        type="primary",
+        use_container_width=True,
+        disabled=is_running,
+        help=(
+            "A lead-generation run is already in progress."
+            if is_running else
+            "Run the lead generator manually (works outside trading hours)."
+        ),
+    ):
+        gen_resp = api.generate_leads()
+        if gen_resp.get("status") == "ok":
+            st.session_state["lead_job"] = {
+                "id": gen_resp["data"]["id"],
+                "submitted_at": gen_resp["data"]["submitted_at"],
+            }
+            st.toast("Lead generation started.", icon=":material/hourglass_top:")
+        elif gen_resp.get("error", {}).get("code") == "lead_generation_in_progress":
+            existing = (gen_resp.get("data") or {}).get("id")
+            if existing:
+                st.session_state["lead_job"] = {
+                    "id": existing,
+                    "submitted_at": (gen_resp.get("data") or {}).get("submitted_at"),
+                }
+            st.toast("A generation run is already in progress.", icon=":material/hourglass_top:")
+        else:
+            st.error(gen_resp.get("error", {}).get("message", "Generation failed."))
+    if st.button(
+        "Delete all leads",
+        type="secondary",
+        use_container_width=True,
+        disabled=lead_count == 0,
+        help=(
+            "Remove every lead row (queued, placed, skipped, expired). "
+            "Trade audit data is preserved."
+            if lead_count > 0 else
+            "No leads to delete."
+        ),
+    ):
+        st.session_state["purge_leads_count"] = lead_count
+        st.session_state["purge_dialog_open"] = True
+        st.rerun()
+    _html("</div>")
+
+    if st.session_state.pop("purge_dialog_open", False):
+        _render_purge_leads_dialog(lead_count)
+
+    result = st.session_state.pop("purge_leads_last_result", None)
+    if result:
+        kind, payload = result
+        if kind == "success":
+            st.success(f"Deleted {payload} lead row(s).")
+        else:
+            st.error(payload)
+
+    _lead_gen_status_fragment()
+
     if not rows:
         st.info("No leads. Tap **Generate now**, or enable more underlyings in **Instruments**.")
         return
@@ -1261,6 +1369,51 @@ def render_leads():
             _render_lead_card(r, show_note=True)
     else:
         _html("<div class='muted' style='padding:6px 2px;'>No skipped leads in retention window.</div>")
+
+
+@st.dialog("Delete all leads")
+def _render_purge_leads_dialog(lead_count: int):
+    """Typed-confirmation gate for the destructive ``DELETE /api/trades/leads``
+    call. The user must type ``DELETE`` to enable the confirm button, which
+    makes the action impossible to trigger with a stray click."""
+    st.warning(
+        f"This will permanently remove all **{lead_count}** lead row(s) from the "
+        f"database, regardless of status (queued, placed, skipped, expired). "
+        f"Trade audit data is preserved."
+    )
+    typed = st.text_input(
+        f'Type DELETE to confirm',
+        key="purge_leads_typed",
+        placeholder="DELETE",
+    )
+    c1, c2, _ = st.columns([1, 1, 4])
+    with c1:
+        confirm_clicked = st.button(
+            "Delete forever",
+            type="primary",
+            use_container_width=True,
+            disabled=(typed.strip() != "DELETE"),
+        )
+    with c2:
+        if st.button("Cancel", use_container_width=True):
+            st.session_state.pop("purge_leads_count", None)
+            st.rerun()
+
+    if confirm_clicked:
+        with st.spinner("Deleting leads…"):
+            resp = api.purge_leads()
+        st.session_state.pop("purge_leads_typed", None)
+        st.session_state.pop("purge_leads_count", None)
+        if resp.get("status") == "ok":
+            st.session_state["purge_leads_last_result"] = (
+                "success",
+                int(resp.get("data", {}).get("deleted", 0)),
+            )
+            st.rerun()
+        else:
+            err_msg = resp.get("error", {}).get("message", "Delete failed.")
+            st.session_state["purge_leads_last_result"] = ("error", err_msg)
+            st.rerun()
 
 
 def _render_lead_card(r: dict, show_note: bool = False):
@@ -1351,6 +1504,146 @@ def _render_lead_card(r: dict, show_note: bool = False):
     )
 
 
+def _is_job_running(job: dict | None) -> bool:
+    """Cheap client-side check: a job is "running" iff its server-side status
+    is still ``running``. Called on every render so the disabled state on the
+    Generate button stays in sync with the background poll."""
+    if not job or not job.get("id"):
+        return False
+    # We don't poll here — that's what the status fragment is for. A stale
+    # "running" state just means the button stays disabled for one more
+    # render after the job actually finishes, which is harmless.
+    return job.get("status", "running") == "running"
+
+
+def _format_elapsed(started_at: str | None, submitted_at: str | None) -> str:
+    """Best-effort elapsed-time formatter ("00:14"). Falls back to
+    `submitted_at` if `started_at` isn't available yet (the generator thread
+    hasn't reached the `started_at` stamp)."""
+    from datetime import datetime, timezone
+
+    raw = started_at or submitted_at
+    if not raw:
+        return "00:00"
+    try:
+        start = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return "00:00"
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    secs = int((datetime.now(timezone.utc) - start).total_seconds())
+    secs = max(0, secs)
+    return f"{secs // 60:02d}:{secs % 60:02d}"
+
+
+def _render_lead_progress_panel(data: dict) -> None:
+    """Live progress panel rendered inside the polling fragment.
+
+    `data` is the JobState.to_dict() payload from GET /leads/generate/<id>:
+    contains `status`, `progress` (with scanned/total/created/errors/recent),
+    and timestamps. The layout must be stable across 2-second re-renders so
+    the user sees smooth motion rather than a flicker.
+    """
+    progress = data.get("progress") or {}
+    scanned = int(progress.get("scanned") or 0)
+    total = int(progress.get("total") or 0)
+    created = int(progress.get("created") or 0)
+    errors = int(progress.get("errors") or 0)
+    current = progress.get("current")
+    phase = progress.get("phase") or "starting"
+    recent = progress.get("recent") or []
+
+    pct = 0 if total <= 0 else min(100, int(round(scanned * 100 / total)))
+    bar_color = PRIMARY if pct < 100 else PROFIT
+
+    # Phase label — short, human-friendly mapping for the four phases the
+    # generator emits. `analyzing` is the long, visible phase; `starting`
+    # and `finalizing` flash by quickly.
+    phase_label = {
+        "starting": "Preparing…",
+        "analyzing": "Analyzing underlyings",
+        "finalizing": "Finalizing…",
+    }.get(phase, "Running")
+
+    elapsed = _format_elapsed(data.get("started_at"), data.get("submitted_at"))
+
+    # Recent-instrument list — fixed-height container so the bar above doesn't
+    # jump as items appear. Render newest-first; cap to whatever the server
+    # already trimmed to (typically 5).
+    status_glyph = {
+        "leads": ("✓", PROFIT),
+        "empty": ("·", MUTED),
+        "cap":   ("·", WARN),
+        "error": ("✗", LOSS),
+    }
+
+    def _recent_row(item: dict) -> str:
+        sym = item.get("symbol") or "?"
+        st_name = item.get("status") or "empty"
+        glyph, color = status_glyph.get(st_name, ("?", MUTED))
+        n = int(item.get("leads") or 0)
+        if st_name == "leads":
+            tail = f" <span style='color:{PROFIT};font-weight:600;'>{n} lead{'s' if n != 1 else ''}</span>"
+        elif st_name == "error":
+            err_msg = item.get("error") or ""
+            tail = f" <span style='color:{LOSS};font-size:0.78rem;'>{_html_escape(err_msg[:60])}</span>"
+        else:
+            tail = ""
+        return (
+            f"<div class='lg-recent-row'>"
+            f"<span style='color:{color};font-weight:700;width:14px;flex-shrink:0;'>{glyph}</span>"
+            f"<span style='flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'>{_html_escape(sym)}</span>"
+            f"<span style='flex-shrink:0;'>{tail}</span>"
+            f"</div>"
+        )
+
+    rows_html = "".join(_recent_row(r) for r in recent[:5])
+    if not rows_html:
+        rows_html = "<div class='muted' style='font-size:0.8rem;'>Waiting for first result…</div>"
+
+    current_html = (
+        f"<div class='lg-current'><span class='muted'>Current:</span> "
+        f"<b>{_html_escape(current)}</b></div>"
+        if current else ""
+    )
+
+    _html(
+        f"""
+        <div class='lg-panel'>
+          <div class='lg-head'>
+            <div class='lg-phase'>
+              <span class='lg-spinner'></span>
+              <b>{_html_escape(phase_label)}</b>
+            </div>
+            <div class='lg-elapsed muted'>{elapsed}</div>
+          </div>
+          <div class='lg-bar'>
+            <div class='lg-fill' style='width:{pct}%;background:{bar_color};'></div>
+          </div>
+          <div class='lg-meta muted'>
+            <span><b style='color:#e2e8f0;'>{scanned}</b> / {total} underlyings scanned</span>
+            <span><b style='color:{PROFIT};'>{created}</b> leads created</span>
+            {f"<span style='color:{LOSS};'><b>{errors}</b> errors</span>" if errors else ""}
+          </div>
+          {current_html}
+          <div class='lg-recent'>{rows_html}</div>
+        </div>
+        """
+    )
+
+
+def _html_escape(s: str) -> str:
+    """Minimal HTML escape for values embedded into raw HTML in the progress
+    panel. Avoids pulling in `markupsafe` as a UI dependency."""
+    return (
+        str(s)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
 @st.fragment(run_every="2s")
 def _lead_gen_status_fragment():
     job = st.session_state.get("lead_job")
@@ -1363,20 +1656,33 @@ def _lead_gen_status_fragment():
 
     resp = api.get_lead_gen_status(job_id)
     if resp.get("status") != "ok":
+        # 404 — the server trimmed the registry. Drop the local handle so
+        # the button re-enables on the next render.
         st.session_state.pop("lead_job", None)
         return
 
     data = resp["data"]
     status = data.get("status")
+    # Cache the server-side status on the session-state entry so the
+    # `_is_job_running()` check on the main render loop stays in sync
+    # without re-polling.
+    st.session_state["lead_job"]["status"] = status
+
     if status == "running":
-        st.info("⏳ Lead generation in progress…", icon=":material/hourglass_top:")
+        _render_lead_progress_panel(data)
         return
 
     st.session_state.pop("lead_job", None)
     if status == "done":
         result = data.get("result") or {}
         generated = result.get("generated", 0)
-        st.toast(f"Generated {generated} lead(s).", icon=":material/check_circle:")
+        checked = result.get("checked", 0)
+        elapsed = _format_elapsed(data.get("started_at"), data.get("submitted_at"))
+        st.toast(
+            f"Generated {generated} lead{'s' if generated != 1 else ''} "
+            f"from {checked} underlying{'s' if checked != 1 else ''} in {elapsed}.",
+            icon=":material/check_circle:",
+        )
     elif status == "error":
         st.error(f"Generation failed: {data.get('error') or 'unknown error'}")
     st.rerun()
@@ -1809,24 +2115,6 @@ def render_settings():
         new_cfg["lead_generator.max_workers"] = int(max_workers)
         new_cfg["lead_generator.shuffle_instruments"] = bool(shuffle)
         st.markdown("---")
-        patterns = st.multiselect(
-            "Enabled patterns",
-            ["horizontal_range", "trendline", "triangle", "flag_pennant", "head_shoulders", "volume_breakout"],
-            default=cfg.get("breakout.patterns_enabled", ["volume_breakout"]),
-            help="Only the selected chart patterns can generate leads.",
-        )
-        min_conf = st.slider("Min confidence", 0.0, 1.0,
-                             float(cfg.get("breakout.min_confidence", 0.6)), 0.05,
-                             help="Leads below this confidence are dropped.")
-        st.markdown("**Volume confirmation**")
-        require_spike = st.checkbox(
-            "Require volume spike for every signal",
-            value=bool(cfg.get("breakout.require_volume_spike", False)),
-        )
-        vmult = st.number_input("Volume spike multiplier", min_value=1.0, max_value=10.0,
-                                value=float(cfg.get("breakout.volume_multiplier", 4.0)), step=0.5)
-        vboost = st.slider("Volume confidence boost", 0.0, 0.4,
-                           float(cfg.get("breakout.volume_boost", 0.15)), 0.05)
         st.markdown("**Indicator context (Tier-3)**")
         st.caption("Optional context features blended into the composite score. All default OFF — turn on one at a time and watch hit-rate in History before stacking.")
         c1, c2, c3 = st.columns(3)
@@ -1848,39 +2136,8 @@ def render_settings():
                 value=bool(cfg.get("scoring.enable_iv", False)),
                 help="Discount signals when IV is high, boost when IV is compressed (breakouts from compression are more meaningful).",
             )
-        with st.expander("Pattern detection knobs", expanded=False):
-            st.caption("Tune the swing-based detectors. Defaults match the values Bulkowski's pattern-stats tables were derived on.")
-            lookback = st.number_input("Lookback (days)", min_value=20, max_value=250,
-                                       value=int(cfg.get("breakout.lookback_days", 60)))
-            swing_k = st.number_input("Swing K (pivot strength)", min_value=1, max_value=10,
-                                      value=int(cfg.get("breakout.swing_k", 3)))
-            proximity = st.number_input("Proximity %", min_value=0.05, max_value=5.0,
-                                        value=float(cfg.get("breakout.proximity_pct", 0.5)), step=0.05,
-                                        help="Max % distance from trigger level for a signal to qualify.")
-            min_touches = st.number_input("Min touches (horizontal)", min_value=1, max_value=10,
-                                         value=int(cfg.get("breakout.min_touches", 1)))
-            min_trendline_points = st.number_input("Min trendline points", min_value=2, max_value=10,
-                                                   value=int(cfg.get("breakout.min_trendline_points", 4)))
-            pole_pct = st.number_input("Flag pole %", min_value=1.0, max_value=20.0,
-                                       value=float(cfg.get("breakout.pole_pct", 3.0)), step=0.5,
-                                       help="Minimum prior move (%) before a flag/pennant qualifies.")
-            vwindow = st.number_input("Volume window (days)", min_value=5, max_value=60,
-                                      value=int(cfg.get("breakout.volume_window", 20)))
-            vlookback = st.number_input("Volume lookback (days)", min_value=1, max_value=20,
-                                        value=int(cfg.get("breakout.volume_lookback", 5)),
-                                        help="Number of recent bars checked for the spike.")
-        with st.expander("Market alignment, top-K & decay (Tier-2 / Tier-4)", expanded=False):
-            st.caption("Cross-asset filter, signal-per-instrument cap, and post-queue staleness/calibration.")
-            alignment = st.selectbox(
-                "Market alignment filter",
-                ["off", "nifty_sma20"],
-                index=["off", "nifty_sma20"].index(cfg.get("breakout.market_alignment", "off"))
-                    if cfg.get("breakout.market_alignment", "off") in ["off", "nifty_sma20"] else 0,
-                help="'off' = no filter. 'nifty_sma20' = only fire CALL signals in uptrend, PUT in downtrend (else neutral).",
-            )
-            top_k = st.number_input("Top-K signals per instrument", min_value=1, max_value=5,
-                                    value=int(cfg.get("breakout.top_k_per_instrument", 2)),
-                                    help="Emit up to this many leads per instrument (each direction can fire independently).")
+        with st.expander("Decay & calibration (Tier-4)", expanded=False):
+            st.caption("Post-queue staleness decay and historical win-rate calibration.")
             staleness_min = st.number_input(
                 "Staleness half-life (minutes)", min_value=0, max_value=120,
                 value=int(cfg.get("breakout.staleness_half_life_min", 0)),
@@ -1892,24 +2149,9 @@ def render_settings():
                 help="0 = no historical calibration. 1 = lean entirely on past win-rate for this pattern.",
             )
         new_cfg.update({
-            "breakout.patterns_enabled": patterns,
-            "breakout.min_confidence": float(min_conf),
-            "breakout.require_volume_spike": bool(require_spike),
-            "breakout.volume_multiplier": float(vmult),
-            "breakout.volume_boost": float(vboost),
             "scoring.enable_time_of_day": bool(tod_on),
             "scoring.enable_oi": bool(oi_on),
             "scoring.enable_iv": bool(iv_on),
-            "breakout.lookback_days": int(lookback),
-            "breakout.swing_k": int(swing_k),
-            "breakout.proximity_pct": float(proximity),
-            "breakout.min_touches": int(min_touches),
-            "breakout.min_trendline_points": int(min_trendline_points),
-            "breakout.pole_pct": float(pole_pct),
-            "breakout.volume_window": int(vwindow),
-            "breakout.volume_lookback": int(vlookback),
-            "breakout.market_alignment": alignment,
-            "breakout.top_k_per_instrument": int(top_k),
             "breakout.staleness_half_life_min": int(staleness_min),
             "scoring.calibration_alpha": float(cal_alpha),
         })
