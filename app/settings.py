@@ -107,6 +107,10 @@ def seed_default_settings() -> None:
     # Operators who set non-default values are NOT bumped.
     _LEGACY_TRAIL_ACTIVATE_PCT = 5.0
     _LEGACY_TRAIL_GAP_PCT = 5.0
+    # The math-based "breakout" package was removed when the LLM detector landed;
+    # bump existing deployments so the scheduler stops crashing with
+    # `Unknown strategy: 'breakout'` on a persistent DB.
+    _LEGACY_STRATEGY = "breakout"
 
     with session_scope() as session:
         for key, value in DEFAULT_SETTINGS.items():
@@ -120,10 +124,12 @@ def seed_default_settings() -> None:
         legacy_bump = {
             "trail_activate_pct": DEFAULT_SETTINGS["trail_activate_pct"],
             "trail_gap_pct": DEFAULT_SETTINGS["trail_gap_pct"],
+            "strategy": DEFAULT_SETTINGS["strategy"],
         }
         legacy_values = {
             "trail_activate_pct": _LEGACY_TRAIL_ACTIVATE_PCT,
             "trail_gap_pct": _LEGACY_TRAIL_GAP_PCT,
+            "strategy": _LEGACY_STRATEGY,
         }
         for key, new_value in legacy_bump.items():
             row = session.get(Setting, key)
