@@ -870,7 +870,7 @@ def render_dashboard():
                         "Instrument": r.get("trading_symbol") or "—",
                         "Dir": r["direction"],
                         "Pattern": r["signal_type"],
-                        "Level": r["signal_level"],
+                        "Signal Price": r["signal_level"],
                         "Conf": r["confidence"],
                         "Margin": _money(r.get("margin_needed")) if r.get("margin_needed") is not None else "—",
                         "Status": r["status"],
@@ -1049,18 +1049,13 @@ def _render_position_card(r: dict):
 def render_leads():
     st.subheader("Leads")
 
-    # The lead_cleanup scheduler keeps this view small and current
-    # (processed leads are deleted almost immediately and queued leads
-    # age-out at 24h). The API already sorts by composite score, so no
-    # filters/status toggles are needed.
+    # The lead_cleanup scheduler keeps this view current:
+    # - Queued leads age out at 24h
+    # - Processed leads (skipped/placed/expired) retained for 7 days
     _left, _right = st.columns([4, 1])
     with _right:
         if st.button("Generate now", type="primary", use_container_width=True,
                      help="Run the lead generator manually (works outside trading hours)."):
-            # Manual runs now dispatch on the server (background thread) and
-            # return 202 immediately, so we just record the job id here and
-            # let the status fragment below poll for completion. This keeps
-            # the rest of the page responsive while generation is in flight.
             resp = api.generate_leads()
             if resp.get("status") == "ok":
                 st.session_state["lead_job"] = {
@@ -1069,7 +1064,6 @@ def render_leads():
                 }
                 st.toast("Lead generation started.", icon=":material/hourglass_top:")
             elif resp.get("error", {}).get("code") == "lead_generation_in_progress":
-                # Attach to the existing job rather than spinning up a second.
                 existing = (resp.get("data") or {}).get("id")
                 if existing:
                     st.session_state["lead_job"] = {
@@ -1080,9 +1074,116 @@ def render_leads():
             else:
                 st.error(resp.get("error", {}).get("message", "Generation failed."))
 
-    # Independently re-running status fragment so polling the server doesn't
-    # also re-render the full leads list / spinner.
     _lead_gen_status_fragment()
+
+    resp = api.get_leads()
+    if resp.get("status") != "ok":
+        st.warning("Could not load leads.")
+        return
+    rows = resp["data"].get("leads", [])
+    if not rows:
+        st.info("No leads. Try **Generate now**, or enable more underlyings in **Instruments**.")
+        return
+
+    # Split into active (queued) and skipped
+    active_rows = [r for r in rows if r.get("status") == "queued"]
+    skipped_rows = [r for r in rows if r.get("status") == "skipped"]
+
+    # --- Active Leads ---
+    if active_rows:
+        st.markdown("#### Active Leads (Queued)")
+        _html(f"<div class='muted' style='margin-bottom:8px;'>{len(active_rows)} lead(s) waiting for order placement</div>")
+        for r in active_rows:
+            _render_lead_card(r, show_note=False)
+    else:
+        st.info("No active queued leads right now.")
+
+    # --- Skipped Leads (with reasons) ---
+    if skipped_rows:
+        st.markdown("---")
+        st.markdown("#### Skipped Leads (with reasons)")
+        _html(f"<div class='muted' style='margin-bottom:8px;'>{len(skipped_rows)} lead(s) skipped in recent runs</div>")
+        for r in skipped_rows:
+            _render_lead_card(r, show_note=True)
+    else:
+        st.markdown("---")
+        st.info("No skipped leads in retention window.")
+
+
+def _render_lead_card(r: dict, show_note: bool = False):
+    """Render a single lead card."""
+    c1, c2, c3 = st.columns([4, 1, 2])
+    with c1:
+        created_ist = (
+            r.get("created_at_ist_label")
+            or _utc_to_ist_hm(r.get("created_at"))
+        )
+        direction_class = "up" if r["direction"] == "CALL" else "down"
+        status_class = "warn" if r["status"] == "queued" else "muted"
+
+        _html(
+            f"<div style='display:flex;justify-content:space-between;margin-bottom:6px;'>"
+            f"<div style='font-weight:600'>{r.get('symbol') or r['underlying'].split('|')[-1]} "
+            f"{_badge(r['direction'], direction_class)} "
+            f"{_badge(r['status'], status_class)}</div>"
+            f"<div class='muted'>{created_ist} IST</div></div>"
+        )
+
+        _html(
+            f"<div style='margin:6px 0;'>"
+            f"<span class='badge' style='color:{SECONDARY};background:{SECONDARY}33;'>"
+            f"{r['signal_type']}</span> "
+            f"<span class='badge' style='color:{PRIMARY};background:{PRIMARY}33;'>"
+            f"Signal Price: {_num(r['signal_level'])}</span></div>"
+        )
+
+        # Plan details
+        plan_parts = []
+        if r.get("expiry"):
+            plan_parts.append(f"Exp {r['expiry']}")
+        if r.get("strike_price"):
+            plan_parts.append(f"Strike {_num(r['strike_price'])}")
+        if r.get("option_type"):
+            plan_parts.append(f"Opt {r['option_type']}")
+        if r.get("quantity"):
+            plan_parts.append(f"Qty {r['quantity']}")
+        if r.get("lot_size"):
+            plan_parts.append(f"Lot {r['lot_size']}")
+        if r.get("margin_needed"):
+            plan_parts.append(f"Margin ₹{float(r['margin_needed']):,.0f}")
+        if r.get("premium"):
+            plan_parts.append(f"Prem {_num(r['premium'])}")
+        if r.get("spot"):
+            plan_parts.append(f"Spot {_num(r['spot'])}")
+        if plan_parts:
+            _html(f"<div class='muted' style='margin-top:8px;font-size:0.78rem;'>"
+                  f"{' · '.join(plan_parts)}</div>")
+
+        # Skip reason (note)
+        if show_note and r.get("note"):
+            _html(f"<div class='muted' style='margin-top:6px;font-size:0.8rem;color:{LOSS};'>"
+                  f"⚠ Skipped: {r['note']}</div>")
+
+    with c2:
+        pct = int((r.get("confidence") or 0) * 100)
+        bar_color = PROFIT if pct >= 80 else (WARN if pct >= 60 else MUTED)
+        badge_color = "ok" if pct >= 80 else ("warn" if pct >= 60 else "muted")
+
+        _html(
+            f"<div style='text-align:center;margin-top:8px;'>"
+            f"<div class='badge {badge_color}' style='margin-bottom:6px;'>"
+            f"{pct}% Score</div>"
+            f"<div class='conf-bar' style='margin:6px 0;'>"
+            f"<div class='conf-fill' style='width:{pct}%;background:{bar_color};'></div>"
+            f"</div>"
+            f"<div class='muted' style='font-size:0.72rem;'>"
+            f"{'High' if pct >= 80 else ('Medium' if pct >= 60 else 'Low')}</div>"
+            f"</div>"
+        )
+
+    with c3:
+        if r.get("note") and not show_note:
+            st.caption(r["note"])
 
 
 @st.fragment(run_every="2s")
@@ -1097,7 +1198,6 @@ def _lead_gen_status_fragment():
 
     resp = api.get_lead_gen_status(job_id)
     if resp.get("status") != "ok":
-        # Network blip / server reload lost the job. Clear so we don't loop.
         st.session_state.pop("lead_job", None)
         return
 
@@ -1115,88 +1215,6 @@ def _lead_gen_status_fragment():
     elif status == "error":
         st.error(f"Generation failed: {data.get('error') or 'unknown error'}")
     st.rerun()
-
-    resp = api.get_leads()
-    if resp.get("status") != "ok":
-        st.warning("Could not load leads.")
-        return
-    rows = resp["data"].get("leads", [])
-    if not rows:
-        st.info("No leads. Try **Generate now**, or enable more underlyings in **Instruments**.")
-        return
-
-    _html("<div class='row' style='margin-bottom:12px;align-items:center;'>")
-    _html(f"<span class='muted'>Showing <b>{len(rows)}</b> {'lead' if len(rows) == 1 else 'leads'} · sorted by score</span>")
-    _html(f"</div>")
-
-    for r in rows:
-        c1, c2, c3 = st.columns([4, 1, 2])
-        with c1:
-            created_ist = (
-                r.get("created_at_ist_label")
-                or _utc_to_ist_hm(r.get("created_at"))
-            )
-            direction_class = "up" if r["direction"] == "CALL" else "down"
-            status_class = "ok" if r["status"] in ("placed", "filled") else ("warn" if r["status"] == "queued" else "muted")
-
-            _html(
-                f"<div style='display:flex;justify-content:space-between;margin-bottom:6px;'>"
-                f"<div style='font-weight:600'>{r.get('symbol') or r['underlying'].split('|')[-1]} "
-                f"{_badge(r['direction'], direction_class)} "
-                f"{_badge(r['status'], status_class)}</div>"
-                f"<div class='muted'>{created_ist} IST</div></div>"
-            )
-
-            _html(
-                f"<div style='margin:6px 0;'>"
-                f"<span class='badge' style='color:{SECONDARY};background:{SECONDARY}33;'>"
-                f"{r['signal_type']}</span> "
-                f"<span class='badge' style='color:{PRIMARY};background:{PRIMARY}33;'>"
-                f"@ {_num(r['signal_level'])}</span></div>"
-            )
-
-            # Plan details
-            plan_parts = []
-            if r.get("expiry"):
-                plan_parts.append(f"Exp {r['expiry']}")
-            if r.get("strike_price"):
-                plan_parts.append(f"Strike {_num(r['strike_price'])}")
-            if r.get("option_type"):
-                plan_parts.append(f"Opt {r['option_type']}")
-            if r.get("quantity"):
-                plan_parts.append(f"Qty {r['quantity']}")
-            if r.get("lot_size"):
-                plan_parts.append(f"Lot {r['lot_size']}")
-            if r.get("margin_needed"):
-                plan_parts.append(f"Margin ₹{float(r['margin_needed']):,.0f}")
-            if r.get("premium"):
-                plan_parts.append(f"Prem {_num(r['premium'])}")
-            if r.get("spot"):
-                plan_parts.append(f"Spot {_num(r['spot'])}")
-            if plan_parts:
-                _html(f"<div class='muted' style='margin-top:8px;font-size:0.78rem;'>"
-                      f"{' · '.join(plan_parts)}</div>")
-
-        with c2:
-            pct = int((r.get("confidence") or 0) * 100)
-            bar_color = PROFIT if pct >= 80 else (WARN if pct >= 60 else MUTED)
-            badge_color = "ok" if pct >= 80 else ("warn" if pct >= 60 else "muted")
-
-            _html(
-                f"<div style='text-align:center;margin-top:8px;'>"
-                f"<div class='badge {badge_color}' style='margin-bottom:6px;'>"
-                f"{pct}% Score</div>"
-                f"<div class='conf-bar' style='margin:6px 0;'>"
-                f"<div class='conf-fill' style='width:{pct}%;background:{bar_color};'></div>"
-                f"</div>"
-                f"<div class='muted' style='font-size:0.72rem;'>"
-                f"{'High' if pct >= 80 else ('Medium' if pct >= 60 else 'Low')}</div>"
-                f"</div>"
-            )
-
-        with c3:
-            if r.get("note"):
-                st.caption(r["note"])
 
 
 def render_instruments():

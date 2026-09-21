@@ -1,11 +1,10 @@
 """Scheduler 4 — Lead Cleanup.
 
-Deletes lead rows on a short cadence so the Leads UI always reflects the
-current actionable set:
+Deletes lead rows on a short cadence:
 
-  - leads whose status has already left `queued` vanish almost immediately
-    (the user does not need to retain processed leads once acted upon);
-  - queued leads older than `leads.retention_hours_queued` (default 24h)
+  - Processed leads (placed / skipped / expired / picked) older than
+    `leads.retention_hours_processed` (default 168h = 7 days) are removed.
+  - Queued leads older than `leads.retention_hours_queued` (default 24h)
     are age-out cleared so a frozen run / unreachable broker cannot leave
     stale signals on screen.
 

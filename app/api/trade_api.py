@@ -120,13 +120,13 @@ def pnl():
 @bp.get("/leads")
 @jwt_required
 def leads():
-    """Return the latest set of generated leads, sorted by composite score.
+    """Return all leads (queued + recently processed), sorted by composite score.
 
-    The cleanup scheduler (`app.scheduler.lead_cleanup`) keeps the table
-    small — it deletes processed leads almost immediately and queued leads
-    older than `leads.retention_hours_queued` (default 24h). The UI therefore
-    does not need date/status filters; whatever this endpoint returns is
-    always the actionable, current set.
+    The cleanup scheduler (`app.scheduler.lead_cleanup`) manages retention:
+    - Queued leads older than `leads.retention_hours_queued` (default 24h) are removed.
+    - Processed leads (placed/skipped/expired) older than `leads.retention_hours_processed`
+      (default 168h = 7 days) are removed.
+    The UI can display both active and skipped leads with reasons.
     """
     # Build the response INSIDE the session to avoid DetachedInstanceError
     # on `lead.instrument` lazy-load after the session is gone.
@@ -219,6 +219,7 @@ def _lead_dict(l: Lead) -> dict:
     # `created_at` is naive UTC. Surface IST equivalents so the UI doesn't
     # need a TZ round-trip on the client.
     ist_created = l.created_at.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("Asia/Kolkata"))
+    signal_level = l.signal_level
     return {
         "id": l.id,
         "underlying": l.underlying_key,
@@ -226,7 +227,8 @@ def _lead_dict(l: Lead) -> dict:
         "direction": l.direction,
         "strategy": l.strategy,
         "signal_type": l.signal_type,
-        "signal_level": l.signal_level,
+        "signal_level": signal_level,
+        "signal_price": signal_level,
         "confidence": l.confidence,
         "components": components,
         "score_breakdown": _score_breakdown(components),

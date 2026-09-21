@@ -1,9 +1,9 @@
-"""Lead retention: deletes processed leads immediately and stale queued leads.
+"""Lead retention: deletes stale processed leads and stale queued leads.
 
 Policy (lead retention):
-  - Any lead whose status is no longer "queued" (placed / skipped / expired /
-    picked) is deleted almost immediately. The user does not need to retain
-    processed leads once they've been acted upon by the order placer.
+  - Processed leads (placed / skipped / expired / picked) are retained for
+    `leads.retention_hours_processed` (default 168h = 7 days) so the UI can
+    display history with skip reasons.
   - Queued leads older than `leads.retention_hours_queued` (default 24h) are
     deleted so a stuck run / crashed UI / unreachable broker can't leave
     stale signals sitting around forever.
@@ -21,19 +21,25 @@ from sqlalchemy import delete, select, update
 from app.db import session_scope
 from app.models import Lead, Trade
 from app.services.health_service import utcnow
+from app.settings import get_setting
 
 log = logging.getLogger(__name__)
 
 
 def cleanup_processed_leads() -> int:
-    """Delete every lead whose status has already left the `queued` bucket.
+    """Delete processed leads older than `leads.retention_hours_processed`.
 
-    Called by the `lead_cleanup` scheduler at a short cadence so processed
-    leads vanish quickly. Returns the number of deleted rows.
+    Called by the `lead_cleanup` scheduler. Returns the number of deleted rows.
     """
+    retention_hours = int(get_setting("leads.retention_hours_processed", 168))
+    cutoff = utcnow() - timedelta(hours=retention_hours)
+
     with session_scope() as session:
         ids = list(session.execute(
-            select(Lead.id).where(Lead.status != "queued")
+            select(Lead.id).where(
+                Lead.status != "queued",
+                Lead.created_at < cutoff,
+            )
         ).scalars())
         if not ids:
             return 0
@@ -46,7 +52,7 @@ def cleanup_processed_leads() -> int:
         deleted = session.execute(
             delete(Lead).where(Lead.id.in_(ids))
         ).rowcount
-    log.info("lead_cleanup: removed %d processed lead(s)", deleted)
+    log.info("lead_cleanup: removed %d processed lead(s) older than %dh", deleted, retention_hours)
     return deleted
 
 

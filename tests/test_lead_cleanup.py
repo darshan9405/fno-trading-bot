@@ -110,14 +110,17 @@ def _seed_trade(session, *, lead_id, underlying_key):
 
 
 def test_cleanup_processed_leads_removes_placed_skipped_expired_picked(env):
+    # Processed leads are retained for 7 days (168h) by default.
+    # Create old processed leads (8 days old) and a fresh queued lead.
+    old = utcnow() - timedelta(hours=200)  # 8+ days old
     with session_scope() as session:
         inst = _seed_instrument(session)
-        _seed_lead(session, inst, status="placed", processed_at=utcnow())
-        _seed_lead(session, inst, status="skipped", processed_at=utcnow())
-        _seed_lead(session, inst, status="expired", processed_at=utcnow())
-        _seed_lead(session, inst, status="picked", processed_at=utcnow())
+        _seed_lead(session, inst, status="placed", created_at=old, processed_at=old)
+        _seed_lead(session, inst, status="skipped", created_at=old, processed_at=old)
+        _seed_lead(session, inst, status="expired", created_at=old, processed_at=old)
+        _seed_lead(session, inst, status="picked", created_at=old, processed_at=old)
         # A fresh queued lead must NOT be deleted.
-        queued = _seed_lead(session, inst, status="queued")
+        _seed_lead(session, inst, status="queued")
 
     deleted = lead_cleanup_service.cleanup_processed_leads()
     assert deleted == 4
@@ -133,9 +136,11 @@ def test_cleanup_processed_leads_nulls_trade_lead_id_but_keeps_trade(env):
         placed = _seed_lead(session, inst, status="queued", confidence=0.95)
         trade = _seed_trade(session, lead_id=placed.id,
                             underlying_key=inst.spot_instrument_key)
-        # Migrate lead -> placed.
+        # Migrate lead -> placed (make it old so it gets cleaned up).
+        old = utcnow() - timedelta(hours=200)
         placed.status = "placed"
-        placed.processed_at = utcnow()
+        placed.created_at = old
+        placed.processed_at = old
 
     deleted = lead_cleanup_service.cleanup_processed_leads()
     assert deleted == 1
@@ -149,9 +154,10 @@ def test_cleanup_processed_leads_nulls_trade_lead_id_but_keeps_trade(env):
 
 
 def test_cleanup_processed_leads_is_idempotent(env):
+    old = utcnow() - timedelta(hours=200)
     with session_scope() as session:
         inst = _seed_instrument(session)
-        _seed_lead(session, inst, status="placed", processed_at=utcnow())
+        _seed_lead(session, inst, status="placed", created_at=old, processed_at=old)
 
     assert lead_cleanup_service.cleanup_processed_leads() == 1
     assert lead_cleanup_service.cleanup_processed_leads() == 0
@@ -249,9 +255,10 @@ def test_cleanup_expired_queued_custom_retention_hours(env):
 
 
 def test_run_lead_cleanup_touches_heartbeat_and_removes_processed(env):
+    old = utcnow() - timedelta(hours=200)
     with session_scope() as session:
         inst = _seed_instrument(session)
-        _seed_lead(session, inst, status="placed", processed_at=utcnow())
+        _seed_lead(session, inst, status="placed", created_at=old, processed_at=old)
 
     run_lead_cleanup(retention_hours=24)
 

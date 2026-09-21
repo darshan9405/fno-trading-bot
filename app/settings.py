@@ -31,6 +31,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # and deletes any queued lead older than this many hours.
     "scheduler.lead_cleanup_seconds": 30,
     "leads.retention_hours_queued": 24,
+    "leads.retention_hours_processed": 168,
     # Reconciliation: read broker truth (get_positions + get_order_book) and close
     # DB trades whose position is gone. Runs every 60s by default. Trades younger
     # than `reconciler_min_age_minutes` are skipped to give Upstox time to
