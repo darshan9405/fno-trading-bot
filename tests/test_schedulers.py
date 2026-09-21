@@ -134,6 +134,11 @@ class TestBreakoutStrategy(Strategy):
     name = "test_breakout"
     required_interval = "day"
 
+    def begin_run(self, max_calls):
+        # Test instrumentation — proves run_lead_generator wires the cap from
+        # `llm.max_calls_per_run` into every Strategy.begin_run invocation.
+        _begin_run_calls.append(max_calls)
+
     def generate(self, instrument, candles, now):
         return [
             LeadCandidate(
@@ -146,6 +151,9 @@ class TestBreakoutStrategy(Strategy):
                 chart_interval="day",
             )
         ]
+
+
+_begin_run_calls: list[int] = []
 
 
 def _now(hour, minute=0):
@@ -166,6 +174,7 @@ def env(tmp_path):
 
     set_setting("strategy", "test_breakout")
     set_setting("trading_start", "10:00")
+    set_setting("trade_end_time", "11:00")
     set_setting("sqoff_time", "14:00")
     set_setting("initial_sl_pct", 10.0)
     set_setting("trail_activate_pct", 20.0)
@@ -173,6 +182,7 @@ def env(tmp_path):
     set_setting("max_lead_price_divergence_pct", 0.5)
     set_setting("min_days_to_expiry", 5)
     set_setting("qty_lots_per_trade", 1)
+    set_setting("lead_generator.shuffle_instruments", False)
 
     from app.auth import UpstoxTokenStore
 
@@ -235,6 +245,52 @@ def test_lead_generator_writes_queued_leads_and_does_not_dedup(env):
     # A second pass on the same day generates again — dedup happens at order placement.
     run_lead_generator(broker=broker, now=_now(10, 45))
     assert len(lead_service.get_queued_leads()) == 4
+
+
+def test_lead_generator_respects_max_leads_per_run_cap(env):
+    """Each tick must stop after persisting `lead_generator.max_leads_per_run`
+    leads, even when more enabled instruments could fire. This is the
+    deployment-capital bound: keeps the scheduler tick cheap and bounded."""
+
+    from app.settings import set_setting
+
+    set_setting("lead_generator.max_leads_per_run", 1)
+    set_setting("lead_generator.shuffle_instruments", False)
+
+    broker = _seed_broker(env)
+    result = run_lead_generator(broker=broker, now=_now(10, 30))
+
+    assert result == {"created": 1, "checked": 1}
+    assert len(lead_service.get_queued_leads()) == 1
+
+
+def test_lead_generator_zero_cap_means_unlimited(env):
+    """0 (the sentinel) disables the cap — full pass over all enabled
+    instruments is allowed."""
+
+    from app.settings import set_setting
+
+    set_setting("lead_generator.max_leads_per_run", 0)
+    set_setting("lead_generator.shuffle_instruments", False)
+
+    broker = _seed_broker(env)
+    run_lead_generator(broker=broker, now=_now(10, 30))
+
+    assert len(lead_service.get_queued_leads()) == 2
+
+
+def test_lead_generator_does_not_call_strategy_begin_run(env):
+    """begin_run was removed from the lead generator flow — the strategy
+    call budget is now bounded by `lead_generator.max_leads_per_run` instead.
+    Verify no begin_run invocation is made."""
+
+    _begin_run_calls.clear()
+    broker = _seed_broker(env)
+    run_lead_generator(broker=broker, now=_now(10, 30))
+
+    assert _begin_run_calls == [], (
+        f"lead_generator should not call begin_run; got {_begin_run_calls!r}"
+    )
 
 
 def test_lead_generator_attaches_fno_plan(env):
@@ -526,6 +582,8 @@ def test_order_placer_applies_staleness_decay(env):
     broker.ltp_map["NSE_FO|90111"] = 50.0
     from app.settings import set_setting
     set_setting("breakout.staleness_half_life_min", 30)
+    # Push trade_end_time past the test's clock time so the placer actually runs.
+    set_setting("trade_end_time", "14:00")
 
     from datetime import datetime, timedelta, timezone
     # Stay inside the trading window (10:00-14:00 IST).
@@ -655,7 +713,7 @@ def test_order_placer_opens_trade_with_sl(env):
     with session_scope() as session:
         skipped = session.execute(select(Lead).where(Lead.status == "skipped")).scalars().all()
         assert len(skipped) == 1
-        assert "no affordable contract" in skipped[0].note
+        assert "no CE contracts available" in skipped[0].note
 
 
 def test_order_placer_places_no_sl_when_entry_fails(env):
@@ -820,6 +878,37 @@ def test_order_placer_halts_on_killswitch(env):
     with session_scope() as session:
         assert session.execute(select(Trade)).scalars().first() is None
     assert health_service.last_heartbeat("order_placer").note == "killswitch active"
+
+
+def test_order_placer_skips_after_trade_end_time(env):
+    """After `trade_end_time` (and before `sqoff_time`) the market is still open
+    but the placer must NOT open new trades. trade_tracker keeps tracking open
+    positions and squares them off at sqoff_time, but that's not this test's
+    concern."""
+    from datetime import date
+    from app.settings import set_setting
+
+    broker = _seed_broker(env)
+    broker.ltp_map["NSE_EQ|INE002A01018"] = 3000.0  # spot for divergence check
+    broker.get_funds = lambda: type("_F", (), {"available_margin": 1_000_000.0})()
+
+    # Lead exists from an earlier run; placer must NOT pick it up at 12:00.
+    with session_scope() as session:
+        nifty = session.execute(select(Instrument).where(Instrument.symbol == "NIFTY")).scalars().first()
+        session.add(Lead(
+            instrument_id=nifty.id, underlying_key="NSE_INDEX|Nifty 50",
+            direction="CALL", strategy="test_breakout", signal_type="horizontal_range",
+            signal_level=100.0, confidence=0.9, chart_interval="day", status="queued",
+        ))
+
+    # trade_end_time = 11:00 (set by env fixture), now = 12:00 -> past trade_end,
+    # before sqoff_time (14:00).
+    run_order_placer(broker=broker, now=_now(12, 0))
+
+    with session_scope() as session:
+        assert session.execute(select(Trade)).scalars().first() is None
+    hb = health_service.last_heartbeat("order_placer")
+    assert hb.note == "after trade end time", f"unexpected heartbeat note: {hb.note!r}"
 
 
 def test_order_placer_allows_reentry_after_same_day_closed_trade(env):

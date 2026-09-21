@@ -33,6 +33,14 @@ class Strategy(ABC):
     name: str
     required_interval: str = "day"
 
+    def begin_run(self, max_calls: int) -> None:
+        """Hook the lead generator calls once before a run, with the run-wide
+        call budget read from `llm.max_calls_per_run`. Default is a no-op so
+        stateless strategies don't need to override it. Strategies that fan out
+        one external call per instrument (e.g. the LLM detector) override this
+        to reset their per-run counters, otherwise the cap is silently inert.
+        """
+
     @abstractmethod
     def generate(self, instrument, candles: pd.DataFrame, now) -> list[LeadCandidate]:
         """Analyse `candles` (OHLCV at `required_interval`) for one instrument

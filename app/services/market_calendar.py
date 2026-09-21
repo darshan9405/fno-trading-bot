@@ -45,6 +45,32 @@ def _default_window() -> tuple[time, time]:
     return _parse_time(get_setting("trading_start", "10:00")), _parse_time(get_setting("sqoff_time", "14:00"))
 
 
+def _default_trade_end() -> time:
+    """Hard cutoff after which the order placer stops opening NEW trades.
+
+    Configurable via `trade_end_time`. Falls back to the market-end (sqoff_time)
+    if the configured value is missing/unparseable or falls outside the
+    [start, sqoff_time] window — placing NEW trades after sqoff_time would be
+    nonsense since trade_tracker already squares off at sqoff_time.
+    """
+    raw = get_setting("trade_end_time", None)
+    if raw in (None, ""):
+        return _default_window()[1]
+    try:
+        candidate = _parse_time(raw)
+    except (ValueError, TypeError):
+        log.warning("trade_end_time=%r is unparseable; falling back to sqoff_time", raw)
+        return _default_window()[1]
+    start, end = _default_window()
+    if start <= end and not (start <= candidate <= end):
+        log.warning(
+            "trade_end_time=%s outside [%s, %s]; falling back to sqoff_time",
+            raw, start.strftime("%H:%M"), end.strftime("%H:%M"),
+        )
+        return end
+    return candidate
+
+
 def trading_hours(day: date) -> tuple[time, time] | None:
     """(start, end) for a trading day, else None (weekend or holiday)."""
     if day.weekday() >= 5:
@@ -69,6 +95,23 @@ def is_market_open(now: datetime | None = None) -> bool:
     return start_dt <= now < end_dt
 
 
+def is_trade_placing_window(now: datetime | None = None) -> bool:
+    """True iff the market is open AND `now` is before `trade_end_time`.
+
+    `is_market_open` alone lets the placer run until `sqoff_time`; this narrower
+    window stops NEW entries at `trade_end_time` while `trade_tracker` keeps
+    tracking (and squares off open positions at `sqoff_time`).
+    """
+    now = now or now_ist()
+    hours = trading_hours(now.date())
+    if hours is None:
+        return False
+    start, end = hours
+    start_dt = datetime.combine(now.date(), start, tzinfo=now.tzinfo)
+    trade_end_dt = datetime.combine(now.date(), _default_trade_end(), tzinfo=now.tzinfo)
+    return start_dt <= now < trade_end_dt
+
+
 def session_start(day: date) -> time:
     hours = trading_hours(day)
     return hours[0] if hours else _default_window()[0]
@@ -77,6 +120,11 @@ def session_start(day: date) -> time:
 def session_end(day: date) -> time:
     hours = trading_hours(day)
     return hours[1] if hours else _default_window()[1]
+
+
+def session_trade_end(day: date) -> time:
+    """Hard cutoff for placing new entries. Clamped to the configured window."""
+    return _default_trade_end()
 
 
 def seed_defaults() -> None:

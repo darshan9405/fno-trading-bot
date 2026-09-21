@@ -576,6 +576,7 @@ def test_health_and_config(env, monkeypatch):
     assert r.status_code == 200
     data = r.get_json()["data"]
     assert "heartbeats" in data and "market" in data and "errors" in data
+    assert "llm" in data  # LLM health block surfaced
     for hb in data["heartbeats"].values():  # UI reads hb["note"] on every row
         assert "note" in hb
     assert data["broker"]["configured"] is True
@@ -595,7 +596,7 @@ def test_health_and_config(env, monkeypatch):
     r = client.get("/api/config", headers=_headers(token))
     cfg_data = r.get_json()["data"]
     assert cfg_data["sqoff_time"] == "15:30"
-    assert "breakout.patterns_enabled" in cfg_data
+    assert "llm.enabled" in cfg_data
 
     r = client.put("/api/config", json={"initial_sl_pct": 12.5}, headers=_headers(token))
     assert r.status_code == 200
@@ -603,3 +604,68 @@ def test_health_and_config(env, monkeypatch):
 
     r = client.put("/api/config", json={"not_a_setting": 1}, headers=_headers(token))
     assert r.status_code == 400
+
+
+def test_health_llm_block_when_unconfigured(env, monkeypatch):
+    """With LLM env vars unset, /api/health must still return a valid llm block."""
+    client, token, cfg = env
+    monkeypatch.setattr("app.api.health_api.get_broker", lambda config=None: FakeBroker())
+    from app.config import Config as _Cfg
+    monkeypatch.setattr(_Cfg, "LLM_API_KEY", "", raising=False)
+    monkeypatch.setattr(_Cfg, "LLM_BASE_URL", "", raising=False)
+    monkeypatch.setattr(_Cfg, "LLM_MODEL", "", raising=False)
+    # Reset persistent counters so the assertion is deterministic.
+    from app.strategy.llm_breakout import health as llm_health
+    llm_health.reset()
+
+    r = client.get("/api/health", headers=_headers(token))
+    assert r.status_code == 200
+    llm = r.get_json()["data"]["llm"]
+    assert llm["configured"] is False
+    assert llm["status"] == "unconfigured"
+    assert llm["model"] == ""
+    assert llm["stats"]["calls_total"] == 0
+
+
+def test_health_llm_block_after_success(env, monkeypatch):
+    """After a recorded success, /api/health surfaces status=ok with the model slug."""
+    client, token, cfg = env
+    monkeypatch.setattr("app.api.health_api.get_broker", lambda config=None: FakeBroker())
+    from app.config import Config as _Cfg
+    monkeypatch.setattr(_Cfg, "LLM_API_KEY", "k", raising=False)
+    monkeypatch.setattr(_Cfg, "LLM_BASE_URL", "https://openrouter.ai/api/v1", raising=False)
+    monkeypatch.setattr(_Cfg, "LLM_MODEL", "minimax/minimax-m3", raising=False)
+    from app.strategy.llm_breakout import health as llm_health
+    llm_health.reset()
+    llm_health.record_success()
+    llm_health.record_success()
+
+    r = client.get("/api/health", headers=_headers(token))
+    assert r.status_code == 200
+    llm = r.get_json()["data"]["llm"]
+    assert llm["configured"] is True
+    assert llm["status"] == "ok"
+    assert llm["model"] == "minimax/minimax-m3"
+    assert llm["stats"]["calls_total"] == 2
+    assert llm["stats"]["errors_total"] == 0
+
+
+def test_health_llm_block_after_error(env, monkeypatch):
+    """Last event was an error -> status=error."""
+    client, token, cfg = env
+    monkeypatch.setattr("app.api.health_api.get_broker", lambda config=None: FakeBroker())
+    from app.config import Config as _Cfg
+    monkeypatch.setattr(_Cfg, "LLM_API_KEY", "k", raising=False)
+    monkeypatch.setattr(_Cfg, "LLM_BASE_URL", "https://openrouter.ai/api/v1", raising=False)
+    monkeypatch.setattr(_Cfg, "LLM_MODEL", "minimax/minimax-m3", raising=False)
+    from app.strategy.llm_breakout import health as llm_health
+    llm_health.reset()
+    llm_health.record_success()
+    llm_health.record_error("HTTP 500")
+
+    r = client.get("/api/health", headers=_headers(token))
+    assert r.status_code == 200
+    llm = r.get_json()["data"]["llm"]
+    assert llm["status"] == "error"
+    assert llm["stats"]["errors_total"] == 1
+    assert llm["stats"]["last_error"] == "HTTP 500"

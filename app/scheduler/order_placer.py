@@ -36,8 +36,13 @@ def run_order_placer(broker=None, now=None):
     now = now or health_service.now_ist()
 
     try:
-        if not market_calendar.is_market_open(now):
-            health_service.touch_heartbeat("order_placer", "outside trading window")
+        if not market_calendar.is_trade_placing_window(now):
+            # Distinguish "before market open" from "after trade_end_time" so the
+            # UI can show why the bot stopped placing orders.
+            note = "outside trading window"
+            if market_calendar.is_market_open(now):
+                note = "after trade end time"
+            health_service.touch_heartbeat("order_placer", note)
             return
         if is_killswitch_active():
             health_service.touch_heartbeat("order_placer", "killswitch active")
@@ -156,7 +161,7 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
         expiry_cached, contracts_cached = cached
         if expiry_cached is not None:
             expiry = expiry_cached
-            contracts = contracts_cached or contracts
+            contracts = contracts_cached
         else:
             # Cache recorded "no expiry for this underlying": don't bypass upstream state change.
             contracts = broker.get_option_contracts(lead.underlying_key, expiry=expiry)
@@ -164,6 +169,10 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
         contracts = broker.get_option_contracts(lead.underlying_key, expiry=expiry)
     wanted = "CE" if lead.direction == "CALL" else "PE"
     matches = [c for c in contracts if c.instrument_type == wanted]
+    if not matches:
+        mark_lead(session, lead, "skipped",
+                  note=f"no {wanted} contracts available for {lead.underlying_key}")
+        return
     candidates = list(contract_service.walk_candidates(matches, lead.direction, ltp, max_depth))
     premiums = broker.get_ltp([c.instrument_key for c in candidates]) or {}
     contract, cheapest_cost, evaluated = contract_service.select_affordable(candidates, premiums, available_margin, lots)
@@ -171,6 +180,8 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
         note = "no affordable contract within margin depth"
         if evaluated and cheapest_cost is not None and available_margin is not None:
             note = f"insufficient margin: need ≥ ₹{cheapest_cost:,.0f}, available ₹{available_margin:,.0f}"
+        elif not evaluated:
+            note = f"no live LTP for {wanted} candidates of {lead.underlying_key}"
         mark_lead(session, lead, "skipped", note=note)
         return
 
@@ -267,31 +278,48 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
             intended_type=sl_order_type,
             entry_price=entry_price,
         )
-        if not ok:
-            log.critical(
-                "order_placer: SL order mismatch at broker — %s "
-                "(sl_id=%s intended_trigger=%.2f intended_type=%s entry=%.2f)",
-                err_msg, sl_order_id, initial_sl, sl_order_type, entry_price,
-            )
-            try:
-                sqoff_id = trade_service.place_defensive_sqoff(
-                    broker, contract.instrument_key, quantity, tag, limit_premium_pct,
-                )
-                log.warning("order_placer: defensive sqoff %s placed after SL mismatch", sqoff_id)
-            except Exception as sqoff_e:
-                log.error(
-                    "order_placer: defensive sqoff after SL mismatch also failed: %s "
-                    "— manual intervention required. entry_order_id=%s sl_order_id=%s",
-                    sqoff_e, entry_order_id, sl_order_id,
-                )
-            raise BrokerError(
-                f"SL order at broker failed verification: {err_msg}; "
-                f"sqoff attempted for {contract.instrument_key} x{quantity}"
-            )
-    except BrokerError:
-        raise
     except Exception as e:
-        log.exception("order_placer: SL verification raised unexpectedly — proceeding")
+        # Any non-BrokerError exception means we cannot confirm the SL is in
+        # place at the broker. The entry is already filled, so we MUST defensively
+        # sqoff and abort trade creation — never create an unprotected trade.
+        log.exception("order_placer: SL verification raised — squaring off defensively")
+        try:
+            sqoff_id = trade_service.place_defensive_sqoff(
+                broker, contract.instrument_key, quantity, tag, limit_premium_pct,
+            )
+            log.warning("order_placer: defensive sqoff %s placed after SL verify exception", sqoff_id)
+        except Exception as sqoff_e:
+            log.error(
+                "order_placer: defensive sqoff after SL verify exception also failed: %s "
+                "— manual intervention required. entry_order_id=%s sl_order_id=%s",
+                sqoff_e, entry_order_id, sl_order_id,
+            )
+        raise BrokerError(
+            f"SL verification raised: {e}; "
+            f"sqoff attempted for {contract.instrument_key} x{quantity}"
+        ) from e
+
+    if not ok:
+        log.critical(
+            "order_placer: SL order mismatch at broker — %s "
+            "(sl_id=%s intended_trigger=%.2f intended_type=%s entry=%.2f)",
+            err_msg, sl_order_id, initial_sl, sl_order_type, entry_price,
+        )
+        try:
+            sqoff_id = trade_service.place_defensive_sqoff(
+                broker, contract.instrument_key, quantity, tag, limit_premium_pct,
+            )
+            log.warning("order_placer: defensive sqoff %s placed after SL mismatch", sqoff_id)
+        except Exception as sqoff_e:
+            log.error(
+                "order_placer: defensive sqoff after SL mismatch also failed: %s "
+                "— manual intervention required. entry_order_id=%s sl_order_id=%s",
+                sqoff_e, entry_order_id, sl_order_id,
+            )
+        raise BrokerError(
+            f"SL order at broker failed verification: {err_msg}; "
+            f"sqoff attempted for {contract.instrument_key} x{quantity}"
+        )
 
     trade = trade_service.create_trade(
         session,
@@ -314,7 +342,7 @@ def process_lead(session, broker, lead: Lead, sl_pct: float, max_div: float, min
     trade_service.record_order(
         session, order_id=entry_order_id, trade_id=trade.id, order_type="LIMIT", transaction_type="BUY",
         instrument_token=contract.instrument_key, quantity=quantity, tag=tag, average_price=entry_price,
-        tradingsymbol=contract.trading_symbol, filled_quantity=quantity,
+        tradingsymbol=contract.trading_symbol, filled_quantity=quantity, status="complete",
     )
     trade_service.record_order(
         session, order_id=sl_order_id, trade_id=trade.id, order_type=sl_order_type, transaction_type="SELL",

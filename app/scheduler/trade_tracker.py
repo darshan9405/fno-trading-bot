@@ -218,12 +218,15 @@ def _reconcile_position(session, broker, trade: Trade) -> None:
         return
     from app.services.recon_service import _is_held, _candidate_exit, _min_age_minutes
     from app.services.health_service import utcnow as _now
-    if (trade.last_broker_check_at or trade.entry_time) is None:
-        return
-    age_min = (_now() - (trade.last_broker_check_at or trade.entry_time)).total_seconds() / 60.0
+    # Use `entry_time` (not `last_broker_check_at`) so the skip window reflects
+    # actual broker propagation delay after the entry fill. `last_broker_check_at`
+    # is rewritten to `utcnow()` on every tracker tick, which would otherwise make
+    # `age_min ≈ 0` always and either skip every fresh trade or skip none of them
+    # depending on the SL presence — neither of which is what we want.
+    age_min = (_now() - trade.entry_time).total_seconds() / 60.0
     # We typically reconciled already via run_reconciler; here we only handle
     # the *per-trade tick* fast-path. Skip if too fresh.
-    if age_min < _min_age_minutes() and trade.sl_order_id is None:
+    if age_min < _min_age_minutes():
         return
     if _is_held(broker, trade):
         return

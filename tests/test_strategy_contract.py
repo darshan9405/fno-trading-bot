@@ -54,7 +54,13 @@ def db_env(tmp_path):
 
 @pytest.mark.parametrize("name", sorted(StrategyRegistry.all()))
 def test_strategy_contract(db_env, name):
-    strategy = StrategyRegistry.get(name)()
+    # The LLM breakout detector requires a client. Inject a stub that returns
+    # no signals so the rest of the contract still runs without a real API key.
+    if name == "llm_breakout":
+        from app.strategy.llm_breakout import StubClient
+        strategy = StrategyRegistry.get(name)(client=StubClient(responses=[{"signals": []}]))
+    else:
+        strategy = StrategyRegistry.get(name)()
     assert strategy.name == name
 
     leads = strategy.generate(
@@ -76,5 +82,5 @@ def test_unknown_strategy_raises():
         StrategyRegistry.get("does_not_exist")
 
 
-def test_registered_strategies_include_breakout():
-    assert "breakout" in StrategyRegistry.all()
+def test_registered_strategies_include_llm_breakout():
+    assert "llm_breakout" in StrategyRegistry.all()

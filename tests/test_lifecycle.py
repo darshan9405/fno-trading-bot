@@ -241,6 +241,7 @@ def test_order_placer_persists_lifecycle_active(env):
 
     set_setting("strategy", "life_test_breakout")
     set_setting("trading_start", "10:00")
+    set_setting("trade_end_time", "11:00")
     set_setting("sqoff_time", "14:00")
 
     broker = _BookBroker(ltp_map={"NSE_INDEX|Nifty 50": 100.0, "NSE_FO|84123": 100.0})

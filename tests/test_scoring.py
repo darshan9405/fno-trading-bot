@@ -1,8 +1,10 @@
 """Composite scoring pipeline tests.
 
-Covers `app.strategy.scoring` (composite math, weight maps, soft-penalty),
-`app.services.score_decay` (staleness curve), and `app.services.calibration`
-(historical win-rate gating + multiplier).
+Covers `app.strategy.scoring` (composite math, weight maps, soft-penalty) and
+`app.services.score_decay` (staleness curve). The math-breakout detectors that
+previously exercised `PatternSignal` and `rank_signals` were removed; the LLM
+detector builds `ComponentScores` directly via `to_lead_components` and is
+covered in `tests/test_llm_breakout.py`.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -16,8 +18,6 @@ from app.strategy.scoring import (
     available_weight_map,
     composite,
 )
-from app.strategy.breakout.signals import PatternSignal
-from app.strategy.breakout.detector import rank_signals
 from app.services.score_decay import decay_factor, decayed_score
 
 
@@ -74,64 +74,6 @@ def test_components_with_extra_merges_dict():
     again = c.with_extra(iv=0.9)  # override
     assert again.extras["iv"] == 0.9
     assert again.extras["oi"] == 0.4  # previous value preserved
-
-
-# --- PatternSignal + __post_init__ -----------------------------------------
-
-
-def test_pattern_signal_preserves_confidence_when_no_evidence():
-    # Synthetic edge case: caller hasn't filled components. We must NOT
-    # overwrite the legacy `confidence` value (`__post_init__` is conservative).
-    s = PatternSignal("CALL", "x", 100.0, 0.5)
-    assert s.confidence == 0.5  # unchanged
-
-
-def test_pattern_signal_recomputes_when_components_have_evidence():
-    s = PatternSignal(
-        "CALL", "horizontal_range", 100.0, 0.5,
-        ComponentScores(pattern_fit=0.8, volume=0.7, trend_alignment=0.5, proximity=1.0, structure=0.8),
-    )
-    expected = (0.8 * 0.40 + 0.7 * 0.25 + 0.5 * 0.15 + 1.0 * 0.10 + 0.8 * 0.10)
-    expected = round(expected, 4)
-    # floor = min(0.8, 0.7, 0.5) = 0.5 >= 0.4 -> no soft-penalty
-    assert s.confidence == pytest.approx(expected)
-
-
-# --- rank_signals ---------------------------------------------------------
-
-
-def test_rank_signals_returns_top_n():
-    from app.strategy.breakout.signals import PatternSignal as Sig
-
-    sigs = [
-        Sig("CALL", "x", 100.0, 0.6),
-        Sig("PUT", "y", 99.0, 0.9),
-        Sig("PUT", "z", 98.0, 0.7),
-    ]
-    ranked = rank_signals(sigs, top_k=2, min_score=0.5)
-    assert len(ranked) == 2
-    assert ranked[0].confidence == 0.9
-    assert ranked[1].confidence == 0.7
-
-
-def test_rank_signals_filters_below_min_score():
-    from app.strategy.breakout.signals import PatternSignal as Sig
-
-    sigs = [Sig("CALL", "x", 100.0, 0.4), Sig("PUT", "y", 99.0, 0.9)]
-    ranked = rank_signals(sigs, top_k=3, min_score=0.5)
-    assert len(ranked) == 1
-    assert ranked[0].direction == "PUT"
-
-
-def test_rank_signals_top_k_1_equivalent_to_best_signal():
-    from app.strategy.breakout.signals import PatternSignal as Sig
-
-    from app.strategy.breakout.detector import best_signal
-
-    sigs = [Sig("CALL", "x", 100.0, 0.4), Sig("PUT", "y", 99.0, 0.9)]
-    ranked = rank_signals(sigs, top_k=1, min_score=0.5)
-    assert best_signal(sigs, min_confidence=0.5) is not None
-    assert ranked[0].direction == best_signal(sigs, min_confidence=0.5).direction
 
 
 # --- score_decay ---------------------------------------------------------
@@ -194,33 +136,25 @@ def test_calibration_multiplier_neutral_when_alpha_zero():
     assert calibration_multiplier("x", "NSE_INDEX|Nifty 50", alpha=0.0) == 1.0
 
 
-# --- end-to-end: detector emits components -------------------------------
+# --- LLM breakout components ---------------------------------------------
 
 
-def test_horizontal_detector_emits_components_and_confidence():
-    import pandas as pd
+def test_llm_components_volume_confirmed_true_reflects_in_score():
+    """LLM detector emits components via `to_lead_components`; ensure the
+    volume dimension is propagated to the composite scorer."""
+    from app.strategy.llm_breakout.detector import to_lead_components
 
-    closes = [105.0] * 65 + [110.2]
-    highs = [110.0] * 65 + [111.0]
-    lows = [100.0] * 65 + [105.0]
-    idx = pd.date_range("2026-01-01", periods=len(closes), freq="D")
-    df = pd.DataFrame(
-        {"open": closes, "high": highs, "low": lows, "close": closes, "volume": 1000.0},
-        index=idx,
+    confirmed = to_lead_components(
+        {"direction": "CALL", "pattern_type": "horizontal_range",
+         "trigger_price": 100.0, "confidence": 0.8,
+         "volume_confirmed": True, "rationale": "ok"}
     )
-    from app.strategy.breakout.horizontal import detect_horizontal
-
-    signals = detect_horizontal(df, lookback=60, proximity_pct=0.5, min_touches=1)
-    assert signals, "expected at least one horizontal_range signal"
-    s = signals[0]
-    assert s.direction == "CALL"
-    assert s.signal_level == 110.0
-    # Components populated (Tier-1 contract).
-    assert s.components.pattern_fit > 0.0
-    assert s.components.proximity == 1.0
-    assert s.components.structure > 0.0
-    # Confidence recomputed via composite in __post_init__.
-    expected_pattern = 0.40 * s.components.pattern_fit + 0.25 * s.components.volume + \
-                       0.15 * s.components.trend_alignment + 0.10 * s.components.proximity + \
-                       0.10 * s.components.structure
-    assert s.confidence == pytest.approx(round(expected_pattern, 4), abs=0.01)
+    not_confirmed = to_lead_components(
+        {"direction": "CALL", "pattern_type": "horizontal_range",
+         "trigger_price": 100.0, "confidence": 0.8,
+         "volume_confirmed": False, "rationale": "ok"}
+    )
+    assert confirmed["volume"] == 1.0
+    assert not_confirmed["volume"] == 0.0
+    assert composite(ComponentScores(**{k: v for k, v in confirmed.items() if k != "extras"}, extras=confirmed["extras"])) > \
+           composite(ComponentScores(**{k: v for k, v in not_confirmed.items() if k != "extras"}, extras=not_confirmed["extras"]))

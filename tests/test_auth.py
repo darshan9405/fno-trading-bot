@@ -29,6 +29,7 @@ def auth_env(tmp_path):
     cfg.UPSTOX_CLIENT_SECRET = "client-secret"
     cfg.UPSTOX_REDIRECT_URI = "http://localhost:8000/api/auth/upstox/callback"
     cfg.UPSTOX_API_VERSION = "2.0"
+    cfg.ALLOWED_UPSTOX_USER_ID = "usr-1"
 
     auth_module.configure(cfg)
     from app.auth import UpstoxTokenStore
@@ -237,3 +238,75 @@ def test_logout_revokes_refresh(auth_env, monkeypatch):
 
     assert client.post("/api/auth/logout", headers={"X-Refresh-Token": refresh}).status_code == 200
     assert client.post("/api/auth/refresh", headers={"X-Refresh-Token": refresh}).status_code == 401
+
+
+def test_sso_callback_rejects_unauthorized_user(auth_env, monkeypatch):
+    client, cfg = auth_env
+    from app.auth import UpstoxTokenStore
+
+    class FakeLoginApi:
+        def __init__(self, api_client=None):
+            pass
+
+        def token(self, api_version, **kwargs):
+            return SimpleNamespace(access_token="upstox-access", user_id="intruder", user_name="Mallory")
+
+    monkeypatch.setattr("upstox_client.LoginApi", FakeLoginApi)
+    UpstoxTokenStore._loaded = True
+    UpstoxTokenStore._token = None
+
+    resp = client.get("/api/auth/upstox/callback?code=evil")
+    assert resp.status_code == 403
+    body = resp.get_json()
+    assert body["error"]["code"] == "user_not_allowed"
+
+    # No cookies, no Upstox token persisted, no bootstrap code issued.
+    assert not any(c.startswith("upstox_at=") for c in resp.headers.getlist("Set-Cookie"))
+    assert "bootstrap" not in resp.headers.get("Location", "")
+    assert UpstoxTokenStore.get() is None
+
+
+def test_refresh_rejects_unauthorized_user(auth_env, monkeypatch):
+    client, cfg = auth_env
+    from app.auth import UpstoxTokenStore
+
+    class FakeLoginApi:
+        def __init__(self, api_client=None):
+            pass
+
+        def token(self, api_version, **kwargs):
+            return SimpleNamespace(access_token="upstox-access", user_id="usr-1", user_name="Trader")
+
+    monkeypatch.setattr("upstox_client.LoginApi", FakeLoginApi)
+    UpstoxTokenStore._loaded = True
+    UpstoxTokenStore._token = None
+
+    # Issue a refresh token for the allowed user.
+    loc = client.get("/api/auth/upstox/callback?code=code-r").headers["Location"]
+    boot = parse_qs(urlparse(loc).query)["bootstrap"][0]
+    refresh = client.post("/api/auth/bootstrap", json={"code": boot}).get_json()["data"]["refresh_token"]
+
+    # Simulate the allowlist tightening (or the row having been written for
+    # someone else) by flipping the stored user_id on the refresh row
+    # identified by its token hash.
+    from app.auth import hash_token
+    from app.db import session_scope
+    from app.models import AuthToken
+    from sqlalchemy import select
+
+    with session_scope() as session:
+        row = session.execute(
+            select(AuthToken).where(
+                AuthToken.token_type == "refresh",
+                AuthToken.token_hash == hash_token(refresh),
+            )
+        ).scalar_one()
+        row.user_id = "intruder"
+
+    # Refresh now fails 403 AND the stored refresh token is revoked.
+    resp = client.post("/api/auth/refresh", headers={"X-Refresh-Token": refresh})
+    assert resp.status_code == 403
+    assert resp.get_json()["error"]["code"] == "user_not_allowed"
+
+    follow_up = client.post("/api/auth/refresh", headers={"X-Refresh-Token": refresh})
+    assert follow_up.status_code == 401

@@ -113,6 +113,13 @@ def create_app(config: Config | None = None) -> Flask:
             429,
         )
 
+    @app.errorhandler(403)
+    def forbidden(_):
+        return (
+            jsonify({"status": "error", "error": {"code": "forbidden", "message": "Forbidden."}}),
+            403,
+        )
+
     from app.api import register_blueprints
 
     register_blueprints(app)

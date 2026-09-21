@@ -9,14 +9,17 @@ from upstox_client.rest import ApiException
 from app.auth import (
     ACCESS_TOKEN_COOKIE,
     REFRESH_TOKEN_COOKIE,
+    USER_NOT_ALLOWED_CODE,
     UpstoxTokenStore,
     _cfg,
+    assert_allowed_user,
     create_bootstrap_code,
     find_valid_refresh,
     generate_refresh_token,
     issue_access_jwt,
     redeem_bootstrap_code,
     request_token,
+    revoke_refresh,
     rotate_refresh,
     save_refresh_token,
     verify_access_jwt,
@@ -117,6 +120,23 @@ def upstox_callback():
 
     user_id = getattr(resp, "user_id", None) or "single-user"
 
+    try:
+        assert_allowed_user(user_id)
+    except Exception:
+        log.warning("SSO rejected: user_id=%s is not in the allowlist", user_id)
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "error": {
+                        "code": USER_NOT_ALLOWED_CODE,
+                        "message": "This account is not permitted to access the trading bot.",
+                    },
+                }
+            ),
+            403,
+        )
+
     UpstoxTokenStore.set(access_token)
     try:
         get_broker(config).set_access_token(access_token)
@@ -166,6 +186,25 @@ def refresh():
     row = find_valid_refresh(old_refresh)
     if row is None:
         return jsonify({"status": "error", "error": {"code": "refresh_invalid", "message": "Refresh token invalid or expired."}}), 401
+
+    try:
+        assert_allowed_user(row.user_id)
+    except Exception:
+        log.warning("refresh rejected: stored user_id=%s is not in the allowlist", row.user_id)
+        if old_refresh:
+            revoke_refresh(old_refresh)
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "error": {
+                        "code": USER_NOT_ALLOWED_CODE,
+                        "message": "This account is not permitted to access the trading bot.",
+                    },
+                }
+            ),
+            403,
+        )
 
     new_refresh = rotate_refresh(old_refresh, row.user_id)
     access_jwt = issue_access_jwt(row.user_id)

@@ -38,6 +38,12 @@ _jobs: dict[str, "JobState"] = {}
 # The most recent job that ended up running (vs. just getting the 409
 # short-circuit). Lets `_active_job()` answer "is something in flight?" in O(1).
 _active_id: str | None = None
+# Process-wide gate: True iff a lead-generation run is in flight — regardless of
+# whether it was triggered by APScheduler (interval job) or the manual "Generate
+# now" UI endpoint. Both paths acquire/release this flag so they cannot overlap
+# even though APScheduler's `max_instances=1` only blocks two scheduler ticks
+# (not a manual run that arrives while a scheduler tick is mid-flight).
+_generator_active: bool = False
 
 
 @dataclass
@@ -85,37 +91,116 @@ def _active_job() -> "JobState | None":
     return job
 
 
+def is_generator_active() -> bool:
+    """True iff any lead-generation run is in flight (manual or scheduler)."""
+    return _generator_active
+
+
+def acquire_generator_lock() -> bool:
+    """Claim the single-job slot. Returns False if another run is in flight.
+
+    Callers MUST pair this with ``release_generator_lock()`` in a try/finally
+    so the flag is always released, even when run_lead_generator raises.
+    """
+    global _generator_active
+    with _lock:
+        if _generator_active:
+            return False
+        _generator_active = True
+        return True
+
+
+def release_generator_lock() -> None:
+    global _generator_active
+    with _lock:
+        _generator_active = False
+
+
+def _finish_job(job: JobState, status: JobStatus, result: dict | None = None, error: str | None = None) -> None:
+    """Stamps job terminal state, clears the active-id pointer, AND releases
+    the generator lock — all under a single `_lock` acquisition so a racing
+    `submit_manual_job` doesn't see an inconsistent view (lock released +
+    `_active_id` still set).
+
+    Precondition: the caller MUST hold the generator lock. The
+    `result is None` short-circuit path in `_run_in_thread` is the exception;
+    it calls `_mark_done_no_lock` instead because the lock belongs to the
+    OTHER run that preempted us.
+    """
+    global _generator_active
+    with _lock:
+        job.status = status
+        if result is not None:
+            job.result = result
+        if error is not None:
+            job.error = error
+        job.finished_at = _now()
+        _set_active(None)
+        _generator_active = False
+
+
+def _mark_done_no_lock(job: JobState, status: JobStatus, error: str | None = None) -> None:
+    """Stamp a job's terminal state WITHOUT touching the generator lock.
+
+    Used by `_run_in_thread` when `run_lead_generator` returned None — meaning
+    the inner acquire failed because a different run (e.g. a scheduler tick)
+    already holds the lock. Releasing `_generator_active` here would silently
+    clear the OTHER run's flag and let two runs execute concurrently."""
+    with _lock:
+        job.status = status
+        if error is not None:
+            job.error = error
+        job.finished_at = _now()
+        _set_active(None)
+
+
 def _run_in_thread(job: JobState) -> None:
     from app.scheduler.lead_generator import run_lead_generator
 
+    # The generator lock is acquired inside `run_lead_generator` itself — we
+    # must NOT re-acquire it here or the inner acquire returns False and the
+    # manual run silently exits with no leads. If another run started between
+    # `submit_manual_job`'s pre-flight check and our entry into this thread,
+    # `run_lead_generator` returns None; surface that as a busy error.
     try:
-        result = run_lead_generator(force=True) or {}
+        result = run_lead_generator(force=True)
     except Exception as e:
         log.exception("manual lead-generator job %s crashed", job.id)
-        with _lock:
-            job.status = "error"
-            job.error = str(e) or e.__class__.__name__
-            job.finished_at = _now()
-            _set_active(None)
+        _finish_job(job, "error", error=str(e) or e.__class__.__name__)
         return
 
-    with _lock:
-        job.finished_at = _now()
-        if result.get("error"):
-            job.status = "error"
-            job.error = str(result["error"])
-        else:
-            job.status = "done"
-            job.result = {"generated": result.get("created", 0), "checked": result.get("checked", 0)}
-        _set_active(None)
+    if result is None:
+        # Lock not acquired → another run still holds it → don't touch the
+        # generator flag (the other run owns it); just record the error.
+        _mark_done_no_lock(job, "error", error="lead_generation_busy")
+        return
+
+    if result.get("error"):
+        _finish_job(job, "error", error=str(result["error"]))
+    else:
+        _finish_job(
+            job,
+            "done",
+            result={"generated": result.get("created", 0), "checked": result.get("checked", 0)},
+        )
 
 
 def submit_manual_job() -> tuple[JobState, bool]:
     """Start a manual lead-generation run.
 
     Returns ``(job, started)`` — ``started=False`` means another run was already
-    in flight and ``job`` is that existing job (caller should respond 409).
+    in flight (either a prior manual submit still running, or an APScheduler
+    tick executing ``run_lead_generator`` right now). The caller should respond
+    409 in that case so the UI can attach to the in-flight job's status.
     """
+    if is_generator_active():
+        existing = _active_job() or JobState(
+            id="scheduler",
+            status="running",
+            submitted_at=_now(),
+        )
+        return existing, False
+
     with _lock:
         existing = _active_job()
         if existing is not None:

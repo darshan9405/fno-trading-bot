@@ -7,6 +7,6 @@ from app.strategy.base import (
     register_strategy,
 )
 
-import app.strategy.breakout  # noqa: F401  (register built-in strategies)
+import app.strategy.llm_breakout  # noqa: F401  (register built-in strategy)
 
 __all__ = ["LeadCandidate", "Strategy", "StrategyRegistry", "register_strategy"]

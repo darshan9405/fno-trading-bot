@@ -8,8 +8,12 @@ from app.db import session_scope
 from app.models import Setting
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "strategy": "breakout",
+    "strategy": "llm_breakout",
     "trading_start": "10:00",
+    # Hard cutoff after which the order placer stops opening NEW trades.
+    # Existing positions are still managed by trade_tracker (squared off at
+    # sqoff_time). Must be <= sqoff_time.
+    "trade_end_time": "11:00",
     "sqoff_time": "14:00",
     "initial_sl_pct": 10.0,
     "trail_activate_pct": 20.0,
@@ -32,30 +36,34 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "scheduler.lead_cleanup_seconds": 30,
     "leads.retention_hours_queued": 24,
     "leads.retention_hours_processed": 168,
+    # Lead generator run bounds (configurable from the UI via /api/config).
+    # The generator iterates a shuffled slice of the enabled-instrument list and
+    # stops as soon as it has persisted this many leads — keeps the scheduler
+    # tick fast and respects limited deployment capital. 0 disables the cap.
+    "lead_generator.max_leads_per_run": 5,
+    "lead_generator.shuffle_instruments": True,
+    # Concurrent worker threads that fetch candles + run the strategy in
+    # parallel. Each worker gets its own strategy instance (the LLM detector
+    # keeps per-instance call state). UpstoxBroker's per-process rate limiter
+    # is thread-safe so concurrent candle requests stay under budget. Capped
+    # at 1 minimum to keep the test environment deterministic.
+    "lead_generator.max_workers": 4,
     # Reconciliation: read broker truth (get_positions + get_order_book) and close
     # DB trades whose position is gone. Runs every 60s by default. Trades younger
     # than `reconciler_min_age_minutes` are skipped to give Upstox time to
     # propagate fresh entries.
     "scheduler.reconciler_seconds": 60,
     "scheduler.reconciler_min_age_minutes": 1,
-    "breakout.patterns_enabled": ["horizontal_range", "trendline", "triangle", "flag_pennant", "head_shoulders", "volume_breakout"],
-    "breakout.min_confidence": 0.7,
-    "breakout.lookback_days": 60,
-    "breakout.swing_k": 3,
-    "breakout.proximity_pct": 0.5,
-    "breakout.min_touches": 1,
-    "breakout.min_trendline_points": 4,
-    "breakout.pole_pct": 3.0,
-    # Volume confirmation (Durgia 2025): spike >= multiplier x rolling avg volume.
-    "breakout.volume_multiplier": 4.0,
-    "breakout.volume_window": 20,
-    "breakout.volume_lookback": 5,
-    "breakout.require_volume_spike": True,
-    "breakout.volume_boost": 0.3,
-    # Tier-2: emit the top-N signals per instrument (previously only top-1).
-    "breakout.top_k_per_instrument": 2,
-    # Market-alignment filter: "off" or "nifty_sma20" (trade with the NIFTY trend).
-    "breakout.market_alignment": "off",
+    # LLM breakout detector (replaces the math-based detectors entirely).
+    # `llm.enabled` is the master switch. When False, no leads are generated.
+    # The other knobs are interpolated into the LLM's system prompt at call
+    # time, so tuning them in the DB affects the next run.
+    "llm.enabled": True,
+    "llm.lookback_candles": 250,            # 200-250 daily bars to slice into the prompt
+    "llm.min_confidence": 0.7,              # floor for LLM-reported confidence
+    "llm.volume_multiplier": 4.0,           # passed to the LLM in the prompt (also used by validator band)
+    "llm.temperature": 0.2,                 # OpenAI-compat sampling temperature
+    "llm.max_calls_per_run": 50,            # hard cap so a slow LLM can't block the scheduler tick
     # Tier-4 staleness: half-life (minutes) of queued lead confidence decay; 0 disables.
     "breakout.staleness_half_life_min": 0,
     # Tier-4 calibration: alpha multiplier applied to historical win-rate; 0 disables.
@@ -76,6 +84,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
 ENV_OVERRIDE_SETTINGS = {
     "trading_start": Config.TRADING_START,
+    "trade_end_time": Config.TRADE_END_TIME,
     "sqoff_time": Config.SQOFF_TIME,
 }
 

@@ -5,6 +5,11 @@ Drives S1 (lead generator) -> S3 (order placer) -> S2 (trade tracker) with a
 simulated weekday clock and a test-only SimBroker (scripted fills). Validates
 the whole pipeline offline — no real orders.
 
+The LLM breakout detector is stubbed via `app.strategy.llm_breakout.StubClient`
+so the dry run has no external API dependency. The stub is wired in by
+monkey-patching the strategy's default client builder before the lead
+generator instantiates the strategy.
+
 Usage:
     python scripts/dry_run.py --scenario profit      # price rises -> trailing -> 14:00 square-off
     python scripts/dry_run.py --scenario sl_hit     # price falls -> stop-loss hit
@@ -20,7 +25,6 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import numpy as np
 import pandas as pd
 
 from sim_broker import SimBroker
@@ -33,6 +37,7 @@ from app.scheduler.lead_generator import run_lead_generator
 from app.scheduler.order_placer import run_order_placer
 from app.scheduler.trade_tracker import run_trade_tracker
 from app.settings import set_setting
+from app.strategy.llm_breakout import StubClient
 
 IST = ZoneInfo("Asia/Kolkata")
 DAY = datetime(2026, 9, 7, 0, 0, tzinfo=IST)  # Monday
@@ -43,16 +48,21 @@ def _now(hour: int, minute: int = 0) -> datetime:
 
 
 def _range_candles(underlying: str) -> pd.DataFrame:
-    """65 bars in a tight 95-105 range + today's close at 105.2 -> CALL breakout."""
-    n = 65
-    idx = pd.date_range("2026-06-01", periods=n + 1, freq="D")
-    highs = [105.0] * n + [106.0]
-    lows = [95.0] * n + [101.0]
-    closes = [100.0] * n + [105.2]
-    opens = [100.0] * n + [105.0]
-    volume = [1000.0] * (n + 1)
-    return pd.DataFrame({"open": opens, "high": highs, "low": lows,
-                         "close": closes, "volume": volume, "oi": 1e6}, index=idx)
+    """260 bars: long 95-105 range + today's close just above 105 -> CALL breakout.
+
+    The LLM stub below responds with a horizontal_range CALL signal at 105.0.
+    """
+    n = 260
+    idx = pd.date_range("2025-01-01", periods=n, freq="D")
+    highs = [105.0] * (n - 1) + [106.0]
+    lows = [95.0] * (n - 1) + [100.0]
+    closes = [100.0] * (n - 1) + [105.2]
+    opens = [100.0] * (n - 1) + [105.0]
+    volume = [1000.0] * n
+    return pd.DataFrame(
+        {"open": opens, "high": highs, "low": lows, "close": closes, "volume": volume},
+        index=idx,
+    )
 
 
 def _option_path(scenario: str):
@@ -66,6 +76,27 @@ def _option_path(scenario: str):
     return profit if scenario == "profit" else sl_hit
 
 
+def _install_llm_stub() -> None:
+    """Patch the strategy's default-client builder so it returns our StubClient.
+
+    The strategy instantiates its client lazily inside `generate()`, so this
+    patch is picked up by the next call.
+    """
+    import app.strategy.llm_breakout.client as _client_mod
+
+    stub = StubClient(responses=[
+        {"signals": [{
+            "direction": "CALL",
+            "pattern_type": "horizontal_range",
+            "trigger_price": 105.0,
+            "confidence": 0.8,
+            "volume_confirmed": True,
+            "rationale": "dry_run fixture: horizontal_range CALL",
+        }]}
+    ])
+    _client_mod.build_default_client = lambda: stub  # type: ignore[assignment]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--scenario", choices=["profit", "sl_hit"], default="profit")
@@ -76,16 +107,21 @@ def main() -> int:
     dispose()
     create_app(cfg)
 
-    set_setting("strategy", "breakout")
+    _install_llm_stub()
+
+    set_setting("strategy", "llm_breakout")
     set_setting("trading_start", "10:00")
+    set_setting("trade_end_time", "11:00")
     set_setting("sqoff_time", "14:00")
-    set_setting("breakout.require_volume_spike", False)
-    set_setting("breakout.volume_boost", 0.0)
-    set_setting("breakout.min_confidence", 0.6)
+    set_setting("llm.enabled", True)
+    set_setting("llm.min_confidence", 0.6)
+    set_setting("llm.volume_multiplier", 4.0)
+    set_setting("llm.lookback_candles", 250)
+    set_setting("max_lead_price_divergence_pct", 0.5)
     set_setting("market_calendar_last_sync_date", "2026-09-07")
 
     underlying = "NSE_INDEX|Nifty 50"
-    expiry = date.today() + timedelta(days=30)  # comfortably >= min_days_to_expiry
+    expiry = date.today() + timedelta(days=30)
     with session_scope() as s:
         s.add(Instrument(symbol="NIFTY", exchange="NSE", segment="NSE_INDEX",
                          spot_instrument_key=underlying, instrument_token="26000",
@@ -121,7 +157,7 @@ def main() -> int:
         broker.set_ltps({"NSE_FO|84123": path(minute)})
         run_trade_tracker(broker=broker, now=_now(hh, mm))
 
-    run_trade_tracker(broker=broker, now=_now(14, 0))  # ensure square-off
+    run_trade_tracker(broker=broker, now=_now(14, 0))
 
     with session_scope() as s:
         trades = list(s.execute(__import__("sqlalchemy").select(Trade)).scalars())

@@ -23,6 +23,7 @@ import jwt
 from cryptography.fernet import Fernet, InvalidToken
 from flask import jsonify, request
 from sqlalchemy import select
+from werkzeug.exceptions import Forbidden
 
 from app.config import Config
 from app.db import session_scope
@@ -34,6 +35,9 @@ REFRESH_TOKEN_COOKIE = "upstox_rt"
 IST = ZoneInfo("Asia/Kolkata")
 # Upstox access tokens expire at 3:30 AM IST the following day.
 UPSTOX_TOKEN_RESET_IST = time(3, 30)
+
+# Single-user allowlist error code exposed via the unified envelope.
+USER_NOT_ALLOWED_CODE = "user_not_allowed"
 
 _config: Config | None = None
 
@@ -101,6 +105,23 @@ def request_token() -> str | None:
 def current_user_id() -> str | None:
     payload = verify_access_jwt(request_token())
     return payload.get("sub") if payload else None
+
+
+# --- single-user SSO allowlist -------------------------------------------
+
+
+def assert_allowed_user(user_id: str | None) -> None:
+    """Enforce the configured single-user allowlist.
+
+    Empty ``ALLOWED_UPSTOX_USER_ID`` => no-op (open; dev/test friendly).
+    Mismatch => raise ``werkzeug.exceptions.Forbidden`` (handled by the
+    unified 403 error handler in ``app/__init__.py``).
+    """
+    allowed = (_cfg().ALLOWED_UPSTOX_USER_ID or "").strip()
+    if not allowed or not user_id:
+        return
+    if user_id != allowed:
+        raise Forbidden(description=USER_NOT_ALLOWED_CODE)
 
 
 # --- refresh tokens ------------------------------------------------------

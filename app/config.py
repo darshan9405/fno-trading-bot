@@ -57,8 +57,43 @@ class Config:
     JWT_ACCESS_TTL_MINUTES = _as_int(os.getenv("JWT_ACCESS_TTL_MINUTES"), 15)
     JWT_REFRESH_TTL_DAYS = _as_int(os.getenv("JWT_REFRESH_TTL_DAYS"), 7)
 
+    # Single-user allowlist: set to your Upstox user_id (find it at
+    # GET /api/health -> broker.user_id). Empty => allow all (dev/test).
+    ALLOWED_UPSTOX_USER_ID = os.getenv("ALLOWED_UPSTOX_USER_ID", "")
+
     TRADING_START = os.getenv("TRADING_START", "10:00")
     SQOFF_TIME = os.getenv("SQOFF_TIME", "14:00")
+    # Hard cutoff after which the order placer stops opening NEW trades.
+    # Existing positions are still managed by trade_tracker (squared off at
+    # SQOFF_TIME). Must be <= SQOFF_TIME.
+    TRADE_END_TIME = os.getenv("TRADE_END_TIME", "11:00")
+
+    # LLM breakout detector. Required env when `llm.enabled = True`; the
+    # strategy short-circuits and emits no leads if any of API_KEY / BASE_URL
+    # / MODEL is missing. BASE_URL should be the OpenAI-compatible root
+    # (no trailing slash, no path); the client appends `/chat/completions`.
+    #
+    # Default points at OpenRouter (https://openrouter.ai/api/v1), which is
+    # OpenAI-compatible and lets us swap `LLM_MODEL` between providers via a
+    # single `provider/model` slug (e.g. `minimax/minimax-m3`,
+    # `anthropic/claude-3.5-sonnet`, `openai/gpt-4o`).
+    LLM_API_KEY = os.getenv("LLM_API_KEY", "")
+    LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    LLM_MODEL = os.getenv("LLM_MODEL", "minimax/minimax-m3")
+    LLM_TIMEOUT_S = _as_float(os.getenv("LLM_TIMEOUT_S"), 30.0)
+    LLM_MAX_RETRIES = _as_int(os.getenv("LLM_MAX_RETRIES"), 2)
+    # Reasoning / "thinking" controls. OpenRouter routes per-model:
+    #   * OpenAI-style models: `reasoning_effort` ("low"|"medium"|"high")
+    #   * Anthropic-style models: `reasoning.max_tokens` (int budget)
+    # Empty / 0 disables the field so non-reasoning models don't reject it.
+    LLM_REASONING_EFFORT = os.getenv("LLM_REASONING_EFFORT", "medium")
+    LLM_REASONING_MAX_TOKENS = _as_int(os.getenv("LLM_REASONING_MAX_TOKENS"), 2000)
+
+    # OpenRouter app-attribution headers. Optional but recommended — OpenRouter
+    # uses them for analytics and they unlock higher rate limits on some
+    # routes. Off by default: set the env vars and the client will send them.
+    OPENROUTER_APP_URL = os.getenv("OPENROUTER_APP_URL", "")
+    OPENROUTER_APP_NAME = os.getenv("OPENROUTER_APP_NAME", "")
 
     # API rate limiting (Flask-Limiter).
     RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "true").lower() == "true"

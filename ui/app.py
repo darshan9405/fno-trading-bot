@@ -200,31 +200,53 @@ def _css() -> str:
     /* SSO login: a real <a target="_top"> styled like the primary button.
        A real user click on a real link is the only cross-frame top-nav
        pattern that works inside Streamlit's sandboxed iframe — JS-clicking
-       a hidden top-frame anchor is silently dropped by modern browsers. */
+       a hidden top-frame anchor is silently dropped by modern browsers.
+       Visually identical to [data-testid="stButton"] button[kind="primary"]. */
     .sso-login-btn {{
-        display: block; text-align: center;
+        display: inline-flex; align-items: center; justify-content: center;
+        gap: 8px; cursor: pointer; user-select: none;
         background: {PRIMARY}; color: #fff;
         padding: 0.55rem 1rem; border-radius: 0.5rem;
-        font-weight: 600; font-size: 0.95rem;
-        text-decoration: none; margin: 6px 0;
+        font-weight: 600; font-size: 0.95rem; line-height: 1.2;
+        text-decoration: none; margin: 6px 0; width: 100%;
+        border: 1px solid {PRIMARY};
+        box-shadow: 0 1px 2px rgba(0,0,0,.25);
+        transition: background .15s ease, border-color .15s ease,
+                    box-shadow .15s ease, transform .05s ease;
     }}
-    .sso-login-btn:hover {{ background: #818cf8; color: #fff; }}
+    .sso-login-btn:hover {{
+        background: #818cf8; border-color: #818cf8; color: #fff;
+        box-shadow: 0 2px 6px rgba(99,102,241,.35);
+    }}
+    .sso-login-btn:active {{ transform: translateY(1px); box-shadow: none; }}
+    .sso-login-btn:focus-visible {{
+        outline: 2px solid #818cf8; outline-offset: 2px;
+    }}
 
     /* Sidebar logout: matches the sidebar button height/weight so the
-       Logout row looks identical to the Refresh-now row above it. */
+       Logout row looks identical to the Refresh-now row above it.
+       Same visual language as [data-testid="stSidebar"] [data-testid="stButton"] button. */
     .sidebar-logout-btn {{
-        display: block; text-align: center;
+        display: flex; align-items: center; justify-content: center;
+        gap: 8px; cursor: pointer; user-select: none;
         background: #18243a; color: #e2e8f0;
         border: 1px solid transparent; border-radius: 10px;
-        padding: 0.55rem 1rem; margin: 4px 0 6px 0;
-        height: 44px; line-height: 28px;
-        font-size: 1.0rem; font-weight: 600;
+        padding: 0 1rem; margin: 4px 0 6px 0;
+        height: 44px;
+        font-size: 1.0rem; font-weight: 600; line-height: 1.2;
         text-decoration: none;
-        transition: background .15s ease, border-color .15s ease, color .15s ease;
         box-sizing: border-box;
+        box-shadow: 0 1px 2px rgba(0,0,0,.2);
+        transition: background .15s ease, border-color .15s ease,
+                    color .15s ease, box-shadow .15s ease, transform .05s ease;
     }}
     .sidebar-logout-btn:hover {{
         background: #1f2e4a; border-color: rgba(239, 68, 68, .55); color: #fca5a5;
+        box-shadow: 0 2px 6px rgba(239,68,68,.25);
+    }}
+    .sidebar-logout-btn:active {{ transform: translateY(1px); box-shadow: none; }}
+    .sidebar-logout-btn:focus-visible {{
+        outline: 2px solid rgba(239, 68, 68, .55); outline-offset: 2px;
     }}
 
     /* Bigger sidebar controls (navigation + buttons) */
@@ -411,6 +433,106 @@ def _css() -> str:
             display: block;
         }}
     }}
+
+    /* ---------- Leads page ---------- */
+    .lead-section-header {{
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 10px; margin: 18px 0 10px 0;
+        padding-bottom: 8px; border-bottom: 1px solid {BORDER};
+    }}
+    .lead-section-title {{
+        font-size: 1.05rem; font-weight: 700; color: #e2e8f0;
+        letter-spacing: .02em;
+    }}
+    .lead-section-count {{
+        background: {PRIMARY}22; color: {PRIMARY};
+        border: 1px solid {PRIMARY}55; border-radius: 999px;
+        padding: 3px 12px; font-size: 0.78rem; font-weight: 700;
+    }}
+    .lead-section-count.warn {{
+        background: rgba(251,191,36,.12); color: {WARN}; border-color: rgba(251,191,36,.5);
+    }}
+
+    .lead-card {{
+        background: {CARD}; border: 1px solid {BORDER}; border-radius: 12px;
+        padding: 14px; margin: 10px 0;
+        transition: border-color .15s ease;
+    }}
+    .lead-card:hover {{ border-color: {PRIMARY}66; }}
+    .lead-card.queued {{ border-left: 3px solid {PRIMARY}; }}
+    .lead-card.skipped {{ border-left: 3px solid {MUTED}; }}
+
+    .lead-head {{
+        display: flex; justify-content: space-between; align-items: flex-start;
+        gap: 10px;
+    }}
+    .lead-head-left {{ flex: 1; min-width: 0; }}
+    .lead-symbol {{
+        font-size: 1.05rem; font-weight: 700; color: #f1f5f9;
+        word-break: break-word;
+    }}
+    .lead-time {{
+        color: {MUTED}; font-size: 0.78rem; white-space: nowrap; flex-shrink: 0;
+        padding-top: 2px;
+    }}
+
+    .lead-chips {{ margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }}
+
+    .lead-instrument {{
+        margin-top: 10px;
+        background: #0e1729; border: 1px solid {BORDER};
+        border-radius: 8px; padding: 8px 10px;
+        font-size: 0.84rem; color: #cbd5e1; word-break: break-word;
+    }}
+    .lead-instrument .lbl {{ color: {MUTED}; font-weight: 600; }}
+
+    .lead-plan {{
+        display: flex; flex-wrap: wrap; gap: 10px 16px;
+        margin-top: 10px; padding-top: 10px;
+        border-top: 1px dashed {BORDER};
+    }}
+    .lead-plan > div {{ font-size: 0.84rem; }}
+    .lead-plan .lbl {{ color: {MUTED}; font-weight: 600; margin-right: 3px; }}
+    .lead-plan .val {{ color: #e2e8f0; font-weight: 600; }}
+
+    .lead-score-row {{
+        display: flex; align-items: center; gap: 10px;
+        margin-top: 12px; padding-top: 10px;
+        border-top: 1px dashed {BORDER};
+    }}
+    .lead-score-bar {{ flex: 1; }}
+    .lead-score-meta {{
+        color: {MUTED}; font-size: 0.72rem; margin-top: 3px;
+        display: flex; justify-content: space-between;
+    }}
+
+    .lead-note {{
+        margin-top: 10px; padding: 9px 11px;
+        background: rgba(251,113,133,.10);
+        border: 1px solid rgba(251,113,133,.35);
+        border-radius: 8px;
+        color: #fecdd3; font-size: 0.82rem;
+        word-break: break-word;
+    }}
+
+    .lead-toolbar {{
+        display: flex; flex-direction: column; gap: 6px;
+        margin: 8px 0 14px 0;
+    }}
+    .lead-toolbar .stButton > button {{ width: 100%; }}
+
+    @media (max-width: 768px) {{
+        .lead-section-header {{
+            margin: 14px 0 8px 0; padding-bottom: 6px;
+        }}
+        .lead-section-title {{ font-size: 0.95rem; }}
+        .lead-card {{ padding: 12px; margin: 8px 0; }}
+        .lead-symbol {{ font-size: 1rem; }}
+        .lead-time {{ font-size: 0.74rem; }}
+        .lead-plan {{ gap: 8px 14px; }}
+        .lead-plan > div {{ font-size: 0.8rem; }}
+        .lead-instrument {{ font-size: 0.8rem; padding: 7px 9px; }}
+    }}
     </style>
     """
 
@@ -539,6 +661,28 @@ def _stat_tile(label: str, value: str, color: str = "#e2e8f0") -> str:
         f"<div class='stat-value' style='color:{color}'>{value}</div>"
         f"</div>"
     )
+
+
+def _llm_status_label(llm: dict) -> str:
+    if not isinstance(llm, dict) or not llm:
+        return "UNKNOWN"
+    if not llm.get("configured"):
+        return "NOT CONFIGURED"
+    s = (llm.get("status") or "unknown").upper()
+    return s
+
+
+def _llm_status_color(llm: dict) -> str:
+    if not isinstance(llm, dict) or not llm:
+        return MUTED
+    if not llm.get("configured"):
+        return MUTED
+    s = llm.get("status")
+    if s == "ok":
+        return PROFIT
+    if s == "error":
+        return LOSS
+    return MUTED
 
 
 # --- auth ----------------------------------------------------------------
@@ -1052,27 +1196,30 @@ def render_leads():
     # The lead_cleanup scheduler keeps this view current:
     # - Queued leads age out at 24h
     # - Processed leads (skipped/placed/expired) retained for 7 days
-    _left, _right = st.columns([4, 1])
-    with _right:
-        if st.button("Generate now", type="primary", use_container_width=True,
-                     help="Run the lead generator manually (works outside trading hours)."):
-            resp = api.generate_leads()
-            if resp.get("status") == "ok":
+
+    # Action button in its own row so it stays full-width on mobile
+    # (a side column would shrink to ~20% of the screen width).
+    _html("<div class='lead-toolbar'>")
+    if st.button("Generate now", type="primary", use_container_width=True,
+                 help="Run the lead generator manually (works outside trading hours)."):
+        resp = api.generate_leads()
+        if resp.get("status") == "ok":
+            st.session_state["lead_job"] = {
+                "id": resp["data"]["id"],
+                "submitted_at": resp["data"]["submitted_at"],
+            }
+            st.toast("Lead generation started.", icon=":material/hourglass_top:")
+        elif resp.get("error", {}).get("code") == "lead_generation_in_progress":
+            existing = (resp.get("data") or {}).get("id")
+            if existing:
                 st.session_state["lead_job"] = {
-                    "id": resp["data"]["id"],
-                    "submitted_at": resp["data"]["submitted_at"],
+                    "id": existing,
+                    "submitted_at": (resp.get("data") or {}).get("submitted_at"),
                 }
-                st.toast("Lead generation started.", icon=":material/hourglass_top:")
-            elif resp.get("error", {}).get("code") == "lead_generation_in_progress":
-                existing = (resp.get("data") or {}).get("id")
-                if existing:
-                    st.session_state["lead_job"] = {
-                        "id": existing,
-                        "submitted_at": (resp.get("data") or {}).get("submitted_at"),
-                    }
-                st.toast("A generation run is already in progress.", icon=":material/hourglass_top:")
-            else:
-                st.error(resp.get("error", {}).get("message", "Generation failed."))
+            st.toast("A generation run is already in progress.", icon=":material/hourglass_top:")
+        else:
+            st.error(resp.get("error", {}).get("message", "Generation failed."))
+    _html("</div>")
 
     _lead_gen_status_fragment()
 
@@ -1082,7 +1229,7 @@ def render_leads():
         return
     rows = resp["data"].get("leads", [])
     if not rows:
-        st.info("No leads. Try **Generate now**, or enable more underlyings in **Instruments**.")
+        st.info("No leads. Tap **Generate now**, or enable more underlyings in **Instruments**.")
         return
 
     # Split into active (queued) and skipped
@@ -1090,100 +1237,118 @@ def render_leads():
     skipped_rows = [r for r in rows if r.get("status") == "skipped"]
 
     # --- Active Leads ---
+    _html(
+        f"<div class='lead-section-header'>"
+        f"<div class='lead-section-title'>Active leads (queued)</div>"
+        f"<div class='lead-section-count'>{len(active_rows)} waiting</div>"
+        f"</div>"
+    )
     if active_rows:
-        st.markdown("#### Active Leads (Queued)")
-        _html(f"<div class='muted' style='margin-bottom:8px;'>{len(active_rows)} lead(s) waiting for order placement</div>")
         for r in active_rows:
             _render_lead_card(r, show_note=False)
     else:
-        st.info("No active queued leads right now.")
+        _html("<div class='muted' style='padding:6px 2px;'>No active queued leads right now.</div>")
 
     # --- Skipped Leads (with reasons) ---
+    _html(
+        f"<div class='lead-section-header'>"
+        f"<div class='lead-section-title'>Skipped leads</div>"
+        f"<div class='lead-section-count warn'>{len(skipped_rows)}</div>"
+        f"</div>"
+    )
     if skipped_rows:
-        st.markdown("---")
-        st.markdown("#### Skipped Leads (with reasons)")
-        _html(f"<div class='muted' style='margin-bottom:8px;'>{len(skipped_rows)} lead(s) skipped in recent runs</div>")
         for r in skipped_rows:
             _render_lead_card(r, show_note=True)
     else:
-        st.markdown("---")
-        st.info("No skipped leads in retention window.")
+        _html("<div class='muted' style='padding:6px 2px;'>No skipped leads in retention window.</div>")
 
 
 def _render_lead_card(r: dict, show_note: bool = False):
-    """Render a single lead card."""
-    c1, c2, c3 = st.columns([4, 1, 2])
-    with c1:
-        created_ist = (
-            r.get("created_at_ist_label")
-            or _utc_to_ist_hm(r.get("created_at"))
+    """Render a single lead card. Single-column mobile-first layout."""
+    created_ist = (
+        r.get("created_at_ist_label")
+        or _utc_to_ist_hm(r.get("created_at"))
+    )
+    direction_class = "up" if r["direction"] == "CALL" else "down"
+    status_class = "warn" if r["status"] == "queued" else "muted"
+    card_class = "queued" if r["status"] == "queued" else "skipped"
+
+    symbol = r.get("symbol") or r["underlying"].split("|")[-1]
+
+    # Confidence score
+    pct = int((r.get("confidence") or 0) * 100)
+    bar_color = PROFIT if pct >= 80 else (WARN if pct >= 60 else MUTED)
+    badge_color = "ok" if pct >= 80 else ("warn" if pct >= 60 else "muted")
+    score_label = "High" if pct >= 80 else ("Medium" if pct >= 60 else "Low")
+
+    # Build plan details as key/value pairs for clean wrap-friendly layout
+    plan_pairs = []
+    if r.get("expiry"):
+        plan_pairs.append(("Expiry", r["expiry"]))
+    if r.get("strike_price"):
+        plan_pairs.append(("Strike", _num(r["strike_price"])))
+    if r.get("option_type"):
+        plan_pairs.append(("Opt", r["option_type"]))
+    if r.get("quantity"):
+        plan_pairs.append(("Qty", str(r["quantity"])))
+    if r.get("lot_size"):
+        plan_pairs.append(("Lot", str(r["lot_size"])))
+    if r.get("premium") is not None:
+        plan_pairs.append(("Premium", _num(r["premium"])))
+    if r.get("spot") is not None:
+        plan_pairs.append(("Spot", _num(r["spot"])))
+    if r.get("margin_needed") is not None:
+        plan_pairs.append(("Margin", f"₹{float(r['margin_needed']):,.0f}"))
+
+    plan_html = "".join(
+        f"<div><span class='lbl'>{lbl}</span><span class='val'>{val}</span></div>"
+        for lbl, val in plan_pairs
+    )
+
+    instrument_html = _lead_plan_line(r)
+
+    note_html = ""
+    if show_note and r.get("note"):
+        note_html = (
+            f"<div class='lead-note'>⚠ <b>Skipped:</b> {r['note']}</div>"
         )
-        direction_class = "up" if r["direction"] == "CALL" else "down"
-        status_class = "warn" if r["status"] == "queued" else "muted"
-
-        _html(
-            f"<div style='display:flex;justify-content:space-between;margin-bottom:6px;'>"
-            f"<div style='font-weight:600'>{r.get('symbol') or r['underlying'].split('|')[-1]} "
-            f"{_badge(r['direction'], direction_class)} "
-            f"{_badge(r['status'], status_class)}</div>"
-            f"<div class='muted'>{created_ist} IST</div></div>"
-        )
-
-        _html(
-            f"<div style='margin:6px 0;'>"
-            f"<span class='badge' style='color:{SECONDARY};background:{SECONDARY}33;'>"
-            f"{r['signal_type']}</span> "
-            f"<span class='badge' style='color:{PRIMARY};background:{PRIMARY}33;'>"
-            f"Signal Price: {_num(r['signal_level'])}</span></div>"
-        )
-
-        # Plan details
-        plan_parts = []
-        if r.get("expiry"):
-            plan_parts.append(f"Exp {r['expiry']}")
-        if r.get("strike_price"):
-            plan_parts.append(f"Strike {_num(r['strike_price'])}")
-        if r.get("option_type"):
-            plan_parts.append(f"Opt {r['option_type']}")
-        if r.get("quantity"):
-            plan_parts.append(f"Qty {r['quantity']}")
-        if r.get("lot_size"):
-            plan_parts.append(f"Lot {r['lot_size']}")
-        if r.get("margin_needed"):
-            plan_parts.append(f"Margin ₹{float(r['margin_needed']):,.0f}")
-        if r.get("premium"):
-            plan_parts.append(f"Prem {_num(r['premium'])}")
-        if r.get("spot"):
-            plan_parts.append(f"Spot {_num(r['spot'])}")
-        if plan_parts:
-            _html(f"<div class='muted' style='margin-top:8px;font-size:0.78rem;'>"
-                  f"{' · '.join(plan_parts)}</div>")
-
-        # Skip reason (note)
-        if show_note and r.get("note"):
-            _html(f"<div class='muted' style='margin-top:6px;font-size:0.8rem;color:{LOSS};'>"
-                  f"⚠ Skipped: {r['note']}</div>")
-
-    with c2:
-        pct = int((r.get("confidence") or 0) * 100)
-        bar_color = PROFIT if pct >= 80 else (WARN if pct >= 60 else MUTED)
-        badge_color = "ok" if pct >= 80 else ("warn" if pct >= 60 else "muted")
-
-        _html(
-            f"<div style='text-align:center;margin-top:8px;'>"
-            f"<div class='badge {badge_color}' style='margin-bottom:6px;'>"
-            f"{pct}% Score</div>"
-            f"<div class='conf-bar' style='margin:6px 0;'>"
-            f"<div class='conf-fill' style='width:{pct}%;background:{bar_color};'></div>"
-            f"</div>"
-            f"<div class='muted' style='font-size:0.72rem;'>"
-            f"{'High' if pct >= 80 else ('Medium' if pct >= 60 else 'Low')}</div>"
-            f"</div>"
+    elif r.get("note") and not show_note:
+        note_html = (
+            f"<div class='lead-note' style='background:rgba(34,211,238,.08);"
+            f"border-color:rgba(34,211,238,.35);color:#a5f3fc;'>"
+            f"ℹ {r['note']}</div>"
         )
 
-    with c3:
-        if r.get("note") and not show_note:
-            st.caption(r["note"])
+    _html(
+        f"""
+        <div class='lead-card {card_class}'>
+          <div class='lead-head'>
+            <div class='lead-head-left'>
+              <div class='lead-symbol'>{symbol}</div>
+              <div class='lead-chips'>
+                {_badge(r['direction'], direction_class)}
+                {_badge(r['status'], status_class)}
+                <span class='badge' style='color:{SECONDARY};background:rgba(34,211,238,.15);'>{r['signal_type']}</span>
+                <span class='badge' style='color:{PRIMARY};background:rgba(99,102,241,.15);'>Signal: {_num(r['signal_level'])}</span>
+              </div>
+            </div>
+            <div class='lead-time'>{created_ist} IST</div>
+          </div>
+          {instrument_html}
+          {f"<div class='lead-plan'>{plan_html}</div>" if plan_pairs else ""}
+          <div class='lead-score-row'>
+            <span class='badge {badge_color}' style='flex-shrink:0;'>{pct}%</span>
+            <div class='lead-score-bar'>
+              <div class='conf-bar'>
+                <div class='conf-fill' style='width:{pct}%;background:{bar_color};'></div>
+              </div>
+              <div class='lead-score-meta'><span>Confidence</span><span>{score_label}</span></div>
+            </div>
+          </div>
+          {note_html}
+        </div>
+        """
+    )
 
 
 @st.fragment(run_every="2s")
@@ -1414,6 +1579,7 @@ def render_health():
     b = d["broker"]
     m = d["market"]
     e = d["errors"]
+    llm = d.get("llm") or {}
     top = (
         _stat_tile("Market", "OPEN" if m["open"] else "CLOSED",
                    color=PROFIT if m["open"] else MUTED)
@@ -1421,6 +1587,9 @@ def render_health():
                      "CONNECTED" if b.get("connected")
                      else ("NOT CONFIGURED" if not b.get("configured") else "DISCONNECTED"),
                      color=PROFIT if b.get("connected") else (MUTED if not b.get("configured") else LOSS))
+        + _stat_tile("LLM",
+                     _llm_status_label(llm),
+                     color=_llm_status_color(llm))
         + _stat_tile("Errors", str(e.get("count", 0)),
                      color=LOSS if e.get("count", 0) else PROFIT)
     )
@@ -1456,6 +1625,42 @@ def render_health():
     elif b.get("token_valid_until"):
         st.caption(f"Upstox token valid until {_utc_to_ist_hm(b.get('token_valid_until'))} IST")
 
+    st.markdown("##### LLM (OpenRouter)")
+    llm_status = (llm.get("status") or "unknown") if isinstance(llm, dict) else "unknown"
+    if not llm.get("configured"):
+        status_kind = "muted"
+        badge_text = "NOT CONFIGURED"
+    elif llm_status == "ok":
+        status_kind = "ok"
+        badge_text = "OK"
+    elif llm_status == "error":
+        status_kind = "warn"
+        badge_text = "ERROR"
+    else:
+        status_kind = "warn" if llm_status == "stale" else "muted"
+        badge_text = llm_status.upper()
+    model = llm.get("model") or "(unset)"
+    st.markdown(
+        f"{_badge(badge_text, status_kind)} "
+        f"<span class='muted'>model: <code>{model}</code></span>",
+        unsafe_allow_html=True,
+    )
+    llm_stats = llm.get("stats") or {}
+    calls_total = llm_stats.get("calls_total", 0)
+    errors_total = llm_stats.get("errors_total", 0)
+    last_success = llm_stats.get("last_success_at")
+    last_error = llm_stats.get("last_error_at")
+    last_error_msg = llm_stats.get("last_error") or ""
+    col1, col2, col3 = st.columns([2, 2, 3])
+    col1.metric("LLM calls (cumulative)", calls_total)
+    col2.metric("LLM errors (cumulative)", errors_total)
+    if last_success:
+        col3.caption(f"last success: `{_utc_to_ist_hm(last_success)} IST`")
+    elif last_error:
+        col3.caption(f"last error: `{_utc_to_ist_hm(last_error)} IST`")
+    if last_error_msg:
+        st.caption(f"last error: {last_error_msg[:200]}")
+
     st.markdown("##### Errors")
     if e["count"] == 0:
         st.markdown(f"{_badge('NO ERRORS', 'ok')}", unsafe_allow_html=True)
@@ -1475,9 +1680,14 @@ def render_health():
                 st.caption(f"`{_utc_to_ist_hm(er['ts'])} IST` · **{er['source']}**: {er['message']}")
 
     st.markdown("##### Market")
+    trade_session_label = (
+        f"session {m['session']['start']}"
+        f"–{m['session']['trade_end']} (new trades)"
+        f" · {m['session']['end']} (sqoff)"
+    )
     st.markdown(
         f"{_badge('OPEN' if m['open'] else 'CLOSED', 'ok' if m['open'] else 'muted')} "
-        f"<span class='muted'>{m['date']} · {m['time_ist']} IST · session {m['session']['start']}–{m['session']['end']}</span>",
+        f"<span class='muted'>{m['date']} · {m['time_ist']} IST · {trade_session_label}</span>",
         unsafe_allow_html=True,
     )
 
@@ -1498,13 +1708,26 @@ def render_settings():
 
     with tab_market:
         st.caption("The bot generates leads and places orders inside this daily window.")
-        c1, c2 = st.columns(2)
+        c1, c2, c3 = st.columns(3)
         with c1:
             start = st.time_input("Trading start (IST)", value=_ui_time(cfg.get("trading_start", "10:00")))
         with c2:
-            end = st.time_input("Square-off time (IST)", value=_ui_time(cfg.get("sqoff_time", "14:00")))
+            trade_end = st.time_input(
+                "Trade end time (IST)",
+                value=_ui_time(cfg.get("trade_end_time", cfg.get("sqoff_time", "11:00"))),
+                help="No new trades are opened after this time. Existing positions are still tracked and squared off at Market end time. Must be ≤ Market end time.",
+            )
+        with c3:
+            end = st.time_input(
+                "Market end time (IST)",
+                value=_ui_time(cfg.get("sqoff_time", "14:00")),
+                help="Existing positions are squared off at this time (was previously called \"Square-off time\").",
+            )
         new_cfg["trading_start"] = start.strftime("%H:%M")
+        new_cfg["trade_end_time"] = trade_end.strftime("%H:%M")
         new_cfg["sqoff_time"] = end.strftime("%H:%M")
+        if trade_end > end:
+            st.error("Trade end time must be ≤ Market end time.")
 
     with tab_sl:
         st.caption("Risk management per open position.")
@@ -1563,6 +1786,29 @@ def render_settings():
 
     with tab_strategy:
         st.caption("Which patterns qualify as a lead, and how strict the filter is.")
+        max_leads = st.number_input(
+            "Max leads per generator run", min_value=0, max_value=50,
+            value=int(cfg.get("lead_generator.max_leads_per_run", 5)),
+            help="Stop the lead-generator scheduler tick once this many leads have been queued. "
+                 "Set to 0 for unlimited. Tune lower if you have limited deployment capital.",
+        )
+        max_workers = st.number_input(
+            "Concurrent worker threads", min_value=1, max_value=16,
+            value=int(cfg.get("lead_generator.max_workers", 4)),
+            help="How many threads to run in parallel when fetching candles and calling the LLM. "
+                 "Each worker holds its own strategy instance. Higher = faster ticks but more "
+                 "concurrent Upstox/LLM calls. Keep ≤8 to respect free-tier rate limits.",
+        )
+        shuffle = st.checkbox(
+            "Shuffle instrument order each run",
+            value=bool(cfg.get("lead_generator.shuffle_instruments", True)),
+            help="Pick enabled instruments in a random order each tick so the same stocks don't "
+                 "always get first crack at the LLM call budget.",
+        )
+        new_cfg["lead_generator.max_leads_per_run"] = int(max_leads)
+        new_cfg["lead_generator.max_workers"] = int(max_workers)
+        new_cfg["lead_generator.shuffle_instruments"] = bool(shuffle)
+        st.markdown("---")
         patterns = st.multiselect(
             "Enabled patterns",
             ["horizontal_range", "trendline", "triangle", "flag_pennant", "head_shoulders", "volume_breakout"],

@@ -227,8 +227,13 @@ def place_defensive_sqoff(
     sqoff_price = (broker.get_ltp([instrument_key]) or {}).get(instrument_key)
     if sqoff_price is None:
         raise BrokerError(f"no LTP for sqoff of {instrument_key}")
+    # Snap the LIMIT to the option's tick band (0.05/0.10/0.50). Without this,
+    # `round(..., 2)` can produce off-tick prices like ₹99.97 which the broker
+    # rejects. Same convention as the entry LIMIT in order_placer.
+    tick = option_tick_for(sqoff_price)
+    limit_price = round_to_tick(sqoff_price * (1.0 - limit_premium_pct / 100.0), tick)
     log.info("trade_service: placing defensive sqoff for %s qty=%s premium=%.1f%% price=%.2f tag=%s",
-             instrument_key, quantity, limit_premium_pct, sqoff_price, tag)
+             instrument_key, quantity, limit_premium_pct, limit_price, tag)
     return broker.place_order(
         OrderRequest(
             instrument_key=instrument_key,
@@ -236,7 +241,7 @@ def place_defensive_sqoff(
             quantity=quantity,
             product=PRODUCT,
             order_type="LIMIT",
-            price=round(sqoff_price * (1.0 - limit_premium_pct / 100.0), 2),
+            price=limit_price,
             tag=tag,
         )
     )
@@ -286,10 +291,22 @@ def create_trade(session, *, lead: Lead, contract: InstrumentView, direction: st
 
 
 def record_order(session, *, order_id: str, trade_id: int, order_type: str, transaction_type: str,
-                 instrument_token: str, quantity: int, tag: str | None, status: str = "complete",
+                 instrument_token: str, quantity: int, tag: str | None, status: str = "open",
                  price: float = 0.0, average_price: float | None = None,
                  trigger_price: float | None = None, tradingsymbol: str | None = None,
                  filled_quantity: int | None = None) -> Order:
+    """Persist a broker order mirror.
+
+    `status` defaults to `"open"` because most callers (SL placement, defensive
+    sqoff, etc.) record orders immediately after `place_order` returns and the
+    order is still open/pending at the broker. Callers that have already
+    confirmed a fill (e.g. the entry order in `order_placer.process_lead` after
+    `_wait_for_fill` succeeds) MUST pass `status="complete"` explicitly so the
+    audit row reflects broker truth. `sync_order_status` overwrites this later
+    for trades that stay in the tracker loop, but closed trades (e.g. after a
+    defensive sqoff) never get re-synced, so the initial value is what the UI
+    sees.
+    """
     if filled_quantity is None:
         filled_quantity = quantity if status == "complete" else 0
     order = Order(
@@ -358,10 +375,6 @@ def close_trade(session, trade: Trade, *, exit_price: float, exit_reason: str,
     # Tier-4 calibration: record this outcome so future leads carrying the
     # same (pattern, underlying) get a calibrated score at rank time.
     if trade.lead_id:
-        try:
-            lead = session.get(__import__("app.models").Lead, trade.lead_id) if False else None
-        except Exception:
-            lead = None
         try:
             from app.models import Lead as _Lead
             lead = session.get(_Lead, trade.lead_id) if trade.lead_id else None

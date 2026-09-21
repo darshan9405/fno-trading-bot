@@ -76,13 +76,31 @@ def health():
     ist_now = health_service.now_ist()
     market = {
         "open": market_calendar.is_market_open(ist_now),
+        "trade_placing_open": market_calendar.is_trade_placing_window(ist_now),
         "date": ist_now.date().isoformat(),
         "time_ist": ist_now.strftime("%H:%M:%S"),
         "session": {
             "start": market_calendar.session_start(ist_now.date()).strftime("%H:%M"),
+            "trade_end": market_calendar.session_trade_end(ist_now.date()).strftime("%H:%M"),
             "end": market_calendar.session_end(ist_now.date()).strftime("%H:%M"),
         },
     }
+
+    # LLM (OpenRouter) connectivity + last-call stats.
+    try:
+        from app.strategy.llm_breakout import health as llm_health
+        llm = llm_health.get_health_snapshot()
+    except Exception as exc:  # noqa: BLE001 — never let an LLM-stats read crash /api/health
+        log.warning("health: llm snapshot failed: %s", exc)
+        llm = {
+            "configured": False,
+            "model": "",
+            "base_url": "",
+            "stats": {"calls_total": 0, "errors_total": 0,
+                      "last_success_at": None, "last_error_at": None, "last_error": None},
+            "status": "unknown",
+            "error": str(exc),
+        }
 
     return ok(
         {
@@ -91,5 +109,6 @@ def health():
             "errors": {"count": len(recent), "recent": errors},
             "broker": broker_status,
             "market": market,
+            "llm": llm,
         }
     )
