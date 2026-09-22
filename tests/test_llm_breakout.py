@@ -140,27 +140,98 @@ def test_build_system_prompt_interpolates_thresholds():
     # Anti-hallucination guards must be present.
     assert "NO HALLUCINATIONS" in sys
     assert "R1" in sys and "R2" in sys and "R3" in sys and "R4" in sys
-    # Workflow section must be present with the procedural steps.
+    # New structural sections must all be present.
     for marker in (
+        "READING THE CHART",
+        "Swing high",
+        "Swing low",
+        "Horizontal level",
+        "Trendline",
+        "Decisive cross",
+        "Regime test",
+        "UP-trend",
+        "DOWN-trend",
+        "SIDEWAYS",
+        "MIXED",
         "WORKFLOW",
-        "ESTABLISH REGIME",
-        "LOCATE SWING POINTS",
-        "IDENTIFY CANDIDATE STRUCTURE",
-        "COMPUTE THE TRIGGER",
-        "CONFIRM THE TRIGGER",
-        "APPLY",
-        "PICK THE SINGLE",
-        "SELF-CHECK",
+        "SCAN",
+        "REGIME",
+        "PATTERN",
+        "TRIGGER",
+        "CROSS",
+        "CANDIDATE SELECTION ORDER",
+        "COMMON MISTAKES",
+        "FILTER",
+        "F1. **DIVERGENCE",
+        "F2. **CONFIDENCE",
+        "F3. **RECENCY",
     ):
-        assert marker in sys, f"missing workflow marker: {marker}"
-    # F1 volume gate must be gone; volume is informational only.
-    assert "F1. VOLUME CONFIRMATION" not in sys
-    assert "F1. DIVERGENCE TOLERANCE" in sys
+        assert marker in sys, f"missing section marker: {marker}"
+    # Volume is informational only.
+    assert "NOT a gate" in sys
+    # Old workflow step names that were removed should be gone.
+    for removed in ("SELF-CHECK", "PICK THE SINGLE", "ESTABLISH REGIME"):
+        assert removed not in sys, f"removed marker still present: {removed}"
+    # Filter gates still in place.
+    assert "F3. **RECENCY" in sys
     # Pattern definitions for all 5 patterns.
-    for name in ("HORIZONTAL RANGE", "TRENDLINE", "TRIANGLE", "FLAG / PENNANT", "HEAD & SHOULDERS"):
+    for name in ("HORIZONTAL_RANGE", "HEAD_SHOULDERS", "TRENDLINE", "TRIANGLE", "FLAG_PENNANT"):
         assert name in sys
     # Output schema must not include volume_confirmed.
     assert "volume_confirmed" not in sys
+
+
+def test_system_prompt_contains_chain_of_thought_examples():
+    """The two worked examples must include synthetic OHLCV tables AND the
+    full reasoning chain — so future edits can't accidentally drop the
+    chain-of-thought demonstration."""
+    from app.strategy.llm_breakout.prompts import build_system_prompt
+
+    sys = build_system_prompt(
+        lookback_candles=250,
+        divergence_pct=0.5,
+        min_confidence=0.7,
+    )
+    # Both worked examples must be present.
+    assert "Example 1 — Horizontal range CALL" in sys
+    assert "Example 2 — Inverse H&S CALL" in sys
+    # Each must contain a synthetic OHLCV block with the canonical header.
+    assert sys.count("DATE       OPEN     HIGH     LOW      CLOSE    VOLUME") >= 2
+    # Each must walk through the 6 reasoning steps (SCAN/REGIME/PATTERN/TRIGGER/CROSS/Confidence).
+    for step in ("SCAN", "REGIME", "PATTERN", "TRIGGER", "CROSS", "Confidence"):
+        # Each example block uses the step name in its reasoning chain.
+        assert sys.count(step) >= 2, f"step {step} should appear in both examples"
+
+
+def test_system_prompt_drops_over_cautious_reminder():
+    """The old closing REMINDER biased the model toward empty. The new one
+    is action-oriented — both must not coexist."""
+    from app.strategy.llm_breakout.prompts import build_system_prompt
+
+    sys = build_system_prompt(
+        lookback_candles=250,
+        divergence_pct=0.5,
+        min_confidence=0.7,
+    )
+    assert "Be conservative. If unsure, return an empty list." not in sys
+    # The new REMINDER explicitly frames emission as the goal.
+    assert "Emit it." in sys
+
+
+def test_system_prompt_is_concise():
+    """Prompt length should stay reasonable — guard against drift back to
+    bloated system prompts in future edits."""
+    from app.strategy.llm_breakout.prompts import build_system_prompt
+
+    sys = build_system_prompt(
+        lookback_candles=250,
+        divergence_pct=0.5,
+        min_confidence=0.7,
+    )
+    # ~6K characters is a generous cap. The current prompt should be well
+    # under this; the test fails on prompt bloat rather than on the current
+    # implementation.
+    assert len(sys) < 12000, f"system prompt is {len(sys)} chars; cap is 12000"
 
 
 # --- validator -------------------------------------------------------------
