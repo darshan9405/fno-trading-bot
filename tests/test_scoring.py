@@ -134,27 +134,3 @@ def test_decayed_score_multiplies_confidence():
 def test_calibration_multiplier_neutral_when_alpha_zero():
     from app.services.calibration import calibration_multiplier
     assert calibration_multiplier("x", "NSE_INDEX|Nifty 50", alpha=0.0) == 1.0
-
-
-# --- LLM breakout components ---------------------------------------------
-
-
-def test_llm_components_volume_confirmed_true_reflects_in_score():
-    """LLM detector emits components via `to_lead_components`; ensure the
-    volume dimension is propagated to the composite scorer."""
-    from app.strategy.llm_breakout.detector import to_lead_components
-
-    confirmed = to_lead_components(
-        {"direction": "CALL", "pattern_type": "horizontal_range",
-         "trigger_price": 100.0, "confidence": 0.8,
-         "volume_confirmed": True, "rationale": "ok"}
-    )
-    not_confirmed = to_lead_components(
-        {"direction": "CALL", "pattern_type": "horizontal_range",
-         "trigger_price": 100.0, "confidence": 0.8,
-         "volume_confirmed": False, "rationale": "ok"}
-    )
-    assert confirmed["volume"] == 1.0
-    assert not_confirmed["volume"] == 0.0
-    assert composite(ComponentScores(**{k: v for k, v in confirmed.items() if k != "extras"}, extras=confirmed["extras"])) > \
-           composite(ComponentScores(**{k: v for k, v in not_confirmed.items() if k != "extras"}, extras=not_confirmed["extras"]))

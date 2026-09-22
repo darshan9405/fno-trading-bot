@@ -7,7 +7,6 @@ module is the strict structural filter that drops bad output:
   - direction not in {CALL, PUT}
   - trigger_price not finite / ≤ 0 / outside divergence band
   - confidence not finite / below min_confidence
-  - volume_confirmed not a bool (defaults to False)
   - missing required fields
 
 No second-guessing of pattern calls. The LLM is responsible for accuracy;
@@ -36,7 +35,6 @@ REQUIRED_FIELDS: tuple[str, ...] = (
     "pattern_type",
     "trigger_price",
     "confidence",
-    "volume_confirmed",
 )
 
 
@@ -50,10 +48,6 @@ def _finite_float(value: Any) -> float | None:
     return None
 
 
-def _is_bool(value: Any) -> bool:
-    return isinstance(value, bool)
-
-
 def validate_signals(
     signals: Any,
     today_close: float,
@@ -62,9 +56,8 @@ def validate_signals(
 ) -> list[dict[str, Any]]:
     """Filter the raw `signals` array from the LLM.
 
-    Returns the list of valid signal dicts (each augmented with the same keys,
-    with `volume_confirmed` coerced to bool). The caller maps each to a
-    `LeadCandidate`.
+    Returns the list of valid signal dicts (each augmented with the same keys).
+    The caller maps each to a `LeadCandidate`.
     """
     if not isinstance(signals, list):
         return []
@@ -98,11 +91,6 @@ def validate_signals(
             continue
         confidence = max(0.0, min(1.0, confidence))
 
-        if not _is_bool(raw.get("volume_confirmed")):
-            volume_confirmed = False
-        else:
-            volume_confirmed = bool(raw.get("volume_confirmed"))
-
         rationale = raw.get("rationale")
         if not isinstance(rationale, str):
             rationale = ""
@@ -113,7 +101,6 @@ def validate_signals(
                 "pattern_type": pattern_type,
                 "trigger_price": trigger_price,
                 "confidence": confidence,
-                "volume_confirmed": volume_confirmed,
                 "rationale": rationale,
             }
         )

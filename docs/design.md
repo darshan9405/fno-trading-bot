@@ -497,11 +497,11 @@ expiry info is otherwise shown in the sidebar badge and Health tab.
 | `qty_lots_per_trade` | `1` | lot multiples |
 | `breakout.patterns_enabled` | all 6 | breakout-strategy pattern toggles |
 | `breakout.min_confidence` | `0.7` | min signal confidence to emit a lead |
-| `breakout.volume_multiplier` | `4.0` | volume-spike threshold (× rolling avg) |
-| `breakout.volume_window` | `20` | rolling-average volume window |
-| `breakout.volume_lookback` | `5` | bars to check for a spike |
-| `breakout.require_volume_spike` | `true` | hard-require a volume spike |
-| `breakout.volume_boost` | `0.15` | confidence boost when a spike is present |
+| `breakout.volume_multiplier` | `4.0` | **legacy** — volume-spike threshold (× rolling avg). Not used by the active `llm_breakout` strategy; retained for backwards compatibility with the historical detector. |
+| `breakout.volume_window` | `20` | **legacy** — rolling-average volume window (not used by `llm_breakout`). |
+| `breakout.volume_lookback` | `5` | **legacy** — bars to check for a spike (not used by `llm_breakout`). |
+| `breakout.require_volume_spike` | `true` | **legacy** — hard-require a volume spike (not used by `llm_breakout`). |
+| `breakout.volume_boost` | `0.15` | **legacy** — confidence boost when a spike is present (not used by `llm_breakout`). |
 | `market_calendar_last_sync_date` | — | last day holidays were synced from Upstox |
 
 ---
@@ -561,13 +561,17 @@ PatternPy / chart_patterns / numta approaches), fully parameterised:
      bars) coinciding with a price break of recent highs → CALL / lows → PUT.
 3. **Filters** — "exactly at level" enforced via `proximity_pct` band (no
    chasing); confidence = pattern-fit quality.
-4. **Volume confirmation** — the paper's core: volume spikes filter false
-   breakouts. `breakout.require_volume_spike` makes a spike **mandatory** for
-   any signal; otherwise a spike adds `breakout.volume_boost` to confidence.
 5. **Output** → `LeadCandidate(direction, signal_type, signal_level, confidence)`.
 6. **Validation** — `backtests/validate_patterns.py`: run detectors over
    historical daily data, report matches + forward returns, tune false-positive
    rate before live.
+
+> **Note — volume is no longer a gate.** The active `llm_breakout` strategy
+> drops the `volume_multiplier` hard requirement. A real breakout often begins
+> on quiet volume and is consumed as participants react; the volume expansion
+> typically arrives AFTER the trigger crosses. Volume is now treated as
+> informational context only and is not gated on by the detector, the
+> validator, or the composite scorer — the LLM's `confidence` is used as-is.
 
 ---
 

@@ -61,7 +61,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "llm.enabled": True,
     "llm.lookback_candles": 250,            # 200-250 daily bars to slice into the prompt
     "llm.min_confidence": 0.7,              # floor for LLM-reported confidence
-    "llm.volume_multiplier": 4.0,           # passed to the LLM in the prompt (also used by validator band)
     "llm.temperature": 0.2,                 # OpenAI-compat sampling temperature
     "llm.max_calls_per_run": 50,            # hard cap so a slow LLM can't block the scheduler tick
     # Tier-4 staleness: half-life (minutes) of queued lead confidence decay; 0 disables.

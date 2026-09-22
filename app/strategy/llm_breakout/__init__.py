@@ -52,7 +52,6 @@ from app.strategy.llm_breakout.client import LLMClient, OpenAICompatClient
 from app.strategy.llm_breakout.detector import (
     detect_one,
     indicators_for_logging,
-    to_lead_components,
 )
 
 log = logging.getLogger(__name__)
@@ -99,7 +98,6 @@ class LLMBreakoutStrategy(Strategy):
 
         lookback = int(get_setting("llm.lookback_candles", 250))
         min_conf = float(get_setting("llm.min_confidence", 0.7))
-        vol_mult = float(get_setting("llm.volume_multiplier", 4.0))
         divergence_pct = float(get_setting("max_lead_price_divergence_pct", 0.5))
 
         if self._run.cap > 0 and self._run.calls_used >= self._run.cap:
@@ -118,7 +116,6 @@ class LLMBreakoutStrategy(Strategy):
                 underlying_key=getattr(instrument, "spot_instrument_key", ""),
                 candles=candles,
                 lookback_candles=lookback,
-                volume_multiplier=vol_mult,
                 divergence_pct=divergence_pct,
                 min_confidence=min_conf,
             )
@@ -133,9 +130,9 @@ class LLMBreakoutStrategy(Strategy):
         leads: list[LeadCandidate] = []
         for sig in signals:
             meta = {
-                "components": to_lead_components(sig),
                 "source": "llm",
                 "indicators": indicators_for_logging(candles),
+                "llm_rationale": str(sig.get("rationale", "")),
             }
             leads.append(
                 LeadCandidate(

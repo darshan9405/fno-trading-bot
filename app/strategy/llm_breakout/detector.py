@@ -49,7 +49,6 @@ def detect_one(
     candles: pd.DataFrame,
     *,
     lookback_candles: int,
-    volume_multiplier: float,
     divergence_pct: float,
     min_confidence: float,
 ) -> list[dict[str, Any]]:
@@ -76,7 +75,6 @@ def detect_one(
 
     system = build_system_prompt(
         lookback_candles=lookback_candles,
-        volume_multiplier=volume_multiplier,
         divergence_pct=divergence_pct,
         min_confidence=min_confidence,
     )
@@ -85,7 +83,6 @@ def detect_one(
         underlying_key=underlying_key,
         df=sliced,
         lookback=lookback_candles,
-        volume_multiplier=volume_multiplier,
         divergence_pct=divergence_pct,
         min_confidence=min_confidence,
     )
@@ -143,21 +140,6 @@ def detect_one(
         today_close,
     )
     return valid
-
-
-def to_lead_components(signal: dict[str, Any]) -> dict[str, Any]:
-    """Translate a validated LLM signal into the ComponentScores dict the
-    downstream composite scorer expects."""
-    confidence = float(signal["confidence"])
-    volume_score = 1.0 if signal["volume_confirmed"] else 0.0
-    return {
-        "pattern_fit": confidence,
-        "volume": volume_score,
-        "trend_alignment": 0.5,  # unknown to LLM (no market-alignment feature today)
-        "proximity": 1.0,        # LLM already filtered by divergence tolerance
-        "structure": confidence,
-        "extras": {"llm_rationale": signal.get("rationale", "")},
-    }
 
 
 def indicators_for_logging(candles: pd.DataFrame) -> dict[str, Any]:

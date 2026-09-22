@@ -90,7 +90,6 @@ def _install_llm_stub() -> None:
             "pattern_type": "horizontal_range",
             "trigger_price": 105.0,
             "confidence": 0.8,
-            "volume_confirmed": True,
             "rationale": "dry_run fixture: horizontal_range CALL",
         }]}
     ])
@@ -115,7 +114,6 @@ def main() -> int:
     set_setting("sqoff_time", "14:00")
     set_setting("llm.enabled", True)
     set_setting("llm.min_confidence", 0.6)
-    set_setting("llm.volume_multiplier", 4.0)
     set_setting("llm.lookback_candles", 250)
     set_setting("max_lead_price_divergence_pct", 0.5)
     set_setting("market_calendar_last_sync_date", "2026-09-07")

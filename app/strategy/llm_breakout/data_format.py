@@ -124,7 +124,6 @@ def build_user_prompt(
     underlying_key: str,
     df: pd.DataFrame,
     lookback: int,
-    volume_multiplier: float,
     divergence_pct: float,
     min_confidence: float,
 ) -> str:
@@ -147,7 +146,6 @@ def build_user_prompt(
         f"SMA20: {_opt(ind['sma20'])}\n"
         f"SMA50: {_opt(ind['sma50'])}\n"
         f"ATR14: {_opt(ind['atr14'])}\n"
-        f"VOLUME SPIKE MULTIPLIER: {volume_multiplier:g}x 20d rolling avg\n"
         f"DIVERGENCE TOLERANCE: {divergence_pct:g}%\n"
         f"MIN CONFIDENCE: {min_confidence:g}\n"
         f"LOOKBACK: {lookback} sessions\n"

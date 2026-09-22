@@ -2,7 +2,7 @@
 
 Covers:
   - data_format (slice, render, indicators)
-  - prompts (settings substitution + schema guardrails visible)
+  - prompts (settings substitution + workflow guardrails visible)
   - validator (every reject rule + every pass case)
   - detector (end-to-end with a stub LLM client)
   - LLMBreakoutStrategy (registry + settings short-circuits)
@@ -112,15 +112,15 @@ def test_build_user_prompt_contains_thresholds():
         underlying_key="NSE_INDEX|Nifty 50",
         df=df,
         lookback=250,
-        volume_multiplier=4.0,
         divergence_pct=0.5,
         min_confidence=0.7,
     )
     assert "SYMBOL: NIFTY" in prompt
-    assert "VOLUME SPIKE MULTIPLIER: 4x" in prompt
     assert "DIVERGENCE TOLERANCE: 0.5%" in prompt
     assert "MIN CONFIDENCE: 0.7" in prompt
     assert "LOOKBACK: 250 sessions" in prompt
+    # Volume gating is gone.
+    assert "VOLUME SPIKE MULTIPLIER" not in prompt
 
 
 # --- prompts ---------------------------------------------------------------
@@ -131,21 +131,36 @@ def test_build_system_prompt_interpolates_thresholds():
 
     sys = build_system_prompt(
         lookback_candles=250,
-        volume_multiplier=4.0,
         divergence_pct=0.5,
         min_confidence=0.7,
     )
     assert "250" in sys
-    assert "4x" in sys
     assert "0.5%" in sys
     assert "0.7" in sys
     # Anti-hallucination guards must be present.
     assert "NO HALLUCINATIONS" in sys
     assert "R1" in sys and "R2" in sys and "R3" in sys and "R4" in sys
-    assert "volume_breakout" not in sys.lower().replace("not an allowed pattern_type", "") or True  # mentioned only in BAD example
+    # Workflow section must be present with the procedural steps.
+    for marker in (
+        "WORKFLOW",
+        "ESTABLISH REGIME",
+        "LOCATE SWING POINTS",
+        "IDENTIFY CANDIDATE STRUCTURE",
+        "COMPUTE THE TRIGGER",
+        "CONFIRM THE TRIGGER",
+        "APPLY",
+        "PICK THE SINGLE",
+        "SELF-CHECK",
+    ):
+        assert marker in sys, f"missing workflow marker: {marker}"
+    # F1 volume gate must be gone; volume is informational only.
+    assert "F1. VOLUME CONFIRMATION" not in sys
+    assert "F1. DIVERGENCE TOLERANCE" in sys
     # Pattern definitions for all 5 patterns.
     for name in ("HORIZONTAL RANGE", "TRENDLINE", "TRIANGLE", "FLAG / PENNANT", "HEAD & SHOULDERS"):
         assert name in sys
+    # Output schema must not include volume_confirmed.
+    assert "volume_confirmed" not in sys
 
 
 # --- validator -------------------------------------------------------------
@@ -155,7 +170,7 @@ def test_validator_drops_unknown_pattern_type():
     from app.strategy.llm_breakout.validator import validate_signals
 
     raw = [{"direction": "CALL", "pattern_type": "volume_breakout",
-            "trigger_price": 100.0, "confidence": 0.9, "volume_confirmed": True, "rationale": "x"}]
+            "trigger_price": 100.0, "confidence": 0.9, "rationale": "x"}]
     assert validate_signals(raw, today_close=100.0, max_distance_pct=1.0, min_confidence=0.5) == []
 
 
@@ -163,7 +178,7 @@ def test_validator_drops_bad_direction():
     from app.strategy.llm_breakout.validator import validate_signals
 
     raw = [{"direction": "SIDEWAYS", "pattern_type": "horizontal_range",
-            "trigger_price": 100.0, "confidence": 0.9, "volume_confirmed": True, "rationale": "x"}]
+            "trigger_price": 100.0, "confidence": 0.9, "rationale": "x"}]
     assert validate_signals(raw, today_close=100.0, max_distance_pct=1.0, min_confidence=0.5) == []
 
 
@@ -171,7 +186,7 @@ def test_validator_drops_hallucinated_trigger_price():
     from app.strategy.llm_breakout.validator import validate_signals
 
     raw = [{"direction": "CALL", "pattern_type": "horizontal_range",
-            "trigger_price": 99999.0, "confidence": 0.9, "volume_confirmed": True, "rationale": "x"}]
+            "trigger_price": 99999.0, "confidence": 0.9, "rationale": "x"}]
     assert validate_signals(raw, today_close=100.0, max_distance_pct=1.0, min_confidence=0.5) == []
 
 
@@ -179,25 +194,15 @@ def test_validator_drops_low_confidence():
     from app.strategy.llm_breakout.validator import validate_signals
 
     raw = [{"direction": "CALL", "pattern_type": "horizontal_range",
-            "trigger_price": 100.0, "confidence": 0.4, "volume_confirmed": True, "rationale": "x"}]
+            "trigger_price": 100.0, "confidence": 0.4, "rationale": "x"}]
     assert validate_signals(raw, today_close=100.0, max_distance_pct=1.0, min_confidence=0.5) == []
-
-
-def test_validator_drops_non_bool_volume_confirmed():
-    from app.strategy.llm_breakout.validator import validate_signals
-
-    raw = [{"direction": "CALL", "pattern_type": "horizontal_range",
-            "trigger_price": 100.0, "confidence": 0.9, "volume_confirmed": "yes", "rationale": "x"}]
-    out = validate_signals(raw, today_close=100.0, max_distance_pct=1.0, min_confidence=0.5)
-    assert len(out) == 1
-    assert out[0]["volume_confirmed"] is False  # coerced
 
 
 def test_validator_clamps_confidence_out_of_range():
     from app.strategy.llm_breakout.validator import validate_signals
 
     raw = [{"direction": "CALL", "pattern_type": "horizontal_range",
-            "trigger_price": 100.0, "confidence": 1.7, "volume_confirmed": True, "rationale": "x"}]
+            "trigger_price": 100.0, "confidence": 1.7, "rationale": "x"}]
     out = validate_signals(raw, today_close=100.0, max_distance_pct=5.0, min_confidence=0.5)
     assert len(out) == 1
     assert out[0]["confidence"] == 1.0
@@ -207,11 +212,25 @@ def test_validator_accepts_valid_signal():
     from app.strategy.llm_breakout.validator import validate_signals
 
     raw = [{"direction": "CALL", "pattern_type": "horizontal_range",
-            "trigger_price": 105.0, "confidence": 0.8, "volume_confirmed": True, "rationale": "x"}]
+            "trigger_price": 105.0, "confidence": 0.8, "rationale": "x"}]
     out = validate_signals(raw, today_close=105.0, max_distance_pct=1.0, min_confidence=0.6)
     assert len(out) == 1
     assert out[0]["pattern_type"] == "horizontal_range"
     assert out[0]["direction"] == "CALL"
+
+
+def test_validator_does_not_require_volume_confirmed():
+    """Volume confirmation is gone — validator must accept signals with or without
+    a stray `volume_confirmed` key in the LLM's payload."""
+    from app.strategy.llm_breakout.validator import validate_signals
+
+    base = {"direction": "CALL", "pattern_type": "horizontal_range",
+            "trigger_price": 105.0, "confidence": 0.8, "rationale": "x"}
+    with_volume = {**base, "volume_confirmed": True}
+    without_volume = dict(base)
+    a = validate_signals([with_volume], today_close=105.0, max_distance_pct=1.0, min_confidence=0.6)
+    b = validate_signals([without_volume], today_close=105.0, max_distance_pct=1.0, min_confidence=0.6)
+    assert len(a) == 1 and len(b) == 1
 
 
 def test_validator_drops_non_dict_signal():
@@ -240,7 +259,7 @@ def test_detect_one_returns_empty_on_transport_error():
     df = _range_df()
     out = detect_one(
         client=client, symbol="NIFTY", underlying_key="k",
-        candles=df, lookback_candles=250, volume_multiplier=4.0,
+        candles=df, lookback_candles=250,
         divergence_pct=0.5, min_confidence=0.7,
     )
     assert out == []
@@ -254,7 +273,7 @@ def test_detect_one_returns_empty_on_bad_json_via_client_error():
     df = _range_df()
     out = detect_one(
         client=client, symbol="NIFTY", underlying_key="k",
-        candles=df, lookback_candles=250, volume_multiplier=4.0,
+        candles=df, lookback_candles=250,
         divergence_pct=0.5, min_confidence=0.7,
     )
     assert out == []
@@ -268,7 +287,7 @@ def test_detect_one_returns_empty_signals():
     df = _range_df()
     out = detect_one(
         client=client, symbol="NIFTY", underlying_key="k",
-        candles=df, lookback_candles=250, volume_multiplier=4.0,
+        candles=df, lookback_candles=250,
         divergence_pct=0.5, min_confidence=0.7,
     )
     assert out == []
@@ -286,26 +305,26 @@ def test_detect_one_filters_invalid_signals_but_keeps_valid_one():
         "signals": [
             # hallucinated trigger
             {"direction": "CALL", "pattern_type": "horizontal_range",
-             "trigger_price": 99999.0, "confidence": 0.9, "volume_confirmed": True, "rationale": "x"},
+             "trigger_price": 99999.0, "confidence": 0.9, "rationale": "x"},
             # disallowed pattern_type
             {"direction": "CALL", "pattern_type": "volume_breakout",
-             "trigger_price": 105.0, "confidence": 0.9, "volume_confirmed": True, "rationale": "x"},
+             "trigger_price": 105.0, "confidence": 0.9, "rationale": "x"},
             # bad direction
             {"direction": "SIDEWAYS", "pattern_type": "horizontal_range",
-             "trigger_price": 105.0, "confidence": 0.9, "volume_confirmed": True, "rationale": "x"},
+             "trigger_price": 105.0, "confidence": 0.9, "rationale": "x"},
             # confidence too low
             {"direction": "PUT", "pattern_type": "trendline",
-             "trigger_price": 95.0, "confidence": 0.3, "volume_confirmed": True, "rationale": "x"},
+             "trigger_price": 95.0, "confidence": 0.3, "rationale": "x"},
             # valid
             {"direction": "CALL", "pattern_type": "horizontal_range",
-             "trigger_price": 105.0, "confidence": 0.8, "volume_confirmed": True, "rationale": "ok"},
+             "trigger_price": 105.0, "confidence": 0.8, "rationale": "ok"},
         ]
     }
     client = StubClient(responses=[response])
     df = _range_df(n=260, breakout=105.2)
     out = detect_one(
         client=client, symbol="NIFTY", underlying_key="k",
-        candles=df, lookback_candles=250, volume_multiplier=4.0,
+        candles=df, lookback_candles=250,
         divergence_pct=0.5, min_confidence=0.7,
     )
     assert len(out) == 1
@@ -319,11 +338,11 @@ def test_detect_one_handles_too_few_candles():
 
     client = StubClient(responses=[{"signals": [{"direction": "CALL", "pattern_type": "horizontal_range",
                                                    "trigger_price": 100.0, "confidence": 0.9,
-                                                   "volume_confirmed": True, "rationale": "x"}]}])
+                                                   "rationale": "x"}]}])
     df = _df([100.0] * 20)
     out = detect_one(
         client=client, symbol="X", underlying_key="k",
-        candles=df, lookback_candles=250, volume_multiplier=4.0,
+        candles=df, lookback_candles=250,
         divergence_pct=0.5, min_confidence=0.7,
     )
     assert out == []
@@ -350,19 +369,18 @@ def test_strategy_disabled_returns_empty(db_env):
     assert out == []
 
 
-def test_strategy_emits_lead_with_components(db_env):
+def test_strategy_emits_lead_with_meta_and_confidence(db_env):
     from app.settings import set_setting
     from app.strategy import StrategyRegistry
     from app.strategy.llm_breakout import StubClient
 
     set_setting("llm.enabled", True)
     set_setting("llm.min_confidence", 0.6)
-    set_setting("llm.volume_multiplier", 4.0)
     set_setting("max_lead_price_divergence_pct", 0.5)
 
     response = {"signals": [
         {"direction": "CALL", "pattern_type": "horizontal_range",
-         "trigger_price": 105.0, "confidence": 0.8, "volume_confirmed": True, "rationale": "ok"}
+         "trigger_price": 105.0, "confidence": 0.8, "rationale": "ok"}
     ]}
     strat = StrategyRegistry.get("llm_breakout")(client=StubClient(responses=[response]))
     strat.begin_run(max_calls=10)
@@ -373,11 +391,37 @@ def test_strategy_emits_lead_with_components(db_env):
     assert lead.direction == "CALL"
     assert lead.signal_type == "horizontal_range"
     assert lead.signal_level == 105.0
+    # LLM's confidence IS the lead's confidence (no composite re-blending).
     assert lead.confidence == 0.8
     assert lead.meta["source"] == "llm"
-    assert lead.meta["components"]["volume"] == 1.0
-    assert lead.meta["components"]["pattern_fit"] == 0.8
-    assert "llm_rationale" in lead.meta["components"]["extras"]
+    assert lead.meta["llm_rationale"] == "ok"
+    # No more `components` dict — tier-3 re-blend is a no-op for LLM signals.
+    assert "components" not in lead.meta
+
+
+def test_strategy_does_not_require_volume_confirmed(db_env):
+    """A clean breakout signal without volume confirmation is still emitted."""
+    from app.settings import set_setting
+    from app.strategy import StrategyRegistry
+    from app.strategy.llm_breakout import StubClient
+
+    set_setting("llm.enabled", True)
+    set_setting("llm.min_confidence", 0.6)
+    set_setting("max_lead_price_divergence_pct", 0.5)
+
+    response = {"signals": [
+        {"direction": "PUT", "pattern_type": "head_shoulders",
+         "trigger_price": 95.0, "confidence": 0.82, "rationale": "neckline just broken"}
+    ]}
+    strat = StrategyRegistry.get("llm_breakout")(client=StubClient(responses=[response]))
+    strat.begin_run(max_calls=10)
+    inst = SimpleNamespace(id=1, symbol="NIFTY", spot_instrument_key="k")
+    # Build a tight H&S-shaped series around 95.
+    df = _range_df(n=260, low=80.0, high=110.0, breakout=94.8)
+    leads = strat.generate(inst, df, now=None)
+    assert len(leads) == 1
+    assert leads[0].direction == "PUT"
+    assert leads[0].confidence == 0.82
 
 
 def test_strategy_respects_max_calls_per_run(db_env):
@@ -415,20 +459,6 @@ def test_strategy_no_client_no_leads(db_env):
     inst = SimpleNamespace(id=1, symbol="NIFTY", spot_instrument_key="k")
     out = strat.generate(inst, _range_df(), now=None)
     assert out == []
-
-
-def test_to_lead_components_includes_volume_and_proximity():
-    from app.strategy.llm_breakout.detector import to_lead_components
-
-    comp = to_lead_components(
-        {"direction": "CALL", "pattern_type": "horizontal_range",
-         "trigger_price": 100.0, "confidence": 0.75,
-         "volume_confirmed": True, "rationale": "looks good"}
-    )
-    assert comp["volume"] == 1.0
-    assert comp["proximity"] == 1.0
-    assert comp["trend_alignment"] == 0.5
-    assert comp["extras"]["llm_rationale"] == "looks good"
 
 
 # --- health module (persistent counters + snapshot) -----------------------
@@ -540,12 +570,12 @@ def test_detector_records_success_on_valid_signal(db_env):
     llm_health.reset()
     client = StubClient(responses=[{"signals": [
         {"direction": "CALL", "pattern_type": "horizontal_range",
-         "trigger_price": 105.0, "confidence": 0.8, "volume_confirmed": True, "rationale": "x"}
+         "trigger_price": 105.0, "confidence": 0.8, "rationale": "x"}
     ]}])
     detect_one(
         client=client, symbol="NIFTY", underlying_key="k",
         candles=_range_df(n=260, breakout=105.2),
-        lookback_candles=250, volume_multiplier=4.0,
+        lookback_candles=250,
         divergence_pct=0.5, min_confidence=0.7,
     )
     stats = llm_health.get_stats()
@@ -562,12 +592,12 @@ def test_detector_records_success_when_validator_rejects_all(db_env):
     llm_health.reset()
     client = StubClient(responses=[{"signals": [
         {"direction": "CALL", "pattern_type": "horizontal_range",
-         "trigger_price": 99999.0, "confidence": 0.8, "volume_confirmed": True, "rationale": "x"}
+         "trigger_price": 99999.0, "confidence": 0.8, "rationale": "x"}
     ]}])
     detect_one(
         client=client, symbol="NIFTY", underlying_key="k",
         candles=_range_df(n=260, breakout=105.2),
-        lookback_candles=250, volume_multiplier=4.0,
+        lookback_candles=250,
         divergence_pct=0.5, min_confidence=0.7,
     )
     stats = llm_health.get_stats()
@@ -587,7 +617,7 @@ def test_detector_records_error_on_transport_error(db_env):
     detect_one(
         client=client, symbol="NIFTY", underlying_key="k",
         candles=_range_df(),
-        lookback_candles=250, volume_multiplier=4.0,
+        lookback_candles=250,
         divergence_pct=0.5, min_confidence=0.7,
     )
     stats = llm_health.get_stats()
@@ -606,7 +636,7 @@ def test_detector_records_error_on_client_exception(db_env):
     detect_one(
         client=client, symbol="NIFTY", underlying_key="k",
         candles=_range_df(),
-        lookback_candles=250, volume_multiplier=4.0,
+        lookback_candles=250,
         divergence_pct=0.5, min_confidence=0.7,
     )
     stats = llm_health.get_stats()
@@ -624,7 +654,7 @@ def test_detector_records_error_on_malformed_signals_payload(db_env):
     detect_one(
         client=client, symbol="NIFTY", underlying_key="k",
         candles=_range_df(),
-        lookback_candles=250, volume_multiplier=4.0,
+        lookback_candles=250,
         divergence_pct=0.5, min_confidence=0.7,
     )
     stats = llm_health.get_stats()
@@ -644,7 +674,7 @@ def test_detector_does_not_record_anything_when_candles_short(db_env):
     df = _df([100.0] * 20)
     detect_one(
         client=client, symbol="X", underlying_key="k", candles=df,
-        lookback_candles=250, volume_multiplier=4.0,
+        lookback_candles=250,
         divergence_pct=0.5, min_confidence=0.7,
     )
     stats = llm_health.get_stats()
@@ -832,4 +862,3 @@ def test_config_defaults_to_openrouter():
     assert cfg.LLM_MODEL == "minimax/minimax-m3"
     assert cfg.OPENROUTER_APP_URL == ""
     assert cfg.OPENROUTER_APP_NAME == ""
-    monkey.undo()
