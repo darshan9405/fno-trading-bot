@@ -1,4 +1,5 @@
 import logging
+import traceback
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -119,6 +120,43 @@ def create_app(config: Config | None = None) -> Flask:
             jsonify({"status": "error", "error": {"code": "forbidden", "message": "Forbidden."}}),
             403,
         )
+
+    @app.errorhandler(500)
+    def internal_error(e):
+        # Catch uncaught exceptions BEFORE Flask renders its default HTML
+        # page. The default 500 is a `<!doctype html><html>...Internal Server
+        # Error</html>` page which gives the UI no way to surface the real
+        # failure. We log the full traceback server-side and return a
+        # structured JSON envelope so the UI can show actionable detail.
+        from flask import current_app
+        current_app.logger.exception("unhandled 500: %s", e)
+        tb = traceback.format_exc()
+        # Cap the traceback string so a 10MB stack doesn't blow the response.
+        return (
+            jsonify({
+                "status": "error",
+                "error": {
+                    "code": "internal_error",
+                    "message": f"{type(e).__name__}: {e}" if e else "Internal server error",
+                    "exception_class": type(e).__name__ if e else None,
+                    "traceback": tb[-4000:],
+                },
+            }),
+            500,
+        )
+
+    @app.errorhandler(Exception)
+    def unhandled_exception(e):
+        # Flask only invokes registered handlers for HTTPException subclasses
+        # and the codes above. A bare `Exception` (e.g. a SQLAlchemy error
+        # raised outside an explicit try/except) would otherwise fall through
+        # to the default HTML 500 page — wrap that case too.
+        # Skip HTTPException subclasses (404, 405, etc.) — those have
+        # their own meaning and aren't really "internal errors".
+        from werkzeug.exceptions import HTTPException
+        if isinstance(e, HTTPException):
+            return e
+        return internal_error(e)
 
     from app.api import register_blueprints
 

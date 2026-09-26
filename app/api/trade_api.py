@@ -1,6 +1,7 @@
 """Trades + P&L API (Stage 6): open/closed trades, live P&L, funds, leads."""
 
 import logging
+import traceback
 from datetime import timezone
 from zoneinfo import ZoneInfo
 
@@ -169,15 +170,28 @@ def leads():
     """
     # Build the response INSIDE the session to avoid DetachedInstanceError
     # on `lead.instrument` lazy-load after the session is gone.
-    with session_scope() as session:
-        rows = list(
-            session.execute(
-                select(Lead)
-                .order_by(Lead.confidence.desc(), Lead.created_at.desc())
-                .limit(200)
-            ).scalars()
+    try:
+        with session_scope() as session:
+            rows = list(
+                session.execute(
+                    select(Lead)
+                    .order_by(Lead.confidence.desc(), Lead.created_at.desc())
+                    .limit(200)
+                ).scalars()
+            )
+            data = [_lead_dict(l) for l in rows]
+    except Exception as e:  # noqa: BLE001
+        # Don't let one bad row (None components, missing FK, schema drift)
+        # turn the entire Leads page into an opaque 500. Log the full
+        # traceback server-side, return a structured error with the
+        # exception class + message so the UI can display something
+        # actionable.
+        log.exception("GET /api/trades/leads failed")
+        return error(
+            "internal_error",
+            f"{type(e).__name__}: {e}",
+            500,
         )
-        data = [_lead_dict(l) for l in rows]
     return ok({"count": len(data), "leads": data})
 
 
@@ -341,8 +355,14 @@ def _lead_dict(l: Lead) -> dict:
     plan = l.plan or {}
     components = l.components or {}
     # `created_at` is naive UTC. Surface IST equivalents so the UI doesn't
-    # need a TZ round-trip on the client.
-    ist_created = l.created_at.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("Asia/Kolkata"))
+    # need a TZ round-trip on the client. Be defensive against legacy
+    # rows where `created_at` may be None — fall back to "epoch" rather
+    # than blowing up the whole endpoint.
+    if l.created_at is None:
+        created_dt = datetime(1970, 1, 1)
+    else:
+        created_dt = l.created_at
+    ist_created = created_dt.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("Asia/Kolkata"))
     signal_level = l.signal_level
     return {
         "id": l.id,
@@ -358,7 +378,7 @@ def _lead_dict(l: Lead) -> dict:
         "score_breakdown": _score_breakdown(components),
         "status": l.status,
         "note": l.note,
-        "created_at": l.created_at,
+        "created_at": created_dt,
         "created_at_ist": ist_created.isoformat(),
         "created_at_ist_label": ist_created.strftime("%d %b %H:%M"),
         "expiry": plan.get("expiry"),
@@ -378,7 +398,13 @@ def _lead_dict(l: Lead) -> dict:
 
 def _score_breakdown(components: dict) -> list[dict]:
     """Flatten the components dict to a list of {label, value, weight} so
-    the UI can render the per-dimension contribution to the composite score."""
+    the UI can render the per-dimension contribution to the composite score.
+
+    Defensive against malformed component values: a string or missing key
+    is silently skipped rather than raising TypeError on `float()`. The
+    full row stays renderable so a single corrupt lead doesn't 500 the
+    entire `/leads` endpoint.
+    """
     weights = {
         "pattern_fit":     0.40,
         "volume":          0.25,
@@ -399,17 +425,26 @@ def _score_breakdown(components: dict) -> list[dict]:
         "oi":              "OI",
         "time_of_day":     "Time of day",
     }
+    if not isinstance(components, dict):
+        return []
     out = []
     for k, label in labels.items():
         v = components.get(k)
         if v is None:
             continue
+        try:
+            vf = float(v)
+            w = float(weights.get(k, 0.0))
+        except (TypeError, ValueError):
+            # Component value isn't numeric (e.g. legacy row stored a string
+            # or the LLM returned a dict). Skip it; don't blow up the row.
+            continue
         out.append({
             "key": k,
             "label": label,
-            "value": float(v),
-            "weight": float(weights.get(k, 0.0)),
-            "contribution": round(float(v) * float(weights.get(k, 0.0)), 4),
+            "value": vf,
+            "weight": w,
+            "contribution": round(vf * w, 4),
         })
     return out
 
