@@ -552,12 +552,14 @@ def run_agent_loop(
     # Pull the model-supplied reason for an empty signals list. If the model
     # didn't populate it (older prompts, degenerate output) fall back to the
     # last assistant message so the UI never gets a NULL reason for a
-    # non-empty "no_signal" outcome.
+    # non-empty "no_signal" outcome. Cap both at 32 KB — the LLM's
+    # explanation can run to several KB for a thorough rejection, and the
+    # UI renders the full text verbatim (no character truncation).
     rejection_reason = final.get("rejection_reason")
     if not rejection_reason and not raw_signals:
         fallback = (last_content or "").strip()
         if fallback:
-            rejection_reason = fallback[:400]
+            rejection_reason = fallback[:32_000]
 
     valid = validate_signals(
         raw_signals,
@@ -573,7 +575,7 @@ def run_agent_loop(
     llm_health.record_success()
     return AgentResult(
         signals=valid,
-        rejection_reason=str(rejection_reason)[:400] if rejection_reason else None,
+        rejection_reason=str(rejection_reason)[:32_000] if rejection_reason else None,
         tool_calls=list(tool_call_log),
         agent_iters=len(tool_call_log),
         agent_duration_s=round(duration_s, 3),

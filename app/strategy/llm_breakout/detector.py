@@ -187,15 +187,16 @@ def detect_one(
     llm_health.record_success()
     # The legacy path doesn't go through the agent loop, so there's no
     # tool-call log to surface. Rejection_reason comes from the model's
-    # payload when present (newer prompts include it).
+    # payload when present (newer prompts include it). Cap at 32 KB so
+    # the UI can render the full LLM explanation verbatim.
     rejection_reason = response.get("rejection_reason")
     if not rejection_reason and not raw_signals:
         reasoning_s = (reasoning or "").strip()
         if reasoning_s:
-            rejection_reason = reasoning_s[:400]
+            rejection_reason = reasoning_s[:32_000]
     return AgentResult(
         signals=valid,
-        rejection_reason=str(rejection_reason)[:400] if rejection_reason else None,
+        rejection_reason=str(rejection_reason)[:32_000] if rejection_reason else None,
         tool_calls=[],
         agent_iters=0,
         agent_duration_s=0.0,

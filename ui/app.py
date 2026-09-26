@@ -444,6 +444,47 @@ def _css() -> str:
     .lead-card:hover {{ border-color: {BORDER_STRONG}; background: {CARD_HOVER}; }}
     .lead-card.queued {{ border-left: 3px solid {PRIMARY}; }}
     .lead-card.skipped {{ border-left: 3px solid {MUTED}; }}
+
+    /* ---------- Leads table (the main Leads view) ----------
+       Four columns: Symbol | Status | Reason (full, no truncation) |
+       Details button. Reason column wraps freely; on phones it
+       collapses to a stacked layout below the symbol. */
+    .lead-table-head {{
+      display: grid;
+      grid-template-columns: 1.4fr 1.0fr 6.0fr 1.2fr;
+      gap: 12px; align-items: center;
+      padding: 8px 12px;
+      background: {BG_RAISED};
+      border: 1px solid {BORDER}; border-radius: 6px;
+      margin: 12px 0 6px 0;
+    }}
+    .lead-table-h {{
+      color: {MUTED}; font-size: 0.68rem;
+      text-transform: uppercase; letter-spacing: .1em;
+      font-weight: 700;
+    }}
+    .lead-table-row {{ /* reserved for future per-row styling */ }}
+    .lead-table-cell {{
+      color: {TEXT}; font-size: 0.88rem; line-height: 1.5;
+      min-width: 0;
+    }}
+    .lead-table-sym b {{
+      font-size: 0.96rem; font-weight: 700;
+      letter-spacing: -.005em;
+    }}
+    .lead-table-reason {{
+      color: {TEXT}; font-size: 0.88rem; line-height: 1.55;
+      overflow-wrap: anywhere; white-space: pre-wrap;
+    }}
+    .lead-table-row-sep {{
+      border: 0; border-top: 1px solid rgba(255,255,255,0.05);
+      margin: 6px 0;
+    }}
+    /* On phones, drop the grid layout and let columns stack so the
+       reason isn't squeezed into a thin right-aligned column. */
+    @media (max-width: 760px) {{
+      .lead-table-head {{ display: none; }}
+    }}
     .lead-head {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; min-width: 0; }}
     .lead-head-left {{ flex: 1; min-width: 0; }}
     .lead-head-right {{
@@ -925,37 +966,31 @@ def _llm_status_color(llm: dict) -> str:
 
 # --- auth ----------------------------------------------------------------
 
-def _login_top_navigation_js(url: str) -> str:
-    """A <script> that navigates the top frame after a button click.
+def _top_nav_link(label: str, url: str, *, css_class: str,
+                  help: str | None = None) -> None:
+    """Render a real ``<a target="_top">`` link styled as a button.
 
-    Streamlit's sandboxed iframe does NOT allow JS-triggered top navigation
-    without a user gesture — and the cross-origin SSO callback must land on
-    the same top-frame instance (not a new tab). The combination of a real
-    user click on a `<button>` (which counts as a user gesture) plus
-    `window.top.location.href = url` is the working pattern.
+    Why a real anchor and not a JS-driven button:
+
+    Streamlit serves the app from inside a sandboxed iframe. Programmatic
+    ``window.top.location.href = url`` from a script injected after a button
+    click is silently dropped by modern browsers (the iframe sandbox only
+    allows ``allow-top-navigation`` on a *real* user gesture, and a script
+    injected during a re-render is not considered one). A genuine ``<a>``
+    anchor with ``target="_top"`` and a native ``href`` works because the
+    browser itself handles the navigation when the user clicks the link —
+    no JavaScript required, no CSP gymnastics, no race between the script
+    injection and the next Streamlit re-render. The link is styled with a
+    pre-existing class (``.sso-login-btn`` / ``.sidebar-logout-btn``) so it
+    looks and behaves like the Streamlit button it replaces.
     """
-    return (
-        "<script>(function(){"
-        "var url = " + repr(url) + ";"
-        "function go(){ try{ window.top.location.href = url; }catch(e){ window.location.href = url; } }"
-        "if(document.readyState==='complete') go(); else window.addEventListener('load', go);"
-        "})();</script>"
+    title_attr = f' title="{_html_escape(help)}"' if help else ""
+    st.markdown(
+        f"<a class='{css_class}' href='{_html_escape(url)}' "
+        f"target='_top' rel='noopener noreferrer'{title_attr}>"
+        f"{_html_escape(label)}</a>",
+        unsafe_allow_html=True,
     )
-
-
-def _top_nav_button(label: str, url: str, *, key: str, type: str = "primary",
-                    use_container_width: bool = True, help: str | None = None,
-                    icon: str | None = None):
-    """Streamlit button that navigates the top frame (breaks out of the iframe).
-
-    Streamlit renders a normal `<button>`, which cannot carry an `href`. We
-    rely on a small JS post-render hook to set `window.top.location.href` on
-    the first click (which is a user gesture — required by the sandboxed
-    iframe's CSP to allow top-frame navigation).
-    """
-    if st.button(label, key=key, type=type, use_container_width=use_container_width,
-                 help=help):
-        st.markdown(_login_top_navigation_js(url), unsafe_allow_html=True)
 
 
 def render_login():
@@ -963,8 +998,9 @@ def render_login():
 
     Streamlit's stApp container is reused; the login surface is a centred
     card with Groww-style rounded corners and a teal CTA. The CTA is a real
-    `st.button` (not an anchor) — see `_top_nav_button` for how the
-    top-frame navigation works around the iframe sandbox.
+    ``<a target="_top">`` anchor styled to look like a Streamlit button — see
+    `_top_nav_link` for why a real anchor (and not a JS-driven button) is the
+    only reliable way to break out of Streamlit's sandboxed iframe.
 
     The card chrome and the Streamlit-rendered button are siblings in the
     page flow; both are constrained to the same width via Streamlit
@@ -988,12 +1024,10 @@ def render_login():
         # Card chrome (brand, tagline, error, footer). The CTA slot is
         # empty — the Streamlit button below fills that visual space.
         st.html(_login_css() + _login_card_chrome_html(error_html))
-        _top_nav_button(
+        _top_nav_link(
             "Continue with Upstox SSO",
             api.login_url(),
-            key="sso_login",
-            type="primary",
-            use_container_width=True,
+            css_class="sso-login-btn",
             help="Redirects to Upstox to authorise this dashboard. You'll be returned here after sign-in.",
         )
         # Tiny spacer that mimics the original card's bottom padding.
@@ -1269,18 +1303,16 @@ def render_sidebar() -> str:
         st.markdown("### Controls")
         if st.button("Refresh now", use_container_width=True, help="Force-refresh the current view."):
             st.rerun()
-        # Logout: real Streamlit button (no anchor tag in the DOM).
-        # The click triggers JS to set `window.top.location.href` to the
-        # backend's `/api/auth/logout` endpoint, which clears cookies and
-        # redirects to the frontend. The `target="_top"` semantics are
-        # preserved because the iframe sandbox allows top navigation on
-        # user-activation, and the Streamlit button click IS a user click.
-        _top_nav_button(
+        # Logout: a real ``<a target="_top">`` anchor styled to look like a
+        # secondary button. The browser handles the top-frame navigation
+        # natively on click, so no JS injection is needed — the previous
+        # `st.button` + JS approach was unreliable because scripts injected
+        # via `st.markdown(unsafe_allow_html=True)` are not always executed
+        # by the browser when the iframe is sandboxed.
+        _top_nav_link(
             "Logout",
             api.logout_url(),
-            key="sidebar_logout",
-            type="secondary",
-            use_container_width=True,
+            css_class="sidebar-logout-btn",
             help="End the Upstox session and clear tokens.",
         )
 
@@ -1362,14 +1394,13 @@ def render_token_status():
         f"border-color:rgba(234,84,85,0.4);color:#fda4af;'>"
         f"Upstox token expired — the bot cannot trade until you re-login.</div>"
     )
-    # Real Streamlit button (no anchor tag in the DOM) — same top-frame
-    # navigation trick as the login/logout buttons.
-    _top_nav_button(
+    # Real ``<a target="_top">`` anchor styled to look like a primary button
+    # — same approach as the SSO login button; the browser handles the
+    # top-frame navigation natively on click.
+    _top_nav_link(
         "Login with Upstox",
         api.login_url(),
-        key="token_expired_login",
-        type="primary",
-        use_container_width=True,
+        css_class="sso-login-btn",
         help="Redirect to Upstox to refresh your session.",
     )
 
@@ -1441,9 +1472,8 @@ def render_dashboard():
     # Day-at-a-glance stats (combines open + today's closed)
     _render_day_stats()
 
-    # Note: "Today's queued signals" preview lives in the Leads section so the
-    # Dashboard stays focused on P&L. The Leads tab reuses `_render_queued_signals_table()`
-    # for its own queued preview and the full lead list below.
+    # Note: the Leads section carries the only "scanned stocks" / queued signals
+    # preview — the Dashboard stays focused on P&L.
 
 
 def _track_pnl_history(total: float):
@@ -1605,54 +1635,218 @@ def _render_position_card(r: dict):
     )
 
 
-def _render_queued_signals_table(queued_rows: list[dict]) -> None:
-    """Compact queued-signals preview used inside the Leads tab.
+def _latest_outcomes() -> list[dict]:
+    """Return the most-recent lead-gen run's scan-outcome list.
 
-    Kept as a small dataframe so the section above the rich lead cards
-    doesn't dominate the page. Empty state shows a single info line so the
-    user knows the data path is alive (just no signals yet).
+    Source priority:
+      1. **Live ring buffer** — `st.session_state["lead_job"]` carries the
+         in-flight job handle; on each fragment poll we copy the latest
+         `progress["scan_outcomes"]` into a session_state cache so the
+         outer render (which doesn't poll) can still render the table.
+      2. **DB fallback** — `GET /leads/scan-outcomes?job_id=<last>` for the
+         last completed job, so the table survives a page reload after a
+         run finished.
+      3. **Most-recent scan outcomes** — if no specific job is attached,
+         fall back to the very latest run's outcomes (operator-friendly:
+         "show me the most recent thing that happened").
     """
-    if not queued_rows:
-        st.info("No queued signals. Tap **Generate now** above to scan underlyings.")
+    job = st.session_state.get("lead_job") or {}
+    job_id = job.get("id") or st.session_state.get("last_lead_job_id")
+    cached = st.session_state.get("_latest_outcomes_cache") or []
+
+    # Live ring buffer wins — it's the freshest.
+    if cached:
+        return list(cached)
+
+    if job_id:
+        try:
+            resp = api.get_scan_outcomes(job_id=job_id, limit=200)
+            if resp.get("status") == "ok":
+                outcomes = list(resp.get("data") or [])
+                if outcomes:
+                    return outcomes
+        except Exception:
+            pass
+
+    # Final fallback: latest scan outcomes by scanned_at, no job filter.
+    try:
+        resp = api.get_scan_outcomes(limit=200)
+        if resp.get("status") == "ok":
+            return list(resp.get("data") or [])
+    except Exception:
+        pass
+    return []
+
+
+def _count_decisions(outcomes: list[dict]) -> dict[str, int]:
+    """Tally how many scan outcomes landed in each decision bucket."""
+    counts = {"generated": 0, "no_signal": 0, "error": 0}
+    for o in outcomes:
+        d = (o.get("decision") or "").lower()
+        if d in counts:
+            counts[d] += 1
+    return counts
+
+
+def _count_total_leads() -> int:
+    """Best-effort count of `Lead` rows so the delete-all button can be
+    disabled when there's nothing to delete. Used only for the button's
+    enabled/disabled state and the typed-confirmation dialog copy — we
+    surface the real count from the API right before the delete, so a
+    stale count here just disables the button a few seconds early.
+    """
+    try:
+        resp = api.get_leads()
+        if resp.get("status") == "ok":
+            return int((resp.get("data") or {}).get("count") or 0)
+    except Exception:
+        pass
+    return 0
+
+
+def _render_outcome_table(outcomes: list[dict]) -> None:
+    """Render the main Leads table.
+
+    One row per underlying the lead generator analysed. Layout:
+
+        [ Symbol ]  [ Status pill ]  [ Full reason (wraps freely) ]  [ Details → ]
+
+    Every column is sized for readability: the symbol column is fixed
+    width, the status pill is compact, and the reason column gets the
+    rest of the row — the full LLM rejection_reason or generated-lead
+    rationale, NO truncation. The "Details →" button opens the
+    scan-outcome modal which carries every tool call, the full LLM
+    rationale, indicators and error context.
+    """
+    if not outcomes:
         return
-    df = pd.DataFrame(
-        [
-            {
-                "Time (IST)": (
-                    r.get("created_at_ist_label")
-                    or _utc_to_ist_hm(r.get("created_at"))
-                ),
-                "Symbol": r.get("symbol") or r["underlying"].split("|")[-1],
-                "Instrument": r.get("trading_symbol") or "—",
-                "Dir": r["direction"],
-                "Pattern": r["signal_type"],
-                "Signal Price": r["signal_level"],
-                "Conf": r["confidence"],
-                "Margin": _money(r.get("margin_needed")) if r.get("margin_needed") is not None else "—",
-                "Status": r["status"],
-            }
-            for r in queued_rows
-        ]
+
+    _html(
+        "<div class='lead-table-head'>"
+        "<div class='lead-table-h lead-table-h-sym'>Symbol</div>"
+        "<div class='lead-table-h lead-table-h-status'>Status</div>"
+        "<div class='lead-table-h lead-table-h-reason'>Reason</div>"
+        "<div class='lead-table-h lead-table-h-action'></div>"
+        "</div>"
     )
-    st.dataframe(
-        df,
-        use_container_width=True,
-        hide_index=True,
-        height=min(40 + 32 * len(df), 360),
+
+    for o in outcomes:
+        _render_outcome_row(o)
+
+
+def _render_outcome_row(o: dict) -> None:
+    """Single row of the Leads table — symbol + status + full reason + details button."""
+    symbol = o.get("symbol") or "?"
+    decision = (o.get("decision") or "no_signal").lower()
+    status_label, status_color = _outcome_status_label(decision)
+
+    # The reason: prefer the LLM's rejection_reason for "no_signal", the
+    # full rationale for "generated", and the error string for "error".
+    # Fallback chain is identical to the modal so the row previews the
+    # same text the user will see when they click in.
+    reason = (
+        o.get("rejection_reason")
+        or o.get("rationale")
+        or o.get("error")
+        or "(no detail recorded)"
     )
+    reason_str = str(reason)
+
+    # Row id for the Streamlit button key — for streaming rows the
+    # server hasn't yet returned a stable id, so we synthesise one.
+    row_key = (
+        f"scan_view_{o.get('id')}"
+        if o.get("id") is not None
+        else f"scan_view_stream::{o.get('symbol')}::{o.get('scanned_at')}"
+    )
+
+    cols = st.columns([1.4, 1.0, 6.0, 1.2], gap="small")
+    with cols[0]:
+        _html(
+            f"<div class='lead-table-cell lead-table-sym'>"
+            f"<b>{_html_escape(symbol)}</b></div>"
+        )
+    with cols[1]:
+        _html(
+            f"<div class='lead-table-cell lead-table-status'>"
+            f"<span style='color:{status_color};font-weight:600;'>"
+            f"{_html_escape(status_label)}</span></div>"
+        )
+    with cols[2]:
+        # Full reason — rendered as plain text so the user can copy
+        # it directly, no character limit, preserves line breaks.
+        _html(
+            f"<div class='lead-table-cell lead-table-reason'>"
+            f"{_html_escape(reason_str)}</div>"
+        )
+    with cols[3]:
+        # Streaming rows (no DB id yet) don't have a detail endpoint,
+        # so render a muted caption instead of a button that would 404.
+        if o.get("id") is not None:
+            if st.button(
+                "Details →",
+                key=row_key,
+                type="secondary",
+                use_container_width=True,
+                help="Open the full LLM thinking, tool calls, and indicators for this scan.",
+            ):
+                st.session_state["open_scan_outcome"] = int(o["id"])
+                st.rerun()
+        else:
+            _html(
+                "<div class='lead-table-cell lead-table-action muted' "
+                "style='font-size:0.72rem;text-align:center;'>scanning…</div>"
+            )
+
+    _html("<hr class='lead-table-row-sep'/>")
+
+
+_OUTCOME_DECISION_LABEL = {
+    "generated": ("Lead generated", "profit"),
+    "no_signal": ("No signal",      "muted"),
+    "error":     ("Error",          "loss"),
+}
+
+
+def _outcome_status_label(decision: str) -> tuple[str, str]:
+    """Return ``(label, css_class_or_color)`` for a scan-outcome decision."""
+    if decision == "generated":
+        return "Lead generated", PROFIT
+    if decision == "error":
+        return "Error", LOSS
+    return "No signal", MUTED
 
 
 def render_leads():
+    """The Leads section — a single, simple table.
+
+    Layout:
+
+      * **Toolbar**: Generate-now + manual lead-detail lookup.
+      * **Live status fragment**: while a run is in flight, shows the
+        progress bar + the same scanned-stocks table streaming in.
+      * **Latest-run table** (the main view): one row per underlying
+        the lead generator analysed — just the instrument and the
+        full LLM-supplied reason for generating or not generating a
+        lead. Nothing else.
+      * **Click a row → full detail modal** with the complete LLM
+        rationale, every tool call (with args + result), the indicator
+        snapshot and any error — no character truncation anywhere.
+      * **Delete-all leads** at the bottom (typed-confirmation gated).
+
+    The previous version stacked multiple summary cards, per-lead
+    detail cards, a queued-signals table and a separate "scanned
+    stocks" expander — which made the page busy and forced
+    truncation of the reasons just to keep the cards readable. The
+    new layout uses one table for everything: queued, placed,
+    skipped and expired leads all surface here, along with the
+    underlyings the LLM decided not to trade.
+    """
     st.subheader("Leads")
 
-    # The lead_cleanup scheduler keeps this view current:
-    # - Queued leads age out at 24h
-    # - Processed leads (skipped/placed/expired) retained for 7 days
-
-    # Generate button renders BEFORE the lead-list fetch so the user can
-    # always kick off a run, even if `/api/trades/leads` is briefly failing.
-    # The button only needs `api.get_active_lead_gen_job()` (which is cheap
-    # and silently no-ops on failure), so it stays usable during outages.
+    # Toolbar — the Generate button is the only thing on the top row.
+    # Manual lookup sits in its own expander below so it doesn't
+    # dominate the page.
     _html("<div class='lead-toolbar'>")
     _render_generate_lead_button("leads_tab")
     _html("</div>")
@@ -1679,43 +1873,60 @@ def render_leads():
             ):
                 st.session_state["open_lead_dialog"] = int(lookup_id)
 
-    # Now try to load the lead list. We surface the API error rather than
-    # hiding it behind a generic warning so the user knows whether the
-    # outage is auth (re-login) or transient (just refresh).
-    resp = api.get_leads()
-    if resp.get("status") != "ok":
-        err = resp.get("error") or {}
-        msg = err.get("message") or "Could not load leads."
-        code = err.get("code") or ""
-        if code in ("unauthorized", "jwt_expired") or "auth" in code.lower():
-            st.error(f"{msg} — your session has expired. Use the sidebar **Logout** and re-login.")
-        else:
-            # Surface the actual HTTP status + endpoint so the operator
-            # can grep the backend logs by status code immediately.
-            st.error(
-                f"**{code or 'error'}**: {msg}  \n"
-                f"Endpoint: `{err.get('endpoint', 'GET /api/trades/leads')}`  \n"
-                f"*(Generate Lead above still works; the list will repopulate when the API is reachable.)*"
-            )
-            with st.expander("Response body"):
-                st.code(err.get("body") or "(empty)", language=None)
-        # Still allow opening the modal: the manual lookup expander can
-        # pass an ID straight in without a list response.
+    # Live status fragment: while a run is in flight it streams the
+    # scanned-stocks table below this line; on terminal status it
+    # clears session_state["lead_job"] and triggers a final rerun.
+    _lead_gen_status_fragment()
+
+    # Resolve the latest job's outcomes — live ring buffer first,
+    # then the DB-backed endpoint as a fallback. We use scan outcomes
+    # (not the leads table) because they cover EVERY underlying the
+    # generator analysed, including the ones it decided not to trade —
+    # which is exactly the view the user asked for ("just the
+    # instrument and the reason it was or wasn't generated").
+    outcomes = _latest_outcomes()
+
+    # Empty-state copy — surfaced early so the user always has
+    # something to read while the Generate button is at the top.
+    if not outcomes:
+        st.info(
+            "No scanned stocks yet. Tap **Generate now**, or enable more "
+            "underlyings in **Instruments**."
+        )
         return
-    rows = resp["data"].get("leads", [])
-    lead_count = len(rows)
-    # Cache for `_open_lead_detail_modal`'s fallback row lookup. Stored
-    # at top level so the modal can find the matching row without
-    # re-fetching the list.
-    st.session_state["_last_leads_rows"] = rows
 
-    # Compact queued-signals table — quick scan of today's pending signals
-    # before the richer detail cards. Same data the Dashboard used to show.
-    queued_rows = [r for r in rows if r.get("status") == "queued"]
-    _render_queued_signals_table(queued_rows)
+    # Summary strip — tiny, sits above the table.
+    counts = _count_decisions(outcomes)
+    _html(
+        f"<div class='lead-summary'>"
+        f"<div class='lead-summary-cell'>"
+        f"<div class='lead-summary-num' style='color:{PROFIT};'>{counts['generated']}</div>"
+        f"<div class='lead-summary-lbl'>Lead generated</div>"
+        f"</div>"
+        f"<div class='lead-summary-cell'>"
+        f"<div class='lead-summary-num' style='color:{MUTED};'>{counts['no_signal']}</div>"
+        f"<div class='lead-summary-lbl'>No signal</div>"
+        f"</div>"
+        f"<div class='lead-summary-cell'>"
+        f"<div class='lead-summary-num' style='color:{LOSS};'>{counts['error']}</div>"
+        f"<div class='lead-summary-lbl'>Error</div>"
+        f"</div>"
+        f"</div>"
+    )
 
-    # Delete-all button — depends on `lead_count`, so it sits below the
-    # load guard. Only enabled when there's something to delete.
+    # The main table — one row per underlying. Just symbol + status +
+    # full reason (NO truncation). Each row carries a "Details →"
+    # button that opens the scan-outcome modal with the full LLM
+    # thinking, every tool call, etc.
+    st.caption(
+        f"{len(outcomes)} underlying{'s' if len(outcomes) != 1 else ''} scanned. "
+        "Click a row's **Details** for the full LLM thinking, tool calls, and indicators."
+    )
+    _render_outcome_table(outcomes)
+
+    # Delete-all — gated by a typed-confirmation dialog so a stray
+    # click can't wipe queued signals.
+    lead_count = _count_total_leads()
     if st.button(
         "Delete all leads",
         type="secondary",
@@ -1742,68 +1953,6 @@ def render_leads():
             st.success(f"Deleted {payload} lead row(s).")
         else:
             st.error(payload)
-
-    _lead_gen_status_fragment()
-
-    if not rows:
-        st.info("No leads. Tap **Generate now**, or enable more underlyings in **Instruments**.")
-        return
-
-    # Split into active (queued) and skipped
-    skipped_rows = [r for r in rows if r.get("status") == "skipped"]
-    placed_rows = [r for r in rows if r.get("status") == "placed"]
-    expired_rows = [r for r in rows if r.get("status") == "expired"]
-
-    # Top-level summary strip — counts at a glance, so the user can
-    # see the overall state without scrolling through every card.
-    _html(
-        f"<div class='lead-summary'>"
-        f"<div class='lead-summary-cell'>"
-        f"<div class='lead-summary-num'>{len(queued_rows)}</div>"
-        f"<div class='lead-summary-lbl'>Queued</div>"
-        f"</div>"
-        f"<div class='lead-summary-cell'>"
-        f"<div class='lead-summary-num' style='color:{PROFIT};'>{len(placed_rows)}</div>"
-        f"<div class='lead-summary-lbl'>Placed</div>"
-        f"</div>"
-        f"<div class='lead-summary-cell'>"
-        f"<div class='lead-summary-num' style='color:{WARN};'>{len(skipped_rows)}</div>"
-        f"<div class='lead-summary-lbl'>Skipped</div>"
-        f"</div>"
-        f"<div class='lead-summary-cell'>"
-        f"<div class='lead-summary-num' style='color:{MUTED};'>{len(expired_rows)}</div>"
-        f"<div class='lead-summary-lbl'>Expired</div>"
-        f"</div>"
-        f"</div>"
-    )
-
-    # --- Active Leads (rich detail cards) ---
-    _html(
-        f"<div class='lead-section-header'>"
-        f"<div class='lead-section-title'>Active leads (queued)</div>"
-        f"<div class='lead-section-count'>{len(queued_rows)} waiting</div>"
-        f"</div>"
-    )
-    if queued_rows:
-        for r in queued_rows:
-            _render_lead_card(r, show_note=False)
-            _render_lead_detail_button(r)
-    else:
-        _html("<div class='muted' style='padding:6px 2px;'>No active queued leads right now.</div>")
-
-    # --- Skipped Leads (with reasons) ---
-    _html(
-        f"<div class='lead-section-header'>"
-        f"<div class='lead-section-title'>Skipped leads</div>"
-        f"<div class='lead-section-count warn'>{len(skipped_rows)}</div>"
-        f"</div>"
-    )
-    if skipped_rows:
-        for r in skipped_rows:
-            _render_lead_card(r, show_note=True)
-            _render_lead_detail_button(r)
-    else:
-        _html("<div class='muted' style='padding:6px 2px;'>No skipped leads in retention window.</div>")
 
     # Lead-detail dialog is invoked from `main()` at script top level
     # — Streamlit's @st.dialog decorator requires top-level calls.
@@ -1853,145 +2002,6 @@ def _render_purge_leads_dialog(lead_count: int):
             err_msg = resp.get("error", {}).get("message", "Delete failed.")
             st.session_state["purge_leads_last_result"] = ("error", err_msg)
             st.rerun()
-
-
-def _render_lead_card(r: dict, show_note: bool = False):
-    """Render a single lead card. Mobile-first, minimum-viable layout.
-
-    The card intentionally shows ONLY two things upfront:
-
-      1. **The instrument** — the F&O contract this lead maps to
-         (e.g. ``RELIANCE 30 SEP 26 2900 CE × 500``) plus a tiny
-         direction/status chip so the user can scan the list.
-      2. **The reason** — the single-line explanation of WHY this
-         lead was generated / skipped / placed. This is the
-         information the user actually opens the Leads tab to read.
-
-    Everything else (full strike/expiry/premium breakdown, score
-    percentage + bars, score-component chips, LLM rationale, tool-
-    call log, indicator snapshot, trade row) lives behind the
-    "Why this lead?" button which opens the lead-detail modal. On
-    a phone this keeps each card to ~3 short rows instead of a
-    screen-filling stack that pushes the reason below the fold.
-    """
-    created_ist = (
-        r.get("created_at_ist_label")
-        or _utc_to_ist_hm(r.get("created_at"))
-    )
-    status = r.get("status") or "?"
-    direction_class = "up" if r["direction"] == "CALL" else "down"
-    status_class = "warn" if r["status"] == "queued" else "muted"
-    card_class = "queued" if r["status"] == "queued" else "skipped"
-
-    symbol = r.get("symbol") or r["underlying"].split("|")[-1]
-
-    # Confidence (still useful as a one-token hint next to the reason
-    # so the user can sort strong vs weak leads at a glance — but we
-    # don't render the bar + label here; the modal owns those).
-    pct = int((r.get("confidence") or 0) * 100)
-
-    instrument_html = _lead_plan_line(r)
-
-    # Build a short inline "reason" string from the best signal we
-    # have, so the user can read WHY the lead was generated/skipped
-    # without opening the modal. Same precedence as the modal:
-    # `note` → first sentence of LLM rationale → components+confidence
-    # fallback.
-    meta = r.get("meta") or {}
-    note = r.get("note")
-    inline_reason_text = (
-        note
-        or _first_sentence(meta.get("llm_rationale"))
-        or _format_reason_fallback(meta, pct)
-    )
-    reason_titles = {
-        "queued": "Generated",
-        "placed": "Traded",
-        "skipped": "Skipped",
-        "expired": "Expired",
-    }
-    reason_title = reason_titles.get(status, f"Status: {status}")
-    reason_color = {
-        "queued":  PRIMARY,
-        "placed":  PROFIT,
-        "skipped": WARN,
-        "expired": MUTED,
-    }.get(status, MUTED)
-
-    # Inline reason strip — the single most important line on the
-    # card. Thin accent left-border + label + body, kept short so
-    # it never wraps more than ~2 lines on a phone.
-    reason_html = (
-        f"<div class='lead-reason' style='border-left-color:{reason_color};'>"
-        f"<span class='lead-reason-label' style='color:{reason_color};'>"
-        f"{_html_escape(reason_title)}</span>"
-        f"<span class='lead-reason-body'>{_html_escape(inline_reason_text)}</span>"
-        f"</div>"
-    )
-
-    # Compact meta hint under the reason: "5 tool calls · 78% conf".
-    # Just enough so the user knows there's a richer story behind
-    # the lead, without showing the breakdown upfront.
-    meta_bits: list[str] = []
-    tc_count = len(meta.get("llm_tool_calls") or [])
-    if tc_count:
-        meta_bits.append(
-            f"{tc_count} tool call{'s' if tc_count != 1 else ''}"
-        )
-    meta_bits.append(f"{pct}% conf")
-    meta_hint = (
-        f"<div class='lead-meta-hint'>"
-        f"{' · '.join(meta_bits)}</div>"
-    )
-
-    _html(
-        f"""
-        <div class='lead-card {card_class}'>
-          <div class='lead-head'>
-            <div class='lead-head-left'>
-              <div class='lead-symbol'>{symbol}</div>
-              {instrument_html}
-            </div>
-            <div class='lead-head-right'>
-              <div class='lead-chips'>
-                {_badge(r['direction'], direction_class)}
-                {_badge(r['status'], status_class)}
-              </div>
-              <div class='lead-time'>{created_ist} IST</div>
-            </div>
-          </div>
-          {reason_html}
-          {meta_hint}
-        </div>
-        """
-    )
-
-
-def _render_lead_detail_button(r: dict) -> None:
-    """Primary "Details" button below each card.
-
-    Full-width, primary-coloured so it can't be missed on mobile. On
-    click, opens the lead-detail dialog (`_render_lead_detail_dialog`)
-    which is the only place the full reason, LLM rationale,
-    tool-call log, indicators, score breakdown, and (if placed) the
-    trade row are shown. The card itself is intentionally minimal —
-    see `_render_lead_card`.
-    """
-    lead_id = r.get("id")
-    if not lead_id:
-        return
-    btn = st.button(
-        "Details →",
-        key=f"why_lead_{lead_id}",
-        type="primary",
-        use_container_width=True,
-        help=(
-            "Open the deep-dive view: full LLM reasoning, tool-call log, "
-            "score breakdown, indicator snapshot, and trade (if placed)."
-        ),
-    )
-    if btn:
-        st.session_state["open_lead_dialog"] = int(lead_id)
 
 
 def _open_lead_detail_modal(lead_id: int) -> None:
@@ -2203,18 +2213,31 @@ def _format_reason_fallback(meta: dict, confidence_pct: int) -> str:
 
 
 def _first_sentence(text: str | None) -> str | None:
-    """First sentence (up to first `.` or `;`), trimmed."""
+    """First sentence of the LLM rationale (up to first `.`, `;` or newline).
+
+    No truncation — the user explicitly asked for full visibility, and
+    LLM rationales routinely run to several hundred words. The function
+    only shortens at a natural sentence boundary so the preview still
+    reads as a complete thought; if the rationale never closes with a
+    sentence boundary, the entire text is returned verbatim.
+    """
     if not text:
         return None
     for sep in (".", ";", "\n"):
         i = text.find(sep)
-        if 0 < i < 200:
+        if 0 < i:
             return text[: i + 1].strip()
-    return text[:200].strip() + ("…" if len(text) > 200 else "")
+    return text.strip()
 
 
 def _short_value(v) -> str:
-    """Compact repr for table values — truncates long strings/JSON."""
+    """Compact repr for the lead-detail indicator table.
+
+    Truncates long strings/JSON to 80 chars so a verbose indicator value
+    (e.g. a multi-KB EMA series) doesn't push the table off-screen. The
+    full value is still available inside the scan-outcome modal — this
+    helper is only used by the lead-detail body's indicator table.
+    """
     if isinstance(v, str):
         return v if len(v) <= 80 else v[:77] + "…"
     if isinstance(v, (int, float, bool)):
@@ -2901,8 +2924,15 @@ def _lead_gen_status_fragment():
     # `_is_job_running()` check on the main render loop stays in sync
     # without re-polling.
     st.session_state["lead_job"]["status"] = status
-    # Remember the most-recent job id so the "Scanned stocks" panel can
-    # keep rendering the just-finished run even after the job transitions
+    # Mirror the live ring buffer of scan_outcomes into session_state so
+    # the outer render (which doesn't poll) can render the latest-run
+    # table without an extra round-trip.
+    progress = data.get("progress") or {}
+    live_outcomes = list(progress.get("scan_outcomes") or [])
+    if live_outcomes:
+        st.session_state["_latest_outcomes_cache"] = live_outcomes
+    # Remember the most-recent job id so the leads table can keep
+    # rendering the just-finished run even after the job transitions
     # out of "running" (the polling fragment pops `lead_job` on terminal
     # status, but the operator should still be able to inspect what the
     # last run did). Stored on a dedicated key so a NEW run doesn't lose
@@ -2947,19 +2977,6 @@ def _lead_gen_status_fragment():
 # ---------------------------------------------------------------------------
 
 
-_SCAN_OUTCOME_DECISION_GLYPH = {
-    "generated": ("✓", "profit"),
-    "no_signal": ("·", "muted"),
-    "error":     ("✗", "loss"),
-}
-
-_SCAN_OUTCOME_DECISION_LABEL = {
-    "generated": "Lead generated",
-    "no_signal": "No signal",
-    "error":     "Error",
-}
-
-
 def _render_scan_outcomes_panel(job_id: str | None, job_data: dict | None) -> None:
     """Render the per-instrument scan-outcome list for a lead-gen job.
 
@@ -2969,8 +2986,11 @@ def _render_scan_outcomes_panel(job_id: str | None, job_data: dict | None) -> No
     job dropped out of session_state) we fall back to the REST endpoint
     so the panel survives a page reload.
 
-    Clicking a row opens the tool-call modal via the `open_scan_outcome`
-    session_state flag; the modal itself is rendered top-level in `main`.
+    The live fragment uses the same table layout as the main Leads tab
+    so the operator sees one consistent view across a run — the table
+    streams in during the run, settles when the run finishes, and the
+    outer render then re-uses the same component to display the
+    finalised list.
     """
     # Try the in-memory ring buffer first (live runs).
     outcomes = []
@@ -2992,87 +3012,22 @@ def _render_scan_outcomes_panel(job_id: str | None, job_data: dict | None) -> No
     if not outcomes:
         return
 
-    decision_counts: dict[str, int] = {"generated": 0, "no_signal": 0, "error": 0}
-    for o in outcomes:
-        d = (o.get("decision") or "").lower()
-        if d in decision_counts:
-            decision_counts[d] += 1
-
-    summary_bits = (
-        f"{decision_counts['generated']} lead{'s' if decision_counts['generated'] != 1 else ''}"
-        f" · {decision_counts['no_signal']} no-signal"
-        f" · {decision_counts['error']} error{'s' if decision_counts['error'] != 1 else ''}"
-    )
-
-    with st.expander(f"**Scanned stocks** · {len(outcomes)} scanned ({summary_bits})",
-                     expanded=True):
-        st.caption(
-            "Every underlying the lead generator analysed this run. "
-            "Click a row to see the full LLM tool-call transcript."
-        )
-        _render_scan_outcome_rows(outcomes)
-
-
-def _render_scan_outcome_rows(outcomes: list[dict]) -> None:
-    """Render the per-row list of scan outcomes.
-
-    Each row is a clickable button — clicking sets `open_scan_outcome` to
-    the row's id, which the modal rendered by `main` opens. We can't use
-    `@st.dialog` inside an expander (Streamlit only honours the decorator
-    when the call is at top-level), so the modal lives in `main` and the
-    row here is the trigger.
-    """
-    h1, h2, h3, h4 = st.columns([2, 1.4, 4, 1.2])
-    h1.markdown("**Symbol**")
-    h2.markdown("**Decision**")
-    h3.markdown("**Reason / rationale**")
-    h4.markdown("**Detail**")
-    st.markdown("<hr style='margin:6px 0;opacity:0.2;'/>", unsafe_allow_html=True)
-
-    for o in outcomes:
-        symbol = o.get("symbol") or "?"
-        decision = (o.get("decision") or "no_signal").lower()
-        glyph, _ = _SCAN_OUTCOME_DECISION_GLYPH.get(decision, ("?", "muted"))
-        label = _SCAN_OUTCOME_DECISION_LABEL.get(decision, decision.title())
-        reason = o.get("rejection_reason") or o.get("rationale") or o.get("error") or "—"
-
-        row_id = o.get("id") or f"{o.get('symbol')}::{o.get('scanned_at')}"
-        c1, c2, c3, c4 = st.columns([2, 1.4, 4, 1.2])
-        with c1:
-            st.markdown(f"**{symbol}**")
-        with c2:
-            st.markdown(f"{glyph} {label}")
-        with c3:
-            reason_str = str(reason)
-            if len(reason_str) > 220:
-                reason_str = reason_str[:220] + "…"
-            st.markdown(
-                f"<span style='font-size:0.82rem;color:#cbd5e1;'>{_html_escape(reason_str)}</span>",
-                unsafe_allow_html=True,
-            )
-        with c4:
-            if o.get("id"):
-                if st.button(
-                    "View tools",
-                    key=f"scan_view_{row_id}",
-                    use_container_width=True,
-                    help="Open the full LLM tool-call transcript for this scan.",
-                ):
-                    st.session_state["open_scan_outcome"] = int(o["id"])
-                    st.rerun()
-            else:
-                st.caption("(streaming)")
-        st.markdown("<hr style='margin:4px 0;opacity:0.12;'/>", unsafe_allow_html=True)
+    # Live-streaming rows (no DB id yet) plus persisted rows render
+    # through the same table the Leads tab uses — see `_render_outcome_table`.
+    _render_outcome_table(outcomes)
 
 
 @st.dialog("Scan outcome detail", width="large")
 def _scan_outcome_modal(outcome_id: int) -> None:
-    """Modal showing one scan outcome's full tool-call transcript.
+    """Modal showing one scan outcome's full LLM thinking.
 
     Rendered top-level by `main` whenever `session_state["open_scan_outcome"]`
     is set. Pulls the detail endpoint (which carries the full `tool_calls`
     JSON) so the operator can see every LLM tool call (indicators / news /
-    option chain / calc) the agent loop made for this underlying.
+    option chain / calc) the agent loop made for this underlying — no
+    truncation anywhere; the entire LLM rationale and every tool-call
+    result payload are rendered verbatim so the user can copy them
+    out and reason about the decision end-to-end.
     """
     resp = api.get_scan_outcome_detail(outcome_id)
     if resp.get("status") != "ok":
@@ -3086,7 +3041,7 @@ def _scan_outcome_modal(outcome_id: int) -> None:
     o = resp["data"]
     sym = o.get("symbol") or "?"
     decision = (o.get("decision") or "no_signal").lower()
-    label = _SCAN_OUTCOME_DECISION_LABEL.get(decision, decision.title())
+    label, _ = _outcome_status_label(decision)
     scanned_at = o.get("scanned_at_ist_label") or "—"
 
     st.markdown(
@@ -3103,13 +3058,15 @@ def _scan_outcome_modal(outcome_id: int) -> None:
 
     if o.get("rejection_reason"):
         st.markdown("**Rejection reason (LLM)**")
-        st.info(str(o["rejection_reason"]))
+        # Full text — no truncation. Wrap in a `st.code` block so very long
+        # strings get a horizontal scrollbar instead of being clipped.
+        st.code(str(o["rejection_reason"]), language=None)
     if o.get("rationale"):
-        with st.expander("Full LLM rationale", expanded=False):
-            st.text(str(o["rationale"]))
+        st.markdown("**Full LLM rationale**")
+        st.code(str(o["rationale"]), language=None)
     if o.get("error"):
         st.markdown("**Error**")
-        st.error(str(o["error"]))
+        st.code(str(o["error"]), language=None)
     if o.get("lead_id"):
         st.markdown(f"**Generated lead**: `#{int(o['lead_id'])}` "
                     f"({int(o.get('leads_created') or 0)} lead(s) created)")
@@ -3139,8 +3096,11 @@ def _scan_outcome_modal(outcome_id: int) -> None:
                     if not result:
                         st.caption("(no result captured)")
                     else:
+                        # Full result — no `[:8000]` slice. A single tool
+                        # call's payload can be tens of KB; Streamlit's
+                        # `st.code` block handles that natively.
                         st.code(
-                            json.dumps(result, indent=2, default=str)[:8000],
+                            json.dumps(result, indent=2, default=str),
                             language="json",
                         )
 

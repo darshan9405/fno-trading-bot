@@ -282,19 +282,22 @@ def _persist_scan_outcome(
 
     primary_lead = leads_created[0] if leads_created else None
 
-    # Truncate rationale / error so a verbose LLM output doesn't blow up
-    # the row size. 4 KB is plenty for a human-readable audit string.
+    # Generous size caps so the operator can read the FULL LLM reasoning
+    # verbatim from the UI (no truncation anywhere on the user side).
+    # Rationale / rejection_reason can run to several KB for a verbose
+    # model; 64 KB each is plenty for an audit string and still well
+    # within SQLite/PostgreSQL TEXT limits.
     rationale = scan_outcome.get("rationale") if scan_outcome else None
-    if rationale and len(rationale) > 4000:
-        rationale = rationale[:4000]
+    if rationale and len(rationale) > 64_000:
+        rationale = rationale[:64_000]
     rejection_reason = (
         scan_outcome.get("rejection_reason") if scan_outcome else None
     )
-    if rejection_reason and len(rejection_reason) > 4000:
-        rejection_reason = rejection_reason[:4000]
+    if rejection_reason and len(rejection_reason) > 64_000:
+        rejection_reason = rejection_reason[:64_000]
     error_text = scan_outcome.get("error") if scan_outcome else None
-    if error_text and len(error_text) > 2000:
-        error_text = error_text[:2000]
+    if error_text and len(error_text) > 16_000:
+        error_text = error_text[:16_000]
 
     row = LeadScanOutcome(
         job_id=job_id,
