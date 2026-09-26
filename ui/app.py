@@ -2718,9 +2718,19 @@ def _lead_gen_status_fragment():
     # Mirror the live ring buffer of scan_outcomes into session_state so
     # the outer render (which doesn't poll) can render the latest-run
     # table without an extra round-trip.
+    #
+    # The ring buffer items are emitted BEFORE each per-instrument
+    # ``LeadScanOutcome`` row is persisted (they're the live progress
+    # payload, not the DB row), so they DON'T have an ``id`` field. While
+    # the run is in flight that's correct — they render the "Analyzing…"
+    # spinner. Once the run hits a terminal status, those entries are
+    # stale: the same outcomes now exist in the DB with an ``id`` and the
+    # ``_render_outcome_row`` spinner check would otherwise keep them
+    # pegged at "Analyzing…" forever. Drop the cache on terminal so the
+    # next render falls through to the DB endpoint.
     progress = data.get("progress") or {}
     live_outcomes = list(progress.get("scan_outcomes") or [])
-    if live_outcomes:
+    if status == "running" and live_outcomes:
         st.session_state["_latest_outcomes_cache"] = live_outcomes
     # Remember the most-recent job id so the leads table can keep
     # rendering the just-finished run even after the job transitions
@@ -2729,6 +2739,9 @@ def _lead_gen_status_fragment():
     # last run did). Stored on a dedicated key so a NEW run doesn't lose
     # the previous one until the new one produces its own outcomes.
     if status != "running":
+        # Drop any pre-terminal streaming cache so the next outer render
+        # hits the DB-backed endpoint and sees rows with a stable ``id``.
+        st.session_state.pop("_latest_outcomes_cache", None)
         st.session_state["last_lead_job_id"] = job_id
         st.session_state["last_lead_job_status"] = status
         st.session_state["last_lead_job_result"] = data.get("result") or {}
