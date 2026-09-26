@@ -15,7 +15,7 @@ from app.broker.base import BrokerError
 from app.config import Config
 from app.db import session_scope
 from app.extensions import limiter
-from app.models import Lead, Trade
+from app.models import Lead, LeadScanOutcome, Trade
 from app.services.health_service import utcnow
 
 log = logging.getLogger(__name__)
@@ -330,6 +330,152 @@ def leads_generate_active():
     if job_id is None:
         return error("lead_generation_no_active_job", "No manual lead-generation run in progress.", 404)
     return ok({"id": job_id})
+
+
+@bp.post("/leads/generate/<job_id>/cancel")
+@jwt_required
+def cancel_lead_generation(job_id: str):
+    """Request that an in-flight manual lead-generation run stops.
+
+    Sets the cancel flag the generator thread polls between instruments.
+    The current instrument always finishes first (we don't tear down a
+    half-written DB transaction); the run then transitions to its
+    "cancelled" terminal status, the partial progress (scanned-so-far,
+    scan_outcomes) is preserved, and the response body returns the
+    current job snapshot.
+
+    Idempotent: a second cancel for the same already-cancelled job just
+    returns the same body. A cancel for a finished job returns 409 so the
+    UI can stop showing the "Stop" button.
+    """
+    from app.scheduler.lead_jobs import get_job, request_stop
+
+    job = get_job(job_id)
+    if job is None:
+        return error("lead_generation_job_not_found", f"Unknown job id: {job_id}", 404)
+    if job.status != "running":
+        return error(
+            "lead_generation_not_running",
+            f"Job {job_id} is no longer running (status={job.status}).",
+            409,
+        )
+    request_stop(job_id)
+    # Re-read the snapshot — the generator may have transitioned between
+    # the request_stop call and now; either way the UI gets the latest
+    # `cancel_requested` flag for free.
+    job = get_job(job_id) or job
+    return ok(job.to_dict())
+
+
+@bp.get("/leads/scan-outcomes")
+@jwt_required
+def list_scan_outcomes():
+    """List the latest lead-generation scan-outcome rows.
+
+    Each row represents one underlying the generator analysed during a run
+    — whether or not it produced a lead. This is the data source for the
+    UI's "Scanned stocks" panel. Query params:
+
+      - ``job_id``: only return rows stamped with this job id (use the
+        id returned by ``POST /leads/generate``).
+      - ``underlying_key``: optional narrow filter by underlying.
+      - ``limit``: 1..500, default 200.
+
+    Rows are sorted newest-first.
+    """
+    args = request.args
+    job_id = args.get("job_id") or None
+    underlying_key = args.get("underlying_key") or None
+    try:
+        limit = max(1, min(int(args.get("limit") or 200), 500))
+    except (TypeError, ValueError):
+        limit = 200
+
+    with session_scope() as session:
+        q = select(LeadScanOutcome).order_by(LeadScanOutcome.scanned_at.desc())
+        if job_id:
+            q = q.where(LeadScanOutcome.job_id == job_id)
+        if underlying_key:
+            q = q.where(LeadScanOutcome.underlying_key == underlying_key)
+        q = q.limit(limit)
+        rows = session.execute(q).scalars().all()
+        return ok([_scan_outcome_dict(r) for r in rows])
+
+
+@bp.get("/leads/scan-outcomes/<int:outcome_id>")
+@jwt_required
+def scan_outcome_detail(outcome_id: int):
+    """Return one scan outcome with its full tool-call history.
+
+    Used by the UI's expandable row in the "Scanned stocks" panel to
+    render the complete LLM agent-loop transcript (every tool call +
+    result) for the per-instrument scan.
+    """
+    with session_scope() as session:
+        row = session.get(LeadScanOutcome, outcome_id)
+        if row is None:
+            return error("scan_outcome_not_found", f"Unknown scan outcome id: {outcome_id}", 404)
+        return ok(_scan_outcome_dict(row, include_tool_calls=True))
+
+
+@bp.delete("/leads/scan-outcomes")
+@jwt_required
+def purge_scan_outcomes():
+    """Delete every ``LeadScanOutcome`` row.
+
+    Bound to the same confirmation flow the UI uses for "Delete all leads"
+    so the operator can wipe the scan history independently if needed.
+    Typically the manual "Generate now" path clears these automatically
+    via ``lead_generator._clear_session_data`` — this endpoint exists for
+    the rare "I want to start with an empty panel but keep my queued leads"
+    case.
+    """
+    with session_scope() as session:
+        deleted = session.execute(delete(LeadScanOutcome)).rowcount or 0
+    return ok({"deleted": int(deleted)})
+
+
+def _scan_outcome_dict(row: LeadScanOutcome, *, include_tool_calls: bool = False) -> dict:
+    """Serialise a ``LeadScanOutcome`` for the UI.
+
+    When ``include_tool_calls`` is False (the default for the list
+    endpoint) we strip the tool-call payload — it can be multi-KB and the
+    list endpoint is polled every 2s. The detail endpoint passes
+    ``include_tool_calls=True`` so the modal gets the full trace.
+    """
+    scanned_at = row.scanned_at
+    if scanned_at is not None:
+        ist_scanned = scanned_at.replace(tzinfo=timezone.utc).astimezone(
+            ZoneInfo("Asia/Kolkata")
+        )
+        scanned_at_ist = ist_scanned.isoformat()
+        scanned_at_ist_label = ist_scanned.strftime("%d %b %H:%M:%S")
+    else:
+        scanned_at_ist = None
+        scanned_at_ist_label = None
+    out = {
+        "id": row.id,
+        "job_id": row.job_id,
+        "instrument_id": row.instrument_id,
+        "underlying_key": row.underlying_key,
+        "symbol": row.symbol,
+        "scanned_at": scanned_at,
+        "scanned_at_ist": scanned_at_ist,
+        "scanned_at_ist_label": scanned_at_ist_label,
+        "decision": row.decision,
+        "lead_id": row.lead_id,
+        "leads_created": row.leads_created,
+        "rejection_reason": row.rejection_reason,
+        "rationale": row.rationale,
+        "strategy": row.strategy,
+        "agent_iters": row.agent_iters,
+        "duration_ms": row.duration_ms,
+        "confidence": row.confidence,
+        "error": row.error,
+    }
+    if include_tool_calls:
+        out["tool_calls"] = row.tool_calls or []
+    return out
 
 
 @bp.post("/recon")

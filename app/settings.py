@@ -36,6 +36,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "scheduler.lead_cleanup_seconds": 30,
     "leads.retention_hours_queued": 24,
     "leads.retention_hours_processed": 168,
+    # How long "Scanned stocks" rows (LeadScanOutcome) survive before the
+    # cleanup scheduler ages them out. Each new manual run clears everything
+    # from the current session, but stale runs from earlier in the day get
+    # pruned at this horizon so the panel doesn't grow unbounded.
+    "leads.retention_hours_scans": 12,
     # Lead generator run bounds (configurable from the UI via /api/config).
     # The generator iterates a shuffled slice of the enabled-instrument list and
     # stops as soon as it has persisted this many leads — keeps the scheduler

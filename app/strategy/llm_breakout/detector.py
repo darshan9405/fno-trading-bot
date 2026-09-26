@@ -24,7 +24,7 @@ from typing import Any, Callable
 import pandas as pd
 
 from app.strategy.llm_breakout import health as llm_health
-from app.strategy.llm_breakout.agent import run_agent_loop
+from app.strategy.llm_breakout.agent import AgentResult, run_agent_loop
 from app.strategy.llm_breakout.client import LLMClient
 from app.strategy.llm_breakout.data_format import (
     build_user_prompt,
@@ -36,6 +36,11 @@ from app.strategy.llm_breakout.prompts import build_system_prompt
 from app.strategy.llm_breakout.validator import validate_signals
 
 log = logging.getLogger(__name__)
+
+
+def _empty_result(error: str | None = None) -> AgentResult:
+    """Build an empty `AgentResult` for early-out paths."""
+    return AgentResult(signals=[], error=error)
 
 
 def _safe_float(x) -> float | None:
@@ -60,15 +65,15 @@ def detect_one(
     broker=None,
     today: date | None = None,
     on_tool_call: Callable[[dict[str, Any]], None] | None = None,
-) -> list[dict[str, Any]]:
-    """Run the full per-instrument pipeline and return validated signals.
+) -> AgentResult:
+    """Run the full per-instrument pipeline and return an ``AgentResult``.
 
-    Returns an empty list on:
-      - too few candles to fill the lookback
-      - LLM transport failure
-      - malformed JSON / wrong shape
-      - all signals rejected by the validator
-      - agent loop hits max iterations
+    Returns an ``AgentResult`` even on early-out paths (no candles, blank
+    close, transport failure, parse failure, validator rejection, max
+    iterations). ``AgentResult.signals`` may be empty; callers should
+    check ``AgentResult.ok`` to distinguish "loop bailed" from "model
+    just didn't find a setup" (the latter still carries a
+    ``rejection_reason``).
 
     Never raises — the scheduler must not be crashed by a flaky LLM.
 
@@ -76,15 +81,15 @@ def detect_one(
     generator can stream per-tool-call progress to the UI.
     """
     if candles is None or candles.empty:
-        return []
+        return _empty_result()
     sliced = slice_candles(candles, lookback_candles)
     if sliced is None or sliced.empty or len(sliced) < 30:
-        return []
+        return _empty_result()
 
     bar = last_bar(sliced)
     today_close = _safe_float(bar.get("close"))
     if today_close is None or today_close <= 0:
-        return []
+        return _empty_result()
 
     system = build_system_prompt(
         lookback_candles=lookback_candles,
@@ -122,7 +127,7 @@ def detect_one(
     # for legacy stub clients in tests).
     if hasattr(client, "chat_with_tools"):
         try:
-            valid = run_agent_loop(
+            result = run_agent_loop(
                 client,
                 system_prompt=system,
                 user_prompt=user,
@@ -135,35 +140,38 @@ def detect_one(
         except Exception as exc:  # noqa: BLE001
             log.warning("llm_breakout: agent loop raised for %s: %s", symbol, exc)
             llm_health.record_error(f"agent loop raised: {exc}")
-            return []
-        if not valid:
-            return []
+            return _empty_result(f"agent loop raised: {exc}")
+        if not result.signals:
+            return result
         log.info(
             "llm_breakout: %s -> %d signal(s) (trigger near %.2f)",
-            symbol, len(valid), today_close,
+            symbol, len(result.signals), today_close,
         )
-        return valid
+        return result
 
-    # Legacy single-turn fallback.
+    # Legacy single-turn fallback. Wraps everything in an AgentResult so
+    # the strategy / lead generator has the same shape regardless of which
+    # path was taken. We don't have tool calls here, just the final
+    # message.
     try:
         response = client.chat_json(system, user)
     except Exception as exc:  # noqa: BLE001
         log.warning("llm_breakout: chat_json raised for %s: %s", symbol, exc)
         llm_health.record_error(f"chat_json raised: {exc}")
-        return []
+        return _empty_result(f"chat_json raised: {exc}")
     if response is None:
         llm_health.record_error("empty response")
-        return []
+        return _empty_result("empty response")
     if not isinstance(response, dict):
         llm_health.record_error("non-dict response")
-        return []
+        return _empty_result("non-dict response")
     if response.get("_transport_error"):
         llm_health.record_error("transport error")
-        return []
+        return _empty_result("transport error")
     raw_signals = response.get("signals", [])
     if not isinstance(raw_signals, list):
         llm_health.record_error("malformed signals payload")
-        return []
+        return _empty_result("malformed signals payload")
     reasoning = response.get("_reasoning")
     if reasoning:
         snippet = str(reasoning).strip().replace("\n", " ")
@@ -177,7 +185,23 @@ def detect_one(
         min_confidence=min_confidence,
     )
     llm_health.record_success()
-    return valid or []
+    # The legacy path doesn't go through the agent loop, so there's no
+    # tool-call log to surface. Rejection_reason comes from the model's
+    # payload when present (newer prompts include it).
+    rejection_reason = response.get("rejection_reason")
+    if not rejection_reason and not raw_signals:
+        reasoning_s = (reasoning or "").strip()
+        if reasoning_s:
+            rejection_reason = reasoning_s[:400]
+    return AgentResult(
+        signals=valid,
+        rejection_reason=str(rejection_reason)[:400] if rejection_reason else None,
+        tool_calls=[],
+        agent_iters=0,
+        agent_duration_s=0.0,
+        rationale=reasoning,
+        error=None,
+    )
 
 
 def indicators_for_logging(candles: pd.DataFrame) -> dict[str, Any]:

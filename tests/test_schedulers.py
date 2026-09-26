@@ -263,7 +263,14 @@ def test_lead_generator_respects_max_leads_per_run_cap(env):
     broker = _seed_broker(env)
     result = run_lead_generator(broker=broker, now=_now(10, 30))
 
-    assert result == {"created": 1, "checked": 1}
+    # Newer contract: `run_lead_generator` returns the full result dict
+    # (created / checked / scanned / total / cancelled / cleared) so the
+    # UI can render the same shape it sees during a live run. Subset
+    # assert keeps this test future-proof when we add more fields.
+    assert result["created"] == 1
+    assert result["checked"] == 1
+    assert result["scanned"] == 2  # both enabled instruments were analysed
+    assert result["cancelled"] is False
     assert len(lead_service.get_queued_leads()) == 1
 
 
@@ -509,7 +516,11 @@ def test_lead_generator_skips_outside_window(env):
 def test_lead_generator_force_runs_outside_window(env):
     broker = _seed_broker(env)
     result = run_lead_generator(broker=broker, now=_now(9, 0), force=True)
-    assert result == {"created": 2, "checked": 2}
+    # Newer contract — full result dict, subset assert to stay forward-
+    # compatible when we add `cleared`/`cancelled`/etc.
+    assert result["created"] == 2
+    assert result["checked"] == 2
+    assert result["cancelled"] is False
     leads = lead_service.get_queued_leads()
     assert len(leads) == 2
     assert all(l.status == "queued" for l in leads)

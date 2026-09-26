@@ -404,10 +404,16 @@ def test_leads_generate_status_terminal(env, monkeypatch):
     monkeypatch.setattr(lead_jobs, "_active_id", None)
 
     import app.scheduler.lead_generator as lg
-    monkeypatch.setattr(
-        lg, "run_lead_generator",
-        lambda broker=None, now=None, force=False, on_progress=None: {"created": 5, "checked": 2},
-    )
+    def fake_run(broker=None, now=None, force=False,
+                 on_progress=None, on_tool_call=None,
+                 job_id=None, clear_session=False):
+        # Newer contract — return the full result dict. `_run_in_thread`
+        # projects it down to `{generated, checked, scanned, total}` for
+        # the JobState.result field that the API exposes.
+        return {"created": 5, "checked": 2, "scanned": 4, "total": 4,
+                "cancelled": False, "cleared": {"leads": 0, "scans": 0}}
+
+    monkeypatch.setattr(lg, "run_lead_generator", fake_run)
 
     r = client.post("/api/trades/leads/generate", headers=_headers(token))
     assert r.status_code == 202
@@ -428,7 +434,10 @@ def test_leads_generate_status_terminal(env, monkeypatch):
     final = client.get(
         f"/api/trades/leads/generate/{job_id}", headers=_headers(token)
     ).get_json()["data"]
-    assert final["result"] == {"generated": 5, "checked": 2}
+    # JobState.result is the projected dict the UI uses to render the
+    # "Generated X leads from Y underlyings" toast.
+    assert final["result"] == {"generated": 5, "checked": 2,
+                               "scanned": 4, "total": 4}
     assert final["error"] is None
     assert final["finished_at"] is not None
 
@@ -497,11 +506,15 @@ def test_leads_generate_status_includes_progress(env, monkeypatch):
     monkeypatch.setattr(lead_jobs, "_active_id", None)
 
     # Emit one progress patch, then complete — the test polls during the
-    # brief window so we can observe the live payload.
+    # brief window so we can observe the live payload. The newer patch
+    # shape also carries `scan_outcomes` (per-instrument ring buffer)
+    # for the "Scanned stocks" panel.
     started = threading.Event()
     release = threading.Event()
 
-    def run_with_progress(broker=None, now=None, force=False, on_progress=None):
+    def run_with_progress(broker=None, now=None, force=False,
+                          on_progress=None, on_tool_call=None,
+                          job_id=None, clear_session=False):
         started.set()
         on_progress({
             "phase": "analyzing", "scanned": 1, "total": 4,
@@ -509,9 +522,11 @@ def test_leads_generate_status_includes_progress(env, monkeypatch):
             "current": "FOO", "strategy": "test",
             "recent": [{"symbol": "FOO", "status": "leads",
                         "leads": 1, "error": None}],
+            "scan_outcomes": [{"symbol": "FOO", "decision": "generated"}],
         })
         release.wait(timeout=2.0)
-        return {"created": 1, "checked": 1}
+        return {"created": 1, "checked": 1, "scanned": 1, "total": 1,
+                "cancelled": False, "cleared": {"leads": 0, "scans": 0}}
 
     import app.scheduler.lead_generator as lg
     monkeypatch.setattr(lg, "run_lead_generator", run_with_progress)
@@ -527,6 +542,7 @@ def test_leads_generate_status_includes_progress(env, monkeypatch):
     assert payload["progress"]["phase"] == "analyzing"
     assert payload["progress"]["total"] == 4
     assert payload["progress"]["recent"][0]["symbol"] == "FOO"
+    assert payload["progress"]["scan_outcomes"][0]["symbol"] == "FOO"
     assert payload["started_at"] is not None
 
     release.set()

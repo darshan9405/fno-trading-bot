@@ -13,6 +13,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -122,6 +123,75 @@ class Lead(Base):
 
     instrument: Mapped["Instrument"] = relationship()
     trade: Mapped["Trade | None"] = relationship(back_populates="lead", uselist=False)
+
+
+class LeadScanOutcome(Base):
+    """Per-instrument outcome of a lead-generation run.
+
+    One row is written for every underlying the generator analyzes during a
+    run, regardless of whether a `Lead` row came out of it. This is what
+    backs the UI's "Scanned stocks" panel — it gives the operator a
+    full audit of what the LLM looked at and *why* it didn't take a signal,
+    not just the symbols that ended up queued.
+
+    Lifecycle:
+      * `decision="generated"`  → at least one `Lead` was created (and
+        `lead_id` points at the primary one).
+      * `decision="no_signal"`  → LLM ran but rejected the setup. The
+        `rejection_reason` text is the model's natural-language explanation
+        captured from the agent loop's final message.
+      * `decision="error"`      → exception / timeout / API failure. The
+        `error` column carries the exception class + first 200 chars.
+
+    Rows are scoped to the generating job via `job_id` and pruned by the
+    manual "Delete all" controls (when a fresh run starts we clear prior
+    rows for the same trading session; the daily cleanup also removes
+    anything older than `leads.retention_hours_scans`).
+    """
+
+    __tablename__ = "lead_scan_outcomes"
+    __table_args__ = (
+        Index("ix_lso_job_scanned", "job_id", "scanned_at"),
+        Index("ix_lso_underlying_scanned", "underlying_key", "scanned_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    instrument_id: Mapped[int | None] = mapped_column(ForeignKey("instruments.id"), index=True, nullable=True)
+    underlying_key: Mapped[str] = mapped_column(String(64), index=True)
+    symbol: Mapped[str] = mapped_column(String(64), index=True)
+    scanned_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, index=True)
+    # "generated" | "no_signal" | "error"
+    decision: Mapped[str] = mapped_column(String(16), default="no_signal", index=True)
+    # When decision="generated" this is the primary lead_id created for this
+    # instrument. When no lead was created (or multiple candidates landed in
+    # different rows), this stays NULL. See `leads_created` for the count.
+    lead_id: Mapped[int | None] = mapped_column(ForeignKey("leads.id", ondelete="SET NULL"), nullable=True)
+    leads_created: Mapped[int] = mapped_column(Integer, default=0)
+    # LLM-supplied reason the setup was rejected (decision="no_signal"). When
+    # the model declined to fire we still ask it to explain; this string is
+    # what the user sees on the "Scanned stocks" panel.
+    rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Last LLM rationale string (the agent loop's final assistant message)
+    # so the UI modal can show the full reasoning verbatim. Truncated at
+    # 4 KB on insert to keep the row small.
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # JSON snapshot of the agent loop's tool-call history for this scan.
+    # `[]` if the LLM never made a tool call (early rejection). Used by the
+    # expandable row in the "Scanned stocks" panel to render the full
+    # indicator / news / option-chain trace.
+    tool_calls: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Strategy that produced the verdict ("llm_breakout" today; reserved for
+    # future strategies).
+    strategy: Mapped[str] = mapped_column(String(32), default="llm_breakout")
+    # How many agent-loop iterations the LLM ran before returning. Helps
+    # the UI badge "fast-reject" vs "deep-analysis" scans.
+    agent_iters: Mapped[int] = mapped_column(Integer, default=0)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    # Confidence surfaced in the LLM payload (0.0 if absent) — surfaced so the
+    # "Scanned stocks" panel can sort/colour by confidence.
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 # --- Execution ------------------------------------------------------------

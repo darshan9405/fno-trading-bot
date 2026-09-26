@@ -9,6 +9,7 @@ schedulers, schema, and UI do not change.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -27,6 +28,13 @@ class LeadCandidate:
     meta: dict = field(default_factory=dict)  # arbitrary strategy payload
 
 
+# A strategy can hand the lead generator extra per-instrument telemetry via
+# this callback. The signature is loose (TypedDict would be nicer but
+# requires Python 3.12+) — concrete shape is decided per strategy. For
+# `llm_breakout` it's an `AgentResult` (see `app.strategy.llm_breakout.agent`).
+ScanResultCallback = Callable[["Any"], None]
+
+
 class Strategy(ABC):
     """Base class for lead-generation strategies."""
 
@@ -42,9 +50,25 @@ class Strategy(ABC):
         """
 
     @abstractmethod
-    def generate(self, instrument, candles: pd.DataFrame, now) -> list[LeadCandidate]:
+    def generate(self, instrument, candles: pd.DataFrame, now, *,
+                 on_tool_call: Callable[[dict[str, Any]], None] | None = None,
+                 on_scan_result: ScanResultCallback | None = None,
+                 **kwargs: Any) -> list[LeadCandidate]:
         """Analyse `candles` (OHLCV at `required_interval`) for one instrument
         and return candidate leads. `instrument` is an app.models.Instrument.
+
+        Two optional hooks are forwarded in by the lead generator:
+          - `on_tool_call(event)` fires once per external tool invocation
+            inside the strategy (e.g. one LLM tool call per agent iteration).
+            Used by the UI to render the live "Analysing X — tool: Y" feed.
+          - `on_scan_result(result)` fires once per instrument at the end of
+            the per-instrument analysis, with whatever rich payload the
+            strategy chooses (LLM AgentResult, indicator snapshot, ...). The
+            lead generator persists this into `LeadScanOutcome` so the
+            "Scanned stocks" panel can audit why a symbol was rejected.
+        Both callbacks are best-effort: a slow / failing callback must not
+        break the run. Strategies may pass None when they don't have
+        anything to surface.
         """
         raise NotImplementedError
 

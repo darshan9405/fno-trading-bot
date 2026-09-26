@@ -26,7 +26,7 @@ from typing import Literal
 
 log = logging.getLogger(__name__)
 
-JobStatus = Literal["running", "done", "error"]
+JobStatus = Literal["running", "done", "error", "cancelled"]
 
 # How many recent jobs we keep in memory. Older jobs are forgotten, so the
 # /leads/generate/<id> endpoint will return 404 for them. 5 is plenty for a
@@ -44,6 +44,10 @@ _active_id: str | None = None
 # even though APScheduler's `max_instances=1` only blocks two scheduler ticks
 # (not a manual run that arrives while a scheduler tick is mid-flight).
 _generator_active: bool = False
+# Process-wide "please stop the in-flight run" flag. The generator thread
+# checks this between instruments; flipping it from False -> True is what
+# `request_stop()` does. Cleared automatically when the run exits.
+_stop_requested: bool = False
 
 
 @dataclass
@@ -64,10 +68,23 @@ class JobState:
     #     "recent": [{"symbol": str, "status": "ok"|"leads"|"empty"|"error",
     #                 "leads": int, "error": str | None}, ...],   # capped at 5
     #     "strategy": str,
+    #     # Live LLM agent-loop ring buffer for the UI:
+    #     "current_tool_calls": [{"ts","symbol","iter","name","args","result_keys"}, ...]
+    #     # Per-instrument scan-outcome snapshot (capped) — every underlying the
+    #     # generator has finished scanning this run, whether or not it produced
+    #     # a lead. Survives terminal status so the "Scanned stocks" panel can
+    #     # render the just-finished run even after the job goes to "done".
+    #     "scan_outcomes": [{"symbol", "decision", "rejection_reason",
+    #                        "rationale", "leads", "lead_id", "error",
+    #                        "agent_iters"}, ...],
     #   }
     progress: dict = field(default_factory=dict)
     result: dict | None = None
     error: str | None = None
+    # Set when the user clicks "Stop" (POST /leads/generate/<id>/cancel).
+    # The generator thread polls this between instruments to break out of
+    # the run early without leaving the worker thread wedged.
+    cancel_requested: bool = False
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -94,6 +111,12 @@ class JobState:
             tc = progress["current_tool_calls"]
             if not isinstance(tc, list):
                 progress["current_tool_calls"] = list(tc)
+        # Same for scan_outcomes (per-instrument scan results for the
+        # "Scanned stocks" panel). Either a deque or list; coerce defensively.
+        if isinstance(progress, dict) and "scan_outcomes" in progress:
+            so = progress["scan_outcomes"]
+            if not isinstance(so, list):
+                progress["scan_outcomes"] = list(so)
         return d
 
 
@@ -150,6 +173,55 @@ def release_generator_lock() -> None:
         _generator_active = False
 
 
+def is_stop_requested() -> bool:
+    """Cheap, lock-free read of the process-wide cancel flag.
+
+    The generator thread polls this between instruments and aborts the
+    current run when it sees True. The flag is cleared in
+    ``release_generator_lock`` / ``_finish_job`` / ``_mark_done_no_lock``
+    so a future run starts from a clean slate.
+    """
+    return _stop_requested
+
+
+def request_stop(job_id: str | None = None) -> bool:
+    """Set the process-wide cancel flag so the in-flight run aborts.
+
+    Pass ``job_id`` to validate that the targeted run is still running — when
+    the run has already finished, this returns False and is a no-op. Returns
+    True when the flag was actually flipped.
+
+    NOTE: we don't clear ``_stop_requested`` here. The generator loop reads
+    the flag, finishes its current instrument (so we don't tear down a half-
+    written DB transaction), and the run's terminal-state path clears it
+    alongside ``_generator_active``. This means a stop request that races
+    against a job that's already in the middle of finishing is harmless: the
+    run still completes; we just don't honour the stop.
+    """
+    global _stop_requested
+    with _lock:
+        if job_id is not None:
+            job = _jobs.get(job_id)
+            if job is None or job.status != "running":
+                return False
+            job.cancel_requested = True
+        _stop_requested = True
+    return True
+
+
+def clear_stop_flag() -> None:
+    """Reset the process-wide cancel flag (called on terminal state).
+
+    Kept separate from ``release_generator_lock`` so the two can be cleared
+    atomically under the same ``_lock`` acquisition by ``_finish_job`` /
+    ``_mark_done_no_lock`` without deadlocking the caller if they happen to
+    be inside a ``session_scope`` (SQLite serialises writers).
+    """
+    global _stop_requested
+    with _lock:
+        _stop_requested = False
+
+
 def _finish_job(job: JobState, status: JobStatus, result: dict | None = None, error: str | None = None) -> None:
     """Stamps job terminal state, clears the active-id pointer, AND releases
     the generator lock — all under a single `_lock` acquisition so a racing
@@ -161,7 +233,7 @@ def _finish_job(job: JobState, status: JobStatus, result: dict | None = None, er
     it calls `_mark_done_no_lock` instead because the lock belongs to the
     OTHER run that preempted us.
     """
-    global _generator_active
+    global _generator_active, _stop_requested
     with _lock:
         job.status = status
         if result is not None:
@@ -171,6 +243,7 @@ def _finish_job(job: JobState, status: JobStatus, result: dict | None = None, er
         job.finished_at = _now()
         _set_active(None)
         _generator_active = False
+        _stop_requested = False
 
 
 def _mark_done_no_lock(job: JobState, status: JobStatus, error: str | None = None) -> None:
@@ -180,12 +253,14 @@ def _mark_done_no_lock(job: JobState, status: JobStatus, error: str | None = Non
     the inner acquire failed because a different run (e.g. a scheduler tick)
     already holds the lock. Releasing `_generator_active` here would silently
     clear the OTHER run's flag and let two runs execute concurrently."""
+    global _stop_requested
     with _lock:
         job.status = status
         if error is not None:
             job.error = error
         job.finished_at = _now()
         _set_active(None)
+        _stop_requested = False
 
 
 def _run_in_thread(job: JobState) -> None:
@@ -196,7 +271,21 @@ def _run_in_thread(job: JobState) -> None:
         # take `_lock` so `job.progress` updates aren't torn (a `dict.update`
         # is not atomic in CPython). The dict is small, so contention is fine.
         with _lock:
-            job.progress.update(patch)
+            # New run = clear the per-instrument scan-outcomes ring buffer so
+            # the "Scanned stocks" panel starts from an empty slate. The
+            # generator emits exactly one "starting" patch before the fan-out
+            # so this is the single lifecycle boundary we care about.
+            if patch.get("phase") == "starting":
+                # Drop the previous run's buffer; carry over the live tool-call
+                # buffer so the UI doesn't lose any in-flight LLM events. The
+                # generator's `_emit_progress` always sends a fresh empty
+                # `recent` list and a fresh `scan_outcomes` list, which is
+                # exactly what we want to overwrite.
+                carried = job.progress.get("current_tool_calls", [])
+                job.progress = dict(patch)
+                job.progress["current_tool_calls"] = list(carried)
+            else:
+                job.progress.update(patch)
 
     # Per-tool-call LLM events fire from a worker thread while a different
     # instrument is being analyzed. We keep a small ring of the most recent
@@ -243,7 +332,9 @@ def _run_in_thread(job: JobState) -> None:
     try:
         result = run_lead_generator(force=True,
                                    on_progress=_on_progress,
-                                   on_tool_call=_on_tool_call)
+                                   on_tool_call=_on_tool_call,
+                                   job_id=job.id,
+                                   clear_session=True)
     except Exception as e:
         log.exception("manual lead-generator job %s crashed", job.id)
         _finish_job(job, "error", error=str(e) or e.__class__.__name__)
@@ -255,13 +346,38 @@ def _run_in_thread(job: JobState) -> None:
         _mark_done_no_lock(job, "error", error="lead_generation_busy")
         return
 
+    if result.get("cancelled"):
+        # User clicked "Stop" — the generator broke out of its per-instrument
+        # loop early. Surface a "cancelled" terminal status with whatever
+        # partial progress we'd already produced (scanned, leads-so-far,
+        # scan_outcomes). This lets the "Scanned stocks" panel keep showing
+        # the partial result set the user just interrupted.
+        _finish_job(
+            job,
+            "cancelled",
+            result={
+                "generated": result.get("created", 0),
+                "checked": result.get("checked", 0),
+                "scanned": result.get("scanned", 0),
+                "total": result.get("total", 0),
+                "cancelled": True,
+                "message": "Run was stopped by the user before completion.",
+            },
+        )
+        return
+
     if result.get("error"):
         _finish_job(job, "error", error=str(result["error"]))
     else:
         _finish_job(
             job,
             "done",
-            result={"generated": result.get("created", 0), "checked": result.get("checked", 0)},
+            result={
+                "generated": result.get("created", 0),
+                "checked": result.get("checked", 0),
+                "scanned": result.get("scanned", 0),
+                "total": result.get("total", 0),
+            },
         )
 
 

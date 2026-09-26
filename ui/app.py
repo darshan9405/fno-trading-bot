@@ -2285,25 +2285,50 @@ def _render_generate_lead_button(key_suffix: str) -> bool:
     Used by both the Dashboard's queued-signals header and the Leads tab so a
     run started on one tab is visible on the other. Returns True if a fresh
     run was just dispatched (so callers can show follow-up toasts).
+
+    While a run is in flight, a sibling "Stop" button is rendered in a
+    second column. Clicking it calls `api.cancel_lead_gen(job_id)`, which
+    flips the server-side cancel flag — the generator thread picks it up
+    between instruments and the job transitions to its "cancelled" terminal
+    status with the partial `scan_outcomes` still on screen.
     """
     _recover_in_flight_lead_job()
     job = st.session_state.get("lead_job")
     is_running = _is_job_running(job)
     button_label = "Generating…" if is_running else "Generate now"
-    clicked = st.button(
-        button_label,
-        key=f"gen_lead_btn_{key_suffix}",
-        type="primary",
-        use_container_width=True,
-        disabled=is_running,
-        help=(
-            "A lead-generation run is already in progress."
-            if is_running else
-            "Run the lead generator manually (works outside trading hours)."
-        ),
-    )
-    if not clicked:
-        return False
+    if is_running:
+        gen_col, stop_col = st.columns([3, 1])
+        with gen_col:
+            clicked = st.button(
+                button_label,
+                key=f"gen_lead_btn_{key_suffix}",
+                type="primary",
+                use_container_width=True,
+                disabled=True,
+                help="A lead-generation run is already in progress.",
+            )
+        with stop_col:
+            stop_clicked = st.button(
+                "Stop",
+                key=f"stop_lead_btn_{key_suffix}",
+                type="secondary",
+                use_container_width=True,
+                help="Stop the in-flight lead-generation run after the current underlying finishes.",
+            )
+            if stop_clicked:
+                _stop_lead_gen()
+        if not clicked:
+            return False
+    else:
+        clicked = st.button(
+            button_label,
+            key=f"gen_lead_btn_{key_suffix}",
+            type="primary",
+            use_container_width=True,
+            help="Run the lead generator manually (works outside trading hours).",
+        )
+        if not clicked:
+            return False
     gen_resp = api.generate_leads()
     if gen_resp.get("status") == "ok":
         st.session_state["lead_job"] = {
@@ -2324,6 +2349,38 @@ def _render_generate_lead_button(key_suffix: str) -> bool:
         return False
     st.error(gen_resp.get("error", {}).get("message", "Generation failed."))
     return False
+
+
+def _stop_lead_gen() -> None:
+    """Send a cancel request to the server for the in-flight lead-gen run.
+
+    Best-effort: the server returns 409 once the run has already terminated,
+    which we swallow silently — by the time the user clicks "Stop" the
+    polling fragment may have already drained the job. The next render will
+    clean up `session_state["lead_job"]` either way.
+    """
+    job = st.session_state.get("lead_job") or {}
+    job_id = job.get("id")
+    if not job_id:
+        return
+    resp = api.cancel_lead_gen(job_id)
+    if resp.get("status") == "ok":
+        # Mark cancel_requested locally so the button can grey out before
+        # the next 2s poll cycle flips the job to "cancelled".
+        st.session_state["lead_job"] = {
+            **job,
+            "cancel_requested": True,
+            "status": job.get("status", "running"),
+        }
+        st.toast("Stop requested — finishing current underlying…",
+                 icon=":material/stop_circle:")
+        return
+    err_code = (resp.get("error") or {}).get("code") or ""
+    if err_code in ("lead_generation_not_running", "lead_generation_job_not_found"):
+        # Already done — the polling fragment will drop the handle on the
+        # next tick. Nothing to surface.
+        return
+    st.error(f"Could not stop the run: {resp.get('error', {}).get('message', 'unknown error')}")
 
 
 def _format_elapsed(started_at: str | None, submitted_at: str | None) -> str:
@@ -2768,9 +2825,20 @@ def _lead_gen_status_fragment():
     # `_is_job_running()` check on the main render loop stays in sync
     # without re-polling.
     st.session_state["lead_job"]["status"] = status
+    # Remember the most-recent job id so the "Scanned stocks" panel can
+    # keep rendering the just-finished run even after the job transitions
+    # out of "running" (the polling fragment pops `lead_job` on terminal
+    # status, but the operator should still be able to inspect what the
+    # last run did). Stored on a dedicated key so a NEW run doesn't lose
+    # the previous one until the new one produces its own outcomes.
+    if status != "running":
+        st.session_state["last_lead_job_id"] = job_id
+        st.session_state["last_lead_job_status"] = status
+        st.session_state["last_lead_job_result"] = data.get("result") or {}
 
     if status == "running":
         _render_lead_progress_panel(data)
+        _render_scan_outcomes_panel(job_id, data)
         return
 
     st.session_state.pop("lead_job", None)
@@ -2784,9 +2852,225 @@ def _lead_gen_status_fragment():
             f"from {checked} underlying{'s' if checked != 1 else ''} in {elapsed}.",
             icon=":material/check_circle:",
         )
+        _render_scan_outcomes_panel(job_id, data)
+    elif status == "cancelled":
+        result = data.get("result") or {}
+        elapsed = _format_elapsed(data.get("started_at"), data.get("submitted_at"))
+        st.toast(
+            f"Run stopped after {elapsed}. Partial results kept on screen.",
+            icon=":material/stop_circle:",
+        )
+        _render_scan_outcomes_panel(job_id, data)
     elif status == "error":
         st.error(f"Generation failed: {data.get('error') or 'unknown error'}")
     st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Scanned stocks panel
+# ---------------------------------------------------------------------------
+
+
+_SCAN_OUTCOME_DECISION_GLYPH = {
+    "generated": ("✓", "profit"),
+    "no_signal": ("·", "muted"),
+    "error":     ("✗", "loss"),
+}
+
+_SCAN_OUTCOME_DECISION_LABEL = {
+    "generated": "Lead generated",
+    "no_signal": "No signal",
+    "error":     "Error",
+}
+
+
+def _render_scan_outcomes_panel(job_id: str | None, job_data: dict | None) -> None:
+    """Render the per-instrument scan-outcome list for a lead-gen job.
+
+    While the job is running we use the live `progress["scan_outcomes"]`
+    ring buffer the server emits with each progress patch — no extra
+    round-trip needed. For terminal statuses (or for a refresh after the
+    job dropped out of session_state) we fall back to the REST endpoint
+    so the panel survives a page reload.
+
+    Clicking a row opens the tool-call modal via the `open_scan_outcome`
+    session_state flag; the modal itself is rendered top-level in `main`.
+    """
+    # Try the in-memory ring buffer first (live runs).
+    outcomes = []
+    if isinstance(job_data, dict):
+        progress = job_data.get("progress") or {}
+        outcomes = list(progress.get("scan_outcomes") or [])
+
+    if not outcomes and job_id:
+        # Fall back to the DB-backed endpoint. We do this when the polling
+        # fragment already popped the job (so `job_data` is empty) but the
+        # operator still wants to inspect the just-finished run.
+        try:
+            resp = api.get_scan_outcomes(job_id=job_id, limit=200)
+            if resp.get("status") == "ok":
+                outcomes = list(resp.get("data") or [])
+        except Exception:
+            outcomes = []
+
+    if not outcomes:
+        return
+
+    decision_counts: dict[str, int] = {"generated": 0, "no_signal": 0, "error": 0}
+    for o in outcomes:
+        d = (o.get("decision") or "").lower()
+        if d in decision_counts:
+            decision_counts[d] += 1
+
+    summary_bits = (
+        f"{decision_counts['generated']} lead{'s' if decision_counts['generated'] != 1 else ''}"
+        f" · {decision_counts['no_signal']} no-signal"
+        f" · {decision_counts['error']} error{'s' if decision_counts['error'] != 1 else ''}"
+    )
+
+    with st.expander(f"**Scanned stocks** · {len(outcomes)} scanned ({summary_bits})",
+                     expanded=True):
+        st.caption(
+            "Every underlying the lead generator analysed this run. "
+            "Click a row to see the full LLM tool-call transcript."
+        )
+        _render_scan_outcome_rows(outcomes)
+
+
+def _render_scan_outcome_rows(outcomes: list[dict]) -> None:
+    """Render the per-row list of scan outcomes.
+
+    Each row is a clickable button — clicking sets `open_scan_outcome` to
+    the row's id, which the modal rendered by `main` opens. We can't use
+    `@st.dialog` inside an expander (Streamlit only honours the decorator
+    when the call is at top-level), so the modal lives in `main` and the
+    row here is the trigger.
+    """
+    h1, h2, h3, h4 = st.columns([2, 1.4, 4, 1.2])
+    h1.markdown("**Symbol**")
+    h2.markdown("**Decision**")
+    h3.markdown("**Reason / rationale**")
+    h4.markdown("**Detail**")
+    st.markdown("<hr style='margin:6px 0;opacity:0.2;'/>", unsafe_allow_html=True)
+
+    for o in outcomes:
+        symbol = o.get("symbol") or "?"
+        decision = (o.get("decision") or "no_signal").lower()
+        glyph, _ = _SCAN_OUTCOME_DECISION_GLYPH.get(decision, ("?", "muted"))
+        label = _SCAN_OUTCOME_DECISION_LABEL.get(decision, decision.title())
+        reason = o.get("rejection_reason") or o.get("rationale") or o.get("error") or "—"
+
+        row_id = o.get("id") or f"{o.get('symbol')}::{o.get('scanned_at')}"
+        c1, c2, c3, c4 = st.columns([2, 1.4, 4, 1.2])
+        with c1:
+            st.markdown(f"**{symbol}**")
+        with c2:
+            st.markdown(f"{glyph} {label}")
+        with c3:
+            reason_str = str(reason)
+            if len(reason_str) > 220:
+                reason_str = reason_str[:220] + "…"
+            st.markdown(
+                f"<span style='font-size:0.82rem;color:#cbd5e1;'>{_html_escape(reason_str)}</span>",
+                unsafe_allow_html=True,
+            )
+        with c4:
+            if o.get("id"):
+                if st.button(
+                    "View tools",
+                    key=f"scan_view_{row_id}",
+                    use_container_width=True,
+                    help="Open the full LLM tool-call transcript for this scan.",
+                ):
+                    st.session_state["open_scan_outcome"] = int(o["id"])
+                    st.rerun()
+            else:
+                st.caption("(streaming)")
+        st.markdown("<hr style='margin:4px 0;opacity:0.12;'/>", unsafe_allow_html=True)
+
+
+@st.dialog("Scan outcome detail", width="large")
+def _scan_outcome_modal(outcome_id: int) -> None:
+    """Modal showing one scan outcome's full tool-call transcript.
+
+    Rendered top-level by `main` whenever `session_state["open_scan_outcome"]`
+    is set. Pulls the detail endpoint (which carries the full `tool_calls`
+    JSON) so the operator can see every LLM tool call (indicators / news /
+    option chain / calc) the agent loop made for this underlying.
+    """
+    resp = api.get_scan_outcome_detail(outcome_id)
+    if resp.get("status") != "ok":
+        st.error(f"Could not load scan outcome: "
+                 f"{resp.get('error', {}).get('message', 'unknown error')}")
+        if st.button("Close"):
+            st.session_state.pop("open_scan_outcome", None)
+            st.rerun()
+        return
+
+    o = resp["data"]
+    sym = o.get("symbol") or "?"
+    decision = (o.get("decision") or "no_signal").lower()
+    label = _SCAN_OUTCOME_DECISION_LABEL.get(decision, decision.title())
+    scanned_at = o.get("scanned_at_ist_label") or "—"
+
+    st.markdown(
+        f"### {sym}  \n"
+        f"<span style='color:#94a3b8;font-size:0.9rem;'>"
+        f"Decision: <b>{_html_escape(label)}</b> · "
+        f"Scanned at: {_html_escape(scanned_at)} · "
+        f"Strategy: <code>{_html_escape(o.get('strategy') or '?')}</code> · "
+        f"Agent iters: {int(o.get('agent_iters') or 0)} · "
+        f"Duration: {int(o.get('duration_ms') or 0)} ms"
+        f"</span>",
+        unsafe_allow_html=True,
+    )
+
+    if o.get("rejection_reason"):
+        st.markdown("**Rejection reason (LLM)**")
+        st.info(str(o["rejection_reason"]))
+    if o.get("rationale"):
+        with st.expander("Full LLM rationale", expanded=False):
+            st.text(str(o["rationale"]))
+    if o.get("error"):
+        st.markdown("**Error**")
+        st.error(str(o["error"]))
+    if o.get("lead_id"):
+        st.markdown(f"**Generated lead**: `#{int(o['lead_id'])}` "
+                    f"({int(o.get('leads_created') or 0)} lead(s) created)")
+
+    tool_calls = o.get("tool_calls") or []
+    st.markdown(f"**Agent-loop tool calls** · {len(tool_calls)}")
+    if not tool_calls:
+        st.caption("(no tool calls were made — the LLM declined without looking up any tool data)")
+    else:
+        for i, tc in enumerate(tool_calls, start=1):
+            iter_n = tc.get("iter")
+            name = tc.get("name") or "?"
+            args = tc.get("args")
+            result = tc.get("result") or {}
+            with st.expander(
+                f"`{i}. {name}`"
+                + (f"  ·  iter {iter_n}" if iter_n else "")
+                + (f"  →  {', '.join(list(result.keys())[:4])}" if result else ""),
+                expanded=False,
+            ):
+                ca, cb = st.columns(2)
+                with ca:
+                    st.markdown("**Args**")
+                    st.code(_format_args_for_display(args), language="json")
+                with cb:
+                    st.markdown("**Result**")
+                    if not result:
+                        st.caption("(no result captured)")
+                    else:
+                        st.code(
+                            json.dumps(result, indent=2, default=str)[:8000],
+                            language="json",
+                        )
+
+    if st.button("Close", key=f"scan_close_{outcome_id}"):
+        st.session_state.pop("open_scan_outcome", None)
+        st.rerun()
 
 
 def render_instruments():
@@ -3560,6 +3844,16 @@ def main():
     if open_id:
         st.session_state.pop("open_lead_dialog", None)
         _open_lead_detail_modal(int(open_id))
+
+    # Scan-outcome modal: same pattern as the lead-detail modal above.
+    # The "Scanned stocks" panel sets `open_scan_outcome` to the row id
+    # the user clicked; we hand it off to `_scan_outcome_modal` here so
+    # Streamlit renders it as a modal overlay on top of whatever tab is
+    # currently active.
+    open_scan = st.session_state.get("open_scan_outcome")
+    if open_scan:
+        st.session_state.pop("open_scan_outcome", None)
+        _scan_outcome_modal(int(open_scan))
 
     # Page title with status dot
     ks_active = api.get_killswitch().get("data", {}).get("active", False)

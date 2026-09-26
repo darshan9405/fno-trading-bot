@@ -89,7 +89,8 @@ class LLMBreakoutStrategy(Strategy):
 
     def generate(self, instrument, candles: pd.DataFrame, now, *,
                  broker=None, today=None, lot_size: int | None = None,
-                 on_tool_call=None) -> list[LeadCandidate]:
+                 on_tool_call=None,
+                 on_scan_result=None) -> list[LeadCandidate]:
         from app.settings import get_setting
 
         if not bool(get_setting("llm.enabled", True)):
@@ -109,7 +110,7 @@ class LLMBreakoutStrategy(Strategy):
         self._run.calls_used += 1
 
         try:
-            signals = detect_one(
+            agent_result = detect_one(
                 client=client,
                 symbol=getattr(instrument, "symbol", ""),
                 underlying_key=getattr(instrument, "spot_instrument_key", ""),
@@ -124,18 +125,57 @@ class LLMBreakoutStrategy(Strategy):
         except Exception as exc:  # noqa: BLE001 — never let an LLM error crash the tick
             log.exception("llm_breakout: detect_one raised for %s: %s",
                           getattr(instrument, "symbol", "?"), exc)
+            # Best-effort: still hand the lead generator a structured
+            # "this instrument errored out" payload so the Scanned stocks
+            # panel shows the failure rather than silently dropping the row.
+            if on_scan_result is not None:
+                try:
+                    on_scan_result({
+                        "decision": "error",
+                        "error": f"detect_one raised: {exc}",
+                        "tool_calls": [],
+                        "agent_iters": 0,
+                    })
+                except Exception:  # noqa: BLE001
+                    log.debug("llm_breakout: on_scan_result raised", exc_info=True)
             return []
 
-        if not signals:
+        # The detector ALWAYS returns an AgentResult now. Forward it to the
+        # lead generator so it can persist a LeadScanOutcome row regardless
+        # of whether the agent emitted any signals.
+        if on_scan_result is not None:
+            try:
+                # Mirror the AgentResult shape into a lead-generator-friendly
+                # dict. Keep tool_calls / agent_iters / duration for the UI.
+                on_scan_result({
+                    "decision": (
+                        "generated" if agent_result.signals
+                        else ("error" if agent_result.error else "no_signal")
+                    ),
+                    "rejection_reason": agent_result.rejection_reason,
+                    "rationale": agent_result.rationale,
+                    "tool_calls": list(agent_result.tool_calls),
+                    "agent_iters": agent_result.agent_iters,
+                    "duration_ms": int(agent_result.agent_duration_s * 1000),
+                    "error": agent_result.error,
+                })
+            except Exception:  # noqa: BLE001
+                # A bad UI hook must never break the lead-generation run.
+                log.debug("llm_breakout: on_scan_result raised", exc_info=True)
+
+        if not agent_result.signals:
             return []
 
         leads: list[LeadCandidate] = []
-        for sig in signals:
+        for sig in agent_result.signals:
             meta = {
                 "source": "llm",
                 "indicators": indicators_for_logging(candles),
                 "llm_rationale": str(sig.get("rationale", "")),
-                "llm_tool_calls": list(sig.get("_tool_calls", []) or []),
+                "llm_tool_calls": list(agent_result.tool_calls),
+                "llm_agent_iters": agent_result.agent_iters,
+                "llm_agent_duration_s": agent_result.agent_duration_s,
+                "llm_rejection_reason": agent_result.rejection_reason,
             }
             leads.append(
                 LeadCandidate(

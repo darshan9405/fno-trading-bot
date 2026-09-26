@@ -198,8 +198,10 @@ def test_run_in_thread_does_not_double_acquire_the_lock(env, monkeypatch):
     _reset_state()
     calls = []
 
-    def fake_run_lead_generator(broker=None, now=None, force=False, on_progress=None):
-        calls.append((broker, now, force))
+    def fake_run_lead_generator(broker=None, now=None, force=False,
+                                on_progress=None, on_tool_call=None,
+                                job_id=None, clear_session=False):
+        calls.append((broker, now, force, job_id, clear_session))
         # Mimic the scheduler-held case: `_run_in_thread` sees None and the
         # call budget wasn't wasted calling begin_run on a strategy.
         return None
@@ -215,7 +217,8 @@ def test_run_in_thread_does_not_double_acquire_the_lock(env, monkeypatch):
         submitted_at=lead_jobs._now(),
     )
     lead_jobs._run_in_thread(job)
-    assert calls == [(None, None, True)], "expected exactly one inner call"
+    assert calls == [(None, None, True, "manual-1", True)], \
+        "expected exactly one inner call with job_id + clear_session"
     assert job.status == "error"
     assert job.error == "lead_generation_busy"
     # The lock must NOT be held afterwards — the inner call never acquired.
@@ -229,8 +232,15 @@ def test_run_in_thread_reports_generated_lead_count(env, monkeypatch):
 
     _reset_state()
 
-    def fake_run_lead_generator(broker=None, now=None, force=False, on_progress=None):
-        return {"created": 3, "checked": 5}
+    def fake_run_lead_generator(broker=None, now=None, force=False,
+                                on_progress=None, on_tool_call=None,
+                                job_id=None, clear_session=False):
+        # Newer contract: result carries scanned/total/cancelled/cleared
+        # alongside created/checked. The JobState only surfaces the
+        # sub-dict the UI uses to render the "Generated X leads from Y
+        # underlyings" toast.
+        return {"created": 3, "checked": 5, "scanned": 7, "total": 7,
+                "cancelled": False, "cleared": {"leads": 0, "scans": 0}}
 
     monkeypatch.setattr(
         "app.scheduler.lead_generator.run_lead_generator",
@@ -244,7 +254,8 @@ def test_run_in_thread_reports_generated_lead_count(env, monkeypatch):
     )
     lead_jobs._run_in_thread(job)
     assert job.status == "done"
-    assert job.result == {"generated": 3, "checked": 5}
+    assert job.result == {"generated": 3, "checked": 5,
+                          "scanned": 7, "total": 7}
     assert lead_jobs.is_generator_active() is False
 
 
@@ -283,18 +294,26 @@ def test_run_in_thread_pipes_progress_to_job_state(env, monkeypatch):
 
     _reset_state()
 
-    def fake_run_lead_generator(broker=None, now=None, force=False, on_progress=None):
+    def fake_run_lead_generator(broker=None, now=None, force=False,
+                                on_progress=None, on_tool_call=None,
+                                job_id=None, clear_session=False):
         assert on_progress is not None, "manual path must pass a callback"
-        # Simulate the three callbacks the real generator emits.
+        # Simulate the three callbacks the real generator emits. The
+        # newer contract adds `scan_outcomes` (a per-instrument ring
+        # buffer) — it lands on the job so the UI's "Scanned stocks"
+        # panel can render it without re-querying the REST endpoint.
         on_progress({"phase": "starting", "scanned": 0, "total": 4,
                      "created": 0, "checked": 0, "errors": 0,
-                     "current": None, "recent": [], "strategy": "test"})
+                     "current": None, "recent": [], "strategy": "test",
+                     "scan_outcomes": []})
         on_progress({"phase": "analyzing", "scanned": 1, "total": 4,
                      "created": 1, "checked": 1, "errors": 0,
                      "current": "FOO", "strategy": "test",
                      "recent": [{"symbol": "FOO", "status": "leads",
-                                 "leads": 1, "error": None}]})
-        return {"created": 1, "checked": 1}
+                                 "leads": 1, "error": None}],
+                     "scan_outcomes": [{"symbol": "FOO", "decision": "generated"}]})
+        return {"created": 1, "checked": 1, "scanned": 1, "total": 1,
+                "cancelled": False, "cleared": {"leads": 0, "scans": 0}}
 
     monkeypatch.setattr(
         "app.scheduler.lead_generator.run_lead_generator",
@@ -309,12 +328,14 @@ def test_run_in_thread_pipes_progress_to_job_state(env, monkeypatch):
     lead_jobs._run_in_thread(job)
 
     # Final state: the second patch must have landed on the job's `progress`
-    # field. The callback path doesn't accumulate — each `update()` replaces
-    # the same keys — so we observe the most recent patch.
+    # field. The "starting" patch is treated as a lifecycle boundary that
+    # resets `scan_outcomes` (per `_on_progress`), but the "analyzing" patch
+    # merges, so we observe the most recent values.
     assert job.progress["phase"] == "analyzing"
     assert job.progress["scanned"] == 1
     assert job.progress["created"] == 1
     assert job.progress["recent"][0]["symbol"] == "FOO"
+    assert job.progress["scan_outcomes"][0]["symbol"] == "FOO"
     assert job.started_at is not None
     assert job.status == "done"
 

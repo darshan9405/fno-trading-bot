@@ -338,6 +338,50 @@ def get_active_lead_gen_job():
     return api("GET", "/api/trades/leads/generate/active", timeout=LEAD_GEN_TIMEOUT)
 
 
+def cancel_lead_gen(job_id: str):
+    """Ask the backend to stop an in-flight lead-generation run.
+
+    The generator polls the cancel flag between instruments, so the call is
+    best-effort: the current instrument always finishes first. The endpoint
+    is idempotent (a second cancel for the same running job returns the
+    current snapshot) and 409s once the run is in a terminal state so the
+    UI can hide the Stop button.
+    """
+    return api("POST", f"/api/trades/leads/generate/{job_id}/cancel", timeout=LEAD_GEN_TIMEOUT)
+
+
+def get_scan_outcomes(job_id: str | None = None, underlying_key: str | None = None,
+                      limit: int = 200):
+    """List the per-instrument scan-outcome rows.
+
+    `job_id` narrows to a single run (use the id returned by `generate_leads`).
+    `underlying_key` narrows to a single symbol. `limit` caps the result count
+    (1..500, default 200). Used to back the "Scanned stocks" panel.
+    """
+    params = []
+    if job_id:
+        params.append(f"job_id={job_id}")
+    if underlying_key:
+        params.append(f"underlying_key={underlying_key}")
+    params.append(f"limit={int(limit)}")
+    return api("GET", "/api/trades/leads/scan-outcomes?" + "&".join(params), timeout=LEAD_GEN_TIMEOUT)
+
+
+def get_scan_outcome_detail(outcome_id: int):
+    """Single scan-outcome row with full tool-call history.
+
+    Used by the "Scanned stocks" row expansion modal so the user can see
+    every LLM tool call (indicators / news / option chain / calc) the
+    agent loop ran for the underlying.
+    """
+    return api("GET", f"/api/trades/leads/scan-outcomes/{outcome_id}", timeout=LEAD_GEN_TIMEOUT)
+
+
+def purge_scan_outcomes():
+    """Wipe the scan-outcome history without touching queued leads."""
+    return api("DELETE", "/api/trades/leads/scan-outcomes", timeout=10)
+
+
 def get_instruments():
     return api("GET", "/api/instruments")
 

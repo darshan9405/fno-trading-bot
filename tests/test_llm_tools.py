@@ -220,7 +220,7 @@ def test_agent_loop_final_answer_parses_signals(monkeypatch):
     df = _df(260, base=100.0, vol=0.5)
     df.iloc[-1, df.columns.get_loc("close")] = 105.2  # ensure trigger near close
     context = {"candles": df, "broker": None, "today": date.today(), "lot_size": 50}
-    signals = run_agent_loop(
+    result = run_agent_loop(
         client,
         system_prompt="you are a trading bot",
         user_prompt="analyze RELIANCE",
@@ -229,16 +229,21 @@ def test_agent_loop_final_answer_parses_signals(monkeypatch):
         divergence_pct=0.5,
         min_confidence=0.7,
     )
-    assert len(signals) == 1
-    assert signals[0]["direction"] == "CALL"
-    assert signals[0]["pattern_type"] == "horizontal_range"
+    # Newer return type is `AgentResult` — verify both the signals and the
+    # rich metadata the lead generator needs.
+    assert len(result.signals) == 1
+    assert result.signals[0]["direction"] == "CALL"
+    assert result.signals[0]["pattern_type"] == "horizontal_range"
+    assert result.ok is True
+    assert result.error is None
+    assert result.agent_iters == 1  # one tool-call turn before the final answer
     # Tool call log is attached for the lead-meta path.
     assert len(client.calls) == 2
 
 
 def test_agent_loop_max_iters_no_final(monkeypatch):
     """When the model never stops calling tools, the loop hits the cap and
-    returns [] (no fabricated signals)."""
+    returns an error-bearing AgentResult (no fabricated signals)."""
     from app.strategy.llm_breakout.agent import run_agent_loop
 
     # Always ask to call compute_indicators — never emits a final answer.
@@ -251,14 +256,16 @@ def test_agent_loop_max_iters_no_final(monkeypatch):
     ])
     df = _df(260)
     context = {"candles": df, "broker": None, "today": date.today(), "lot_size": 1}
-    signals = run_agent_loop(
+    result = run_agent_loop(
         client,
         system_prompt="sys", user_prompt="user",
         context=context,
         today_close=float(df["close"].iloc[-1]),
         divergence_pct=0.5, min_confidence=0.7,
     )
-    assert signals == []
+    assert result.signals == []
+    assert result.ok is False
+    assert result.error and "max iterations" in result.error
     # Should have stopped at the cap (LLM_AGENT_MAX_ITERATIONS=8 by default).
     assert len(client.calls) == 8
 
@@ -275,11 +282,64 @@ def test_agent_loop_transport_error_returns_empty():
 
     df = _df(260)
     context = {"candles": df, "broker": None, "today": date.today(), "lot_size": 1}
-    signals = run_agent_loop(
+    result = run_agent_loop(
         _FailingClient(),
         system_prompt="sys", user_prompt="user",
         context=context,
         today_close=float(df["close"].iloc[-1]),
         divergence_pct=0.5, min_confidence=0.7,
     )
-    assert signals == []
+    assert result.signals == []
+    assert result.ok is False
+    assert result.error is not None
+
+
+def test_agent_loop_captures_rejection_reason():
+    """When the model returns `{"signals": [], "rejection_reason": "..."}`,
+    the AgentResult surfaces that reason verbatim on `rejection_reason`
+    so the lead generator's "Scanned stocks" panel can show it."""
+    from app.strategy.llm_breakout.agent import run_agent_loop
+
+    client = _StubClientWithTools([
+        {"role": "assistant",
+         "content": '{"signals": [], "rejection_reason": "awaiting breakout confirmation"}'},
+    ])
+    df = _df(260)
+    context = {"candles": df, "broker": None, "today": date.today(), "lot_size": 1}
+    result = run_agent_loop(
+        client,
+        system_prompt="sys", user_prompt="user",
+        context=context,
+        today_close=float(df["close"].iloc[-1]),
+        divergence_pct=0.5, min_confidence=0.7,
+    )
+    assert result.ok is True
+    assert result.signals == []
+    assert result.rejection_reason == "awaiting breakout confirmation"
+    assert result.error is None
+
+
+def test_detect_one_returns_agent_result():
+    """`detect_one` should return an `AgentResult`, not a list, on every path."""
+    from app.strategy.llm_breakout.agent import AgentResult
+    from app.strategy.llm_breakout.detector import detect_one
+
+    client = _StubClientWithTools([
+        {"role": "assistant",
+         "content": '{"signals": []}'},
+    ])
+    df = _df(260)
+    res = detect_one(
+        client,
+        symbol="RELIANCE",
+        underlying_key="NSE_EQ|INE002A01018",
+        candles=df,
+        lookback_candles=250,
+        divergence_pct=0.5,
+        min_confidence=0.7,
+    )
+    assert isinstance(res, AgentResult)
+    assert res.ok is True
+    assert res.signals == []
+    # No rejection_reason in the payload → falls back to last assistant text.
+    assert res.rejection_reason is not None

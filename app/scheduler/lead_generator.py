@@ -5,6 +5,32 @@ IST): fetches candles for each enabled underlying in parallel, runs the
 configured strategy via the StrategyRegistry, and persists candidate leads
 (deduped to one batch per instrument per day). Strategy `generate()` is empty
 until Stage 9 fills in the breakout detectors.
+
+Per-run audit trail
+-------------------
+Every underlying the generator analyses produces a `LeadScanOutcome` row,
+even when no lead was emitted. This is what backs the UI's "Scanned stocks"
+panel — it gives the operator a full audit of what the LLM looked at and
+*why* it didn't take a signal. The strategy's `generate()` is required to
+invoke the `on_scan_result` callback once per instrument with the
+`AgentResult` (signals + rejection_reason + tool_calls + duration_ms) so
+the lead generator can persist both the lead (if any) and the outcome.
+
+Stop / cancel
+-------------
+`lead_jobs.is_stop_requested()` is polled between futures. When the user
+clicks "Stop" in the UI, the run breaks out of the per-instrument loop,
+cancels the remaining futures, and returns
+`{"cancelled": True, "created": ..., "checked": ..., "scanned": ...}` so
+the job can transition to its "cancelled" terminal status.
+
+Session reset
+-------------
+Manual UI runs (those that arrive with a `job_id`) clear the prior run's
+queued `Lead` rows AND `LeadScanOutcome` rows before kicking off, so the
+operator never sees stale "yesterday's candidates" mixed in with the live
+run. The scheduler-driven tick is a no-op on this front — it leaves prior
+rows intact because they may belong to a still-in-flight manual run.
 """
 
 import logging
@@ -16,12 +42,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import timedelta
 from typing import Callable
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.broker import get_broker
 from app.config import Config
 from app.db import session_scope
-from app.models import Instrument
+from app.models import Instrument, Lead, LeadScanOutcome
 from app.services import health_service, instrument_service, market_calendar
 from app.services.lead_service import attach_lead_plans, create_leads_from_candidates
 from app.settings import get_setting
@@ -35,10 +61,26 @@ CANDLE_LOOKBACK_DAYS = 300
 # The UI polls every 2s; sending more than 5 would dominate the payload and
 # doesn't add information once a run has been running for a while.
 _RECENT_CAP = 5
+# Cap on how many per-instrument SCAN OUTCOMES we keep in the live progress
+# snapshot. Bigger than `_RECENT_CAP` because the "Scanned stocks" panel
+# wants to show the whole current run, not just the tail.
+_SCAN_OUTCOMES_CAP = 200
 
 
-def _process_one(inst, broker, strategy_cls, strategy_interval, from_date, now,
-                on_tool_call=None):
+# ---------------------------------------------------------------------------
+# Per-instrument worker
+# ---------------------------------------------------------------------------
+
+
+def _process_one(
+    inst,
+    broker,
+    strategy_cls,
+    strategy_interval,
+    from_date,
+    now,
+    on_tool_call=None,
+):
     """Worker-thread entrypoint: fetch candles + run the strategy.
 
     A *fresh* strategy instance is built per worker — the LLM detector keeps
@@ -49,8 +91,10 @@ def _process_one(inst, broker, strategy_cls, strategy_interval, from_date, now,
     concurrent `get_historical_candles` calls from the pool don't exceed the
     configured UPSTOX_CANDLES_PER_SECOND budget.
 
-    Returns `(instrument, candidates, error)` so the main thread can persist
-    without holding the DB session across the network round-trip.
+    Returns `(instrument, candidates, error, scan_outcome)` so the main
+    thread can persist without holding the DB session across the network
+    round-trip. `scan_outcome` is the dict the strategy's `on_scan_result`
+    callback produced (None when the strategy didn't call it).
 
     `on_tool_call(event)` (when provided) is bound to this instrument's
     symbol and forwarded into the strategy's LLM agent loop so the UI can
@@ -65,13 +109,30 @@ def _process_one(inst, broker, strategy_cls, strategy_interval, from_date, now,
             except Exception as cb_err:  # noqa: BLE001
                 # A bad UI hook must never crash a worker thread.
                 log.debug("lead_generator: on_tool_call raised: %s", cb_err)
+
+    # Thread-local slot for the per-instrument scan outcome. The strategy's
+    # `on_scan_result` callback writes into this closure; the worker
+    # returns it to the main thread. None when the strategy never called
+    # the callback (e.g. candle fetch failed).
+    scan_outcome_box: dict = {}
+
+    def _on_scan_result(result: dict) -> None:
+        scan_outcome_box["result"] = result
+
     try:
         strategy = strategy_cls()
         candles = broker.get_historical_candles(
             inst.spot_instrument_key, strategy_interval, from_date, now.date()
         )
         if candles is None or candles.empty:
-            return (inst, [], None)
+            return (inst, [], None, {
+                "decision": "no_signal",
+                "rejection_reason": "no candle history available for lookback",
+                "tool_calls": [],
+                "agent_iters": 0,
+                "duration_ms": 0,
+                "error": None,
+            })
         # Hand the broker + today + lot_size down so the strategy's
         # tool-calling agent loop can reach for option-chain context if it
         # wants to. Strategies that don't need them ignore the kwargs.
@@ -83,10 +144,28 @@ def _process_one(inst, broker, strategy_cls, strategy_interval, from_date, now,
             today=now.date(),
             lot_size=getattr(inst, "lot_size", 1) or 1,
             on_tool_call=per_symbol_cb,
+            on_scan_result=_on_scan_result,
         )
-        return (inst, candidates, None)
+        return (inst, candidates, None, scan_outcome_box.get("result"))
     except Exception as e:  # per-instrument isolation
-        return (inst, [], (str(e), traceback.format_exc()))
+        return (
+            inst,
+            [],
+            (str(e), traceback.format_exc()),
+            {
+                "decision": "error",
+                "rejection_reason": None,
+                "tool_calls": [],
+                "agent_iters": 0,
+                "duration_ms": 0,
+                "error": str(e),
+            },
+        )
+
+
+# ---------------------------------------------------------------------------
+# Progress emitter
+# ---------------------------------------------------------------------------
 
 
 def _emit_progress(
@@ -100,7 +179,9 @@ def _emit_progress(
     errors: int,
     current: str | None,
     recent: deque,
+    scan_outcomes: deque,
     strategy: str,
+    cancelled: bool = False,
 ) -> None:
     """Hand a progress snapshot to the UI callback. No-op when `on_progress`
     is None (scheduler-driven runs don't expose a job state). The callback is
@@ -118,8 +199,130 @@ def _emit_progress(
         # `deque` isn't JSON-serialisable, and the UI only cares about the
         # tail. Materialise as a list, newest-first.
         "recent": list(recent),
+        # Per-instrument scan outcomes for the "Scanned stocks" panel.
+        "scan_outcomes": list(scan_outcomes),
         "strategy": strategy,
+        "cancelled": cancelled,
     })
+
+
+# ---------------------------------------------------------------------------
+# Session reset helpers
+# ---------------------------------------------------------------------------
+
+
+def _clear_session_data() -> dict[str, int]:
+    """Drop queued `Lead` + `LeadScanOutcome` rows for the current session.
+
+    Called at the start of a manual run so the operator doesn't see stale
+    "yesterday's leads" or "yesterday's scans" mixed in with the freshly
+    generated data. Returns counts of the rows removed so the lead_jobs
+    progress card can report what was cleared.
+
+    "Current session" is intentionally a wide scope — anything that's still
+    in queued / picked state for `Lead`, or unscoped for
+    `LeadScanOutcome`. Anything already placed / skipped / expired (the
+    `processed` buckets) is left alone because the operator expects to see
+    those in the audit log even after a manual reset. The
+    `LeadCleanupService` daily job will eventually age out the processed
+    rows on its own retention horizon.
+    """
+    cleared = {"leads": 0, "scans": 0}
+    try:
+        with session_scope() as session:
+            r = session.execute(
+                delete(Lead).where(Lead.status.in_(["queued", "picked"]))
+            )
+            cleared["leads"] = getattr(r, "rowcount", 0) or 0
+            r = session.execute(delete(LeadScanOutcome))
+            cleared["scans"] = getattr(r, "rowcount", 0) or 0
+        if cleared["leads"] or cleared["scans"]:
+            log.info(
+                "lead_generator: cleared prior session data (leads=%d, scans=%d)",
+                cleared["leads"], cleared["scans"],
+            )
+    except Exception as e:  # noqa: BLE001
+        # Best-effort cleanup — if it fails the run still proceeds and just
+        # shows stale data alongside new leads. Don't kill the run over it.
+        log.warning("lead_generator: session reset failed: %s", e)
+    return cleared
+
+
+# ---------------------------------------------------------------------------
+# Scan outcome persistence
+# ---------------------------------------------------------------------------
+
+
+def _persist_scan_outcome(
+    session,
+    *,
+    job_id: str | None,
+    inst,
+    scan_outcome: dict | None,
+    leads_created: list[Lead],
+    scan_started_at,
+) -> LeadScanOutcome | None:
+    """Materialise a `LeadScanOutcome` row from one per-instrument pass.
+
+    `scan_outcome` is the dict the strategy's `on_scan_result` callback
+    produced (may be None when the strategy didn't call the hook —
+    defensive). `leads_created` is the list of `Lead` rows the lead
+    generator persisted for this instrument (empty for a no-signal pass).
+
+    The function returns the persisted row, or None when the input was so
+    sparse (no scan outcome AND no leads) that there's nothing worth
+    persisting. Callers should not treat None as an error.
+    """
+    if scan_outcome is None and not leads_created:
+        return None
+
+    decision = scan_outcome.get("decision") if scan_outcome else None
+    if not decision:
+        decision = "generated" if leads_created else "no_signal"
+
+    primary_lead = leads_created[0] if leads_created else None
+
+    # Truncate rationale / error so a verbose LLM output doesn't blow up
+    # the row size. 4 KB is plenty for a human-readable audit string.
+    rationale = scan_outcome.get("rationale") if scan_outcome else None
+    if rationale and len(rationale) > 4000:
+        rationale = rationale[:4000]
+    rejection_reason = (
+        scan_outcome.get("rejection_reason") if scan_outcome else None
+    )
+    if rejection_reason and len(rejection_reason) > 4000:
+        rejection_reason = rejection_reason[:4000]
+    error_text = scan_outcome.get("error") if scan_outcome else None
+    if error_text and len(error_text) > 2000:
+        error_text = error_text[:2000]
+
+    row = LeadScanOutcome(
+        job_id=job_id,
+        instrument_id=getattr(inst, "id", None),
+        underlying_key=getattr(inst, "spot_instrument_key", "") or "",
+        symbol=getattr(inst, "symbol", "") or "?",
+        decision=decision,
+        lead_id=primary_lead.id if primary_lead is not None else None,
+        leads_created=len(leads_created),
+        rejection_reason=rejection_reason,
+        rationale=rationale,
+        tool_calls=scan_outcome.get("tool_calls") if scan_outcome else None,
+        strategy=scan_outcome.get("strategy") if scan_outcome else None
+            or "llm_breakout",
+        agent_iters=int(scan_outcome.get("agent_iters") or 0) if scan_outcome else 0,
+        duration_ms=int(scan_outcome.get("duration_ms") or 0) if scan_outcome else 0,
+        confidence=float(
+            scan_outcome.get("confidence") or 0.0
+        ) if scan_outcome else 0.0,
+        error=error_text,
+    )
+    session.add(row)
+    return row
+
+
+# ---------------------------------------------------------------------------
+# Main entrypoint
+# ---------------------------------------------------------------------------
 
 
 def run_lead_generator(
@@ -128,12 +331,21 @@ def run_lead_generator(
     force: bool = False,
     on_progress: Callable[[dict], None] | None = None,
     on_tool_call: Callable[[str, dict], None] | None = None,
+    job_id: str | None = None,
+    clear_session: bool = False,
 ) -> dict | None:
-    """Run one lead-generation pass. Returns `{"created": n, "checked": n}` on
-    success (or `{"error": ...}` on failure); None when skipped (outside window).
+    """Run one lead-generation pass. Returns `{"created": n, "checked": n, ...}`
+    on success (or `{"error": ...}` on failure); None when skipped (outside
+    window); `{"cancelled": True, ...}` when the user asked us to stop.
 
     `force=True` bypasses the trading-window gate so leads can be generated
     manually from the UI (historical candles + option chains work off-hours).
+
+    `job_id` is set when invoked from the manual-UI job path. When set, the
+    run clears prior queued `Lead` + `LeadScanOutcome` rows first (unless
+    `clear_session=False` for tests) so the operator sees a clean session.
+    The job id is also stamped on every `LeadScanOutcome` row this run
+    produces so the UI can filter by "this run only".
 
     `on_progress(patch)` is invoked from the main thread with progress
     snapshots at three points: once before the pool is fanned out (phase=
@@ -148,12 +360,19 @@ def run_lead_generator(
     thread-safe (the manual-job path uses a small lock around the shared
     progress dict).
     """
+    # Imported here to avoid a circular import at module-load time — the
+    # `lead_jobs` module imports `run_lead_generator` inside its worker
+    # thread, which would re-enter this module.
+    from app.scheduler import lead_jobs
+
     now = now or health_service.now_ist()
     # Fall back to the only built-in strategy that's currently registered.
     # The old `"breakout"` default trips `Unknown strategy: 'breakout'` for
     # fresh installs because that legacy package was removed.
     strategy_name = get_setting("strategy", "llm_breakout")
     source = "scheduler.lead_generator"
+
+    cleared: dict[str, int] = {"leads": 0, "scans": 0}
 
     try:
         broker = broker or get_broker(Config())
@@ -179,6 +398,12 @@ def run_lead_generator(
             health_service.touch_heartbeat("lead_generator", "outside trading window")
             return None
 
+        # Session reset: only when the manual-UI path explicitly asks for
+        # it. Scheduler-driven ticks skip this so a manual run that ends
+        # at 14:00 IST doesn't lose state to the next 14:01 IST tick.
+        if clear_session:
+            cleared = _clear_session_data()
+
         strategy_cls = StrategyRegistry.get(strategy_name)
         strategy = strategy_cls()
         from_date = now.date() - timedelta(days=CANDLE_LOOKBACK_DAYS)
@@ -202,9 +427,11 @@ def run_lead_generator(
         pending_errors = []
         created_total = checked = 0
         hit_cap = False
+        cancelled = False
         scanned = 0
         strategy_interval = strategy.required_interval
         recent: deque = deque(maxlen=_RECENT_CAP)
+        scan_outcomes: deque = deque(maxlen=_SCAN_OUTCOMES_CAP)
 
         with session_scope() as session:
             instruments = session.execute(
@@ -226,6 +453,7 @@ def run_lead_generator(
             errors=0,
             current=None,
             recent=recent,
+            scan_outcomes=scan_outcomes,
             strategy=strategy_name,
         )
 
@@ -234,7 +462,7 @@ def run_lead_generator(
         # thread below — SQLite serialises writers, and a single `session_scope`
         # avoids juggling locks.
         cap_lock = threading.Lock()
-        results: list[tuple] = []  # (inst, candidates, error)
+        results: list[tuple] = []  # (inst, candidates, error, scan_outcome)
         with ThreadPoolExecutor(max_workers=max_workers,
                                 thread_name_prefix="leadgen") as pool:
             futures = {
@@ -247,7 +475,45 @@ def run_lead_generator(
                 for future in as_completed(futures):
                     inst = futures[future]
                     scanned += 1
-                    inst_obj, candidates, err = future.result()
+
+                    # Honour the cancel flag between instruments. We let the
+                    # CURRENT future complete (so we don't tear down a half-
+                    # written DB transaction) and break out of the loop before
+                    # pulling the next one.
+                    if lead_jobs.is_stop_requested():
+                        cancelled = True
+                        log.info(
+                            "lead_generator: stop requested after %d instruments; aborting",
+                            scanned - 1,
+                        )
+                        # Record the cancellation in the progress snapshot so
+                        # the UI immediately reflects "Run was stopped" even
+                        # before the worker drains.
+                        _emit_progress(
+                            on_progress,
+                            phase="analyzing",
+                            scanned=scanned - 1,
+                            total=len(instruments),
+                            created=created_total,
+                            checked=checked,
+                            errors=len(pending_errors),
+                            current=None,
+                            recent=recent,
+                            scan_outcomes=scan_outcomes,
+                            strategy=strategy_name,
+                            cancelled=True,
+                        )
+                        # Cancel remaining futures so we don't wait on them
+                        # for the rest of the `as_completed` loop. asyncio
+                        # `cancel()` on a `ThreadPoolExecutor` future is a
+                        # no-op if it's already running; we still record
+                        # whatever it produced below.
+                        for f in futures:
+                            if not f.done():
+                                f.cancel()
+                        break
+
+                    inst_obj, candidates, err, scan_outcome = future.result()
                     if err is not None:
                         pending_errors.append(err)
                         recent.appendleft({
@@ -256,6 +522,19 @@ def run_lead_generator(
                             "leads": 0,
                             "error": str(err[0])[:120] if err else None,
                         })
+                        # Persist the scan outcome even on error so the UI's
+                        # Scanned stocks panel surfaces the failure.
+                        with session_scope() as session:
+                            _persist_scan_outcome(
+                                session,
+                                job_id=job_id,
+                                inst=inst_obj,
+                                scan_outcome=scan_outcome,
+                                leads_created=[],
+                                scan_started_at=None,
+                            )
+                        if scan_outcome is not None:
+                            _append_scan_outcome(scan_outcomes, inst_obj, scan_outcome, [])
                         _emit_progress(
                             on_progress,
                             phase="analyzing",
@@ -266,10 +545,11 @@ def run_lead_generator(
                             errors=len(pending_errors),
                             current=getattr(inst_obj, "symbol", None),
                             recent=recent,
+                            scan_outcomes=scan_outcomes,
                             strategy=strategy_name,
                         )
                         continue
-                    results.append((inst_obj, candidates))
+                    results.append((inst_obj, candidates, scan_outcome))
                     # Persist eagerly, one instrument at a time, so the lead
                     # cap (`max_leads_per_run`) is respected as soon as it is
                     # hit instead of waiting for the whole pool to drain.
@@ -280,6 +560,17 @@ def run_lead_generator(
                             "leads": 0,
                             "error": None,
                         })
+                        with session_scope() as session:
+                            _persist_scan_outcome(
+                                session,
+                                job_id=job_id,
+                                inst=inst_obj,
+                                scan_outcome=scan_outcome,
+                                leads_created=[],
+                                scan_started_at=None,
+                            )
+                        if scan_outcome is not None:
+                            _append_scan_outcome(scan_outcomes, inst_obj, scan_outcome, [])
                         _emit_progress(
                             on_progress,
                             phase="analyzing",
@@ -290,6 +581,7 @@ def run_lead_generator(
                             errors=len(pending_errors),
                             current=getattr(inst_obj, "symbol", None),
                             recent=recent,
+                            scan_outcomes=scan_outcomes,
                             strategy=strategy_name,
                         )
                         continue
@@ -312,6 +604,7 @@ def run_lead_generator(
                                 errors=len(pending_errors),
                                 current=getattr(inst_obj, "symbol", None),
                                 recent=recent,
+                                scan_outcomes=scan_outcomes,
                                 strategy=strategy_name,
                             )
                             continue
@@ -345,6 +638,16 @@ def run_lead_generator(
                                 "leads": 0,
                                 "error": None,
                             })
+                        _persist_scan_outcome(
+                            session,
+                            job_id=job_id,
+                            inst=inst_obj,
+                            scan_outcome=scan_outcome,
+                            leads_created=created,
+                            scan_started_at=None,
+                        )
+                        if scan_outcome is not None:
+                            _append_scan_outcome(scan_outcomes, inst_obj, scan_outcome, created)
                         _emit_progress(
                             on_progress,
                             phase="analyzing",
@@ -355,12 +658,13 @@ def run_lead_generator(
                             errors=len(pending_errors),
                             current=getattr(inst_obj, "symbol", None),
                             recent=recent,
+                            scan_outcomes=scan_outcomes,
                             strategy=strategy_name,
                         )
             finally:
                 # Drain remaining futures so workers don't leak. Any work that
                 # arrived after the cap was hit is recorded but not persisted.
-                if hit_cap:
+                if hit_cap or cancelled:
                     for f in futures:
                         if not f.done():
                             f.cancel()
@@ -377,7 +681,9 @@ def run_lead_generator(
             errors=len(pending_errors),
             current=None,
             recent=recent,
+            scan_outcomes=scan_outcomes,
             strategy=strategy_name,
+            cancelled=cancelled,
         )
 
         # Log after the transaction commits (SQLite allows a single writer).
@@ -390,10 +696,68 @@ def run_lead_generator(
             note += " (cap_hit)"
         if force:
             note += f" manual"
+        if cancelled:
+            note += " (cancelled)"
+        if cleared.get("leads") or cleared.get("scans"):
+            note += f" cleared_prior=leads{cleared['leads']},scans{cleared['scans']}"
         health_service.touch_heartbeat("lead_generator", note)
-        return {"created": created_total, "checked": checked}
+        return {
+            "created": created_total,
+            "checked": checked,
+            "scanned": scanned,
+            "total": len(instruments),
+            "cancelled": cancelled,
+            "cleared": cleared,
+        }
     except Exception as e:
         log.exception("lead_generator run failed")
         health_service.log_scheduler_error(source, e)
         health_service.touch_heartbeat("lead_generator", str(e)[:200], status="error")
         return {"error": str(e)}
+
+
+def _append_scan_outcome(
+    scan_outcomes: deque,
+    inst,
+    scan_outcome: dict,
+    created: list[Lead],
+) -> None:
+    """Push one per-instrument scan result into the live progress deque.
+
+    The deque is rendered into the UI's "Scanned stocks" panel via the
+    2-second polling cycle, so each entry is shaped to match what the UI
+    expects: symbol, decision (generated/no_signal/error), the LLM's
+    rejection_reason (truncated to a UI-friendly 200 chars), and a short
+    rationale snippet. Full tool-call detail is fetched from the
+    `LeadScanOutcome` row when the user expands a row.
+    """
+    decision = scan_outcome.get("decision") or (
+        "generated" if created else "no_signal"
+    )
+    rejection_reason = scan_outcome.get("rejection_reason")
+    if rejection_reason:
+        rejection_reason = str(rejection_reason)
+        if len(rejection_reason) > 200:
+            rejection_reason = rejection_reason[:200] + "…"
+    rationale = scan_outcome.get("rationale")
+    if rationale:
+        rationale = str(rationale)
+        if len(rationale) > 200:
+            rationale = rationale[:200] + "…"
+    error_text = scan_outcome.get("error")
+    if error_text:
+        error_text = str(error_text)
+        if len(error_text) > 200:
+            error_text = error_text[:200] + "…"
+    scan_outcomes.appendleft({
+        "symbol": getattr(inst, "symbol", "?") or "?",
+        "underlying_key": getattr(inst, "spot_instrument_key", "") or "",
+        "instrument_id": getattr(inst, "id", None),
+        "decision": decision,
+        "leads_created": len(created),
+        "rejection_reason": rejection_reason,
+        "rationale": rationale,
+        "agent_iters": int(scan_outcome.get("agent_iters") or 0),
+        "duration_ms": int(scan_outcome.get("duration_ms") or 0),
+        "error": error_text,
+    })

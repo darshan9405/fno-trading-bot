@@ -333,7 +333,11 @@ def test_detect_one_returns_empty_on_transport_error():
         candles=df, lookback_candles=250,
         divergence_pct=0.5, min_confidence=0.7,
     )
-    assert out == []
+    # Newer contract: detect_one returns an AgentResult (empty signals
+    # list, with `error` populated on transport failures).
+    assert out.signals == []
+    assert out.ok is False
+    assert out.error is not None
 
 
 def test_detect_one_returns_empty_on_bad_json_via_client_error():
@@ -347,7 +351,9 @@ def test_detect_one_returns_empty_on_bad_json_via_client_error():
         candles=df, lookback_candles=250,
         divergence_pct=0.5, min_confidence=0.7,
     )
-    assert out == []
+    assert out.signals == []
+    assert out.ok is False
+    assert out.error is not None
 
 
 def test_detect_one_returns_empty_signals():
@@ -361,7 +367,11 @@ def test_detect_one_returns_empty_signals():
         candles=df, lookback_candles=250,
         divergence_pct=0.5, min_confidence=0.7,
     )
-    assert out == []
+    assert out.signals == []
+    assert out.ok is True
+    # Empty payload → rejection_reason falls back to the last assistant
+    # text (the JSON payload itself, since there's nothing else).
+    assert out.rejection_reason is not None
     assert len(client.calls) == 1
     sys_msg, user_msg = client.calls[0]
     assert "SYMBOL: NIFTY" in user_msg
@@ -398,9 +408,9 @@ def test_detect_one_filters_invalid_signals_but_keeps_valid_one():
         candles=df, lookback_candles=250,
         divergence_pct=0.5, min_confidence=0.7,
     )
-    assert len(out) == 1
-    assert out[0]["pattern_type"] == "horizontal_range"
-    assert out[0]["trigger_price"] == 105.0
+    assert len(out.signals) == 1
+    assert out.signals[0]["pattern_type"] == "horizontal_range"
+    assert out.signals[0]["trigger_price"] == 105.0
 
 
 def test_detect_one_handles_too_few_candles():
@@ -416,7 +426,11 @@ def test_detect_one_handles_too_few_candles():
         candles=df, lookback_candles=250,
         divergence_pct=0.5, min_confidence=0.7,
     )
-    assert out == []
+    # Too few candles → early-out AgentResult with no error (this isn't
+    # a failure, just a "we don't have enough data to look").
+    assert out.signals == []
+    assert out.ok is True
+    assert out.error is None
     assert len(client.calls) == 0  # short-circuited before HTTP
 
 

@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import pandas as pd
@@ -40,6 +41,68 @@ from app.strategy.llm_breakout.validator import validate_signals
 log = logging.getLogger(__name__)
 
 
+@dataclass
+class AgentResult:
+    """What a single ``detect_one`` invocation actually produced.
+
+    Built from one round of the tool-calling agent loop. The strategy's
+    ``generate()`` converts this into ``LeadCandidate`` rows when signals
+    are present; the lead generator separately persists a ``LeadScanOutcome``
+    row from the same object so the "Scanned stocks" panel can show *why*
+    the model declined even when no lead came out.
+
+    Fields:
+      signals:            validated signal dicts (may be empty when the LLM
+                          rejects the setup). This is what the legacy
+                          `detect_one()` return value used to be — the rest
+                          of the dataclass is new.
+      rejection_reason:   The LLM-supplied natural-language explanation for
+                          an empty signals list. The system prompt asks the
+                          model to populate this field whenever it returns
+                          `{"signals": []}` so the operator can audit the
+                          decision; falls back to the last assistant
+                          message if the field is absent / unparseable.
+      tool_calls:         full log of every tool call the agent loop made,
+                          in order, with args + result payload. The UI
+                          modal shows this verbatim.
+      agent_iters:        number of agent-loop iterations that ran (== number
+                          of tool-call turns; the final assistant message
+                          doesn't count).
+      agent_duration_s:   wall-clock seconds for the full loop, rounded.
+      rationale:          the LAST assistant text the model emitted — i.e.
+                          the final-message prose that may have wrapped the
+                          JSON payload. Surface in the UI as a fallback
+                          when `rejection_reason` is empty.
+      error:              short string if the loop bailed (transport failure,
+                          parse failure, validator rejection, max iters).
+                          Empty on success.
+    """
+
+    signals: list[dict[str, Any]] = field(default_factory=list)
+    rejection_reason: str | None = None
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    agent_iters: int = 0
+    agent_duration_s: float = 0.0
+    rationale: str | None = None
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        """True when the loop finished without bailing (signals may still be empty)."""
+        return self.error is None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "signals": list(self.signals),
+            "rejection_reason": self.rejection_reason,
+            "tool_calls": list(self.tool_calls),
+            "agent_iters": self.agent_iters,
+            "agent_duration_s": self.agent_duration_s,
+            "rationale": self.rationale,
+            "error": self.error,
+        }
+
+
 FINAL_SYSTEM_SUFFIX = (
     "\n\nWhen you are ready to emit your final answer, return a JSON object "
     "with a top-level `signals` array. Each signal must have keys: "
@@ -48,7 +111,12 @@ FINAL_SYSTEM_SUFFIX = (
     "custom), `trigger_price` (float, within 0.5% of last close), "
     "`confidence` (float in [0,1]), `rationale` (≤ 200 chars). Do NOT wrap "
     "your JSON in markdown fences. If there is no breakout, return "
-    "`{\"signals\": []}` — never fabricate a signal."
+    "`{\"signals\": []}` — never fabricate a signal. When signals is "
+    "empty you MUST also include a `rejection_reason` string explaining "
+    "*why* the setup was rejected (e.g. \"no volume expansion\", \"range "
+    "too tight\", \"awaiting breakout confirmation\", \"news risk too "
+    "high\"). This reason is shown verbatim on the operator dashboard so "
+    "they can audit why the bot passed on a symbol. Keep it under 400 chars."
 )
 
 
@@ -344,15 +412,20 @@ def run_agent_loop(
     divergence_pct: float,
     min_confidence: float,
     on_tool_call: Callable[[dict[str, Any]], None] | None = None,
-) -> list[dict[str, Any]]:
-    """Drive the tool-calling agent loop; return validated signals.
+) -> AgentResult:
+    """Drive the tool-calling agent loop; return an ``AgentResult``.
 
-    Mirrors the legacy `detect_one` contract:
-      - returns [] on any failure (transport, parse, validation, max iters)
-      - never raises
-      - updates llm_health stats on every iteration (so health endpoint
-        reflects the new wiring even when the model never returns a final
-        answer)
+    Always returns an ``AgentResult`` (never raises). The contract is:
+
+      - ``result.ok`` is True when the loop finished without an internal
+        failure; ``result.signals`` may still be empty (the model just
+        didn't find a breakout). ``result.rejection_reason`` carries the
+        LLM's explanation for that empty list.
+      - On transport / parse / validator / max-iter failures ``result.ok``
+        is False, ``result.error`` is set, and ``result.signals`` is
+        empty. The call still updates ``llm_health`` so the system health
+        endpoint reflects the new wiring even when the model never
+        returns a final answer.
 
     `on_tool_call(event)` is invoked once per completed tool execution with
     `{"iter": int, "name": str, "args": <truncated>, "result_keys": [str,...]}`.
@@ -369,6 +442,18 @@ def run_agent_loop(
     final: dict[str, Any] | None = None
     last_content = ""
 
+    def _bail(error: str) -> AgentResult:
+        """Build an error-bearing result for any failure path."""
+        llm_health.record_error(error)
+        return AgentResult(
+            signals=[],
+            tool_calls=list(tool_call_log),
+            agent_iters=len(tool_call_log),
+            agent_duration_s=round(time.monotonic() - start_ts, 3),
+            rationale=last_content or None,
+            error=error,
+        )
+
     for it in range(max_iters):
         log.debug("agent_loop: iter %d/%d", it + 1, max_iters)
         if not hasattr(client, "chat_with_tools"):
@@ -377,12 +462,10 @@ def run_agent_loop(
             log.debug("agent_loop: client has no chat_with_tools; falling back to chat_json")
             response = client.chat_json(system_prompt + FINAL_SYSTEM_SUFFIX, user_prompt)
             if isinstance(response, dict):
-                response["_tool_calls"] = []
                 last_content = json.dumps(response)
+                final = response
             else:
-                llm_health.record_error("non-dict fallback response")
-                return []
-            final = response
+                return _bail("non-dict fallback response")
             break
         try:
             msg = client.chat_with_tools(
@@ -392,11 +475,9 @@ def run_agent_loop(
             )
         except Exception as e:  # noqa: BLE001
             log.warning("agent_loop: chat_with_tools raised: %s", e)
-            llm_health.record_error(f"chat_with_tools raised: {e}")
-            return []
+            return _bail(f"chat_with_tools raised: {e}")
         if msg is None:
-            llm_health.record_error("transport error in agent loop")
-            return []
+            return _bail("transport error in agent loop")
         content = msg.get("content") or ""
         tool_calls = msg.get("tool_calls") or []
         if content:
@@ -407,8 +488,7 @@ def run_agent_loop(
             if final is None:
                 log.warning("agent_loop: final content not parseable as JSON (truncated): %s",
                             (content or "")[:300])
-                llm_health.record_error("final content not parseable JSON")
-                return []
+                return _bail("final content not parseable JSON")
             break
 
         # Tool-call turn: append the assistant message verbatim (so the LLM
@@ -463,18 +543,21 @@ def run_agent_loop(
     if final is None:
         # Cap hit; try to salvage a last parse from the latest content.
         log.warning("agent_loop: max iters reached; final_content=[:300] %s", last_content[:300])
-        llm_health.record_error("agent loop max iterations reached")
-        return []
+        return _bail("agent loop max iterations reached")
 
     raw_signals = final.get("signals", [])
     if not isinstance(raw_signals, list):
-        llm_health.record_error("malformed signals payload")
-        return []
+        return _bail("malformed signals payload")
 
-    # Attach the tool-call log so the lead's `meta` can surface it.
-    final["_tool_calls"] = tool_call_log
-    final["_agent_iters"] = len(tool_call_log)
-    final["_agent_duration_s"] = round(duration_s, 3)
+    # Pull the model-supplied reason for an empty signals list. If the model
+    # didn't populate it (older prompts, degenerate output) fall back to the
+    # last assistant message so the UI never gets a NULL reason for a
+    # non-empty "no_signal" outcome.
+    rejection_reason = final.get("rejection_reason")
+    if not rejection_reason and not raw_signals:
+        fallback = (last_content or "").strip()
+        if fallback:
+            rejection_reason = fallback[:400]
 
     valid = validate_signals(
         raw_signals,
@@ -482,9 +565,18 @@ def run_agent_loop(
         max_distance_pct=divergence_pct,
         min_confidence=min_confidence,
     )
-    if not valid:
+    if not valid and raw_signals:
         log.info("agent_loop: validator rejected all %d signals for symbol", len(raw_signals))
+
     # Successful transport + parse path — count as a success regardless of
     # how many signals survived.
     llm_health.record_success()
-    return valid
+    return AgentResult(
+        signals=valid,
+        rejection_reason=str(rejection_reason)[:400] if rejection_reason else None,
+        tool_calls=list(tool_call_log),
+        agent_iters=len(tool_call_log),
+        agent_duration_s=round(duration_s, 3),
+        rationale=last_content or None,
+        error=None,
+    )
