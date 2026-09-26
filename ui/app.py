@@ -1334,7 +1334,15 @@ def render_leads():
         if code in ("unauthorized", "jwt_expired") or "auth" in code.lower():
             st.error(f"{msg} — your session has expired. Use the sidebar **Logout** and re-login.")
         else:
-            st.warning(f"{msg}  \n*(Generate Lead above still works; the list will repopulate when the API is reachable.)*")
+            # Surface the actual HTTP status + endpoint so the operator
+            # can grep the backend logs by status code immediately.
+            st.error(
+                f"**{code or 'error'}**: {msg}  \n"
+                f"Endpoint: `{err.get('endpoint', 'GET /api/trades/leads')}`  \n"
+                f"*(Generate Lead above still works; the list will repopulate when the API is reachable.)*"
+            )
+            with st.expander("Response body"):
+                st.code(err.get("body") or "(empty)", language=None)
         return
     rows = resp["data"].get("leads", [])
     lead_count = len(rows)
@@ -1913,9 +1921,32 @@ def _lead_gen_status_fragment():
 
     resp = api.get_lead_gen_status(job_id)
     if resp.get("status") != "ok":
-        # 404 — the server trimmed the registry. Drop the local handle so
-        # the button re-enables on the next render.
-        st.session_state.pop("lead_job", None)
+        err = resp.get("error") or {}
+        code = err.get("code") or ""
+        http_status = err.get("http_status")
+        # 404 = the server trimmed the registry; nothing to recover.
+        if code == "http_404":
+            st.session_state.pop("lead_job", None)
+            return
+        # Otherwise (500, network, etc.) keep the local handle so the
+        # next 2s poll can recover once the backend is back. Show the
+        # actual failure inline so the user knows whether to wait or
+        # contact ops.
+        msg = err.get("message") or "Status polling failed."
+        endpoint = err.get("endpoint") or f"GET /leads/generate/{job_id}"
+        st.error(
+            f"**Cannot reach `{endpoint}`**  \n"
+            f"Status: `{http_status or code or 'unknown'}`  \n"
+            f"{msg}  \n\n"
+            f"Auto-retrying every 2s. The run is still running on the "
+            f"server; this UI just can't see its progress until the API "
+            f"responds again."
+        )
+        with st.expander("Response body"):
+            st.code(err.get("body") or "(empty)", language=None)
+        if st.button("Drop job handle", type="secondary", key="drop_job_handle"):
+            st.session_state.pop("lead_job", None)
+            st.rerun()
         return
 
     data = resp["data"]
@@ -2255,7 +2286,13 @@ def render_drifts():
         if code in ("unauthorized", "jwt_expired") or "auth" in code.lower():
             st.error(f"{msg} — your session has expired. Use the sidebar **Logout** and re-login.")
         else:
-            st.warning(f"{msg}  \n*(Drift events are an audit log; the bot keeps trading even when this view is offline.)*")
+            st.error(
+                f"**{code or 'error'}**: {msg}  \n"
+                f"Endpoint: `{err.get('endpoint', 'GET /api/drifts')}`  \n"
+                f"*(Drift events are an audit log; the bot keeps trading even when this view is offline.)*"
+            )
+            with st.expander("Response body"):
+                st.code(err.get("body") or "(empty)", language=None)
         if st.button("Retry", type="secondary", key="retry_drift_load"):
             st.rerun()
         return

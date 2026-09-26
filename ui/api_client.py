@@ -133,13 +133,95 @@ def _raw(method: str, path: str, headers: dict | None = None, **kw) -> requests.
 
 
 def api(method: str, path: str, **kw) -> dict:
+    """Single entry point for every backend call.
+
+    Error envelope (returned when something went wrong):
+        {
+          "status": "error",
+          "error": {
+            "code": "<machine-readable tag>",
+            "message": "<human-readable detail>",
+            "http_status": <int>,        # present on transport errors
+            "endpoint": "<METHOD /path>", # present on transport errors
+            "body": "<truncated server response>",
+          },
+        }
+
+    The HTTP status / endpoint / body fields let the UI surface *why* a
+    call failed (e.g. "HTTP 500 from GET /api/drifts: <html error>")
+    instead of the previous opaque "HTTP 500".
+    """
     r = _raw(method, path, **kw)
     if r is None:
-        return {"status": "error", "error": {"code": "network", "message": "API unreachable"}}
+        return {
+            "status": "error",
+            "error": {
+                "code": "network",
+                "message": "API unreachable (timeout or connection refused)",
+                "endpoint": f"{method} {path}",
+            },
+        }
+    if r.ok:
+        # 2xx — server response. Try JSON; if the body is malformed,
+        # surface it instead of pretending success.
+        try:
+            return r.json()
+        except Exception as e:  # noqa: BLE001
+            return {
+                "status": "error",
+                "error": {
+                    "code": "bad_json",
+                    "message": f"Response was not valid JSON: {e}",
+                    "http_status": r.status_code,
+                    "endpoint": f"{method} {path}",
+                    "body": (r.text or "")[:300],
+                },
+            }
+    # Non-2xx. Prefer JSON `{error: ...}` from the server; fall back to
+    # the raw body so the operator can see the actual failure.
     try:
-        return r.json()
+        parsed = r.json()
     except Exception:
-        return {"status": "error", "error": {"code": "bad_json", "message": f"HTTP {r.status_code}"}}
+        return {
+            "status": "error",
+            "error": {
+                "code": f"http_{r.status_code}",
+                "message": f"HTTP {r.status_code} from {method} {path}: "
+                           f"{(r.text or '<empty body>')[:300]}",
+                "http_status": r.status_code,
+                "endpoint": f"{method} {path}",
+                "body": (r.text or "")[:300],
+            },
+        }
+    # Server returned JSON. Pass it through but normalise the shape so
+    # the UI can rely on `error.code` / `error.message` consistently.
+    if isinstance(parsed, dict) and parsed.get("status") == "ok":
+        # Unusual — server said "ok" but used a non-2xx status. Surface.
+        return {
+            "status": "error",
+            "error": {
+                "code": f"http_{r.status_code}",
+                "message": f"HTTP {r.status_code} (server reported success?)",
+                "http_status": r.status_code,
+                "endpoint": f"{method} {path}",
+                "body": json.dumps(parsed)[:300],
+            },
+        }
+    if isinstance(parsed, dict) and "error" in parsed and isinstance(parsed["error"], dict):
+        err = dict(parsed["error"])
+        err.setdefault("http_status", r.status_code)
+        err.setdefault("endpoint", f"{method} {path}")
+        return {"status": "error", "error": err}
+    return {
+        "status": "error",
+        "error": {
+            "code": f"http_{r.status_code}",
+            "message": f"HTTP {r.status_code} from {method} {path}",
+            "http_status": r.status_code,
+            "endpoint": f"{method} {path}",
+            "body": json.dumps(parsed)[:300] if parsed is not None else "",
+        },
+    }
 
 
 # --- endpoints -----------------------------------------------------------
