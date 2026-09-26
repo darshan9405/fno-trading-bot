@@ -25,20 +25,22 @@ import api_client as api
 
 st.set_page_config(page_title="TradePilot", page_icon=":material/show_chart:", layout="centered")
 
-# Palette — modern fintech dark theme
-PRIMARY = "#7c3aed"    # violet (primary accent / buttons / links)
-PRIMARY_SOFT = "#a78bfa"
-SECONDARY = "#22d3ee"  # cyan (secondary accent / info)
-PROFIT = "#10b981"     # emerald (positive P&L)
-LOSS = "#f43f5e"       # rose (negative P&L)
-WARN = "#fbbf24"       # amber
-MUTED = "#94a3b8"      # slate (secondary text)
-TEXT = "#e2e8f0"       # primary text
-BG = "#0a0e1a"         # app background
-BG_GRAD_TOP = "#0e1322"  # subtle top gradient
-CARD = "#131826"       # cards
-CARD_HOVER = "#1a2138"  # card hover state
-BORDER = "#1f2937"     # card borders
+# Palette — monochrome dark, semantic accents only.
+# No gradients, no glow, no glassmorphism — just sharp surfaces, thin
+# borders, and functional color (green = profit, red = loss, blue = action).
+PRIMARY = "#3b82f6"    # single accent for actions / focus
+SECONDARY = "#94a3b8"  # informational, not a decoration
+PROFIT = "#22c55e"     # positive P&L
+LOSS = "#ef4444"       # negative P&L
+WARN = "#f59e0b"       # warnings / killswitch
+MUTED = "#8b93a7"      # secondary text
+TEXT = "#e6e8ee"       # primary text
+TEXT_DIM = "#5a6276"   # tertiary text / dividers
+BG = "#0a0d14"         # app background
+CARD = "#11151f"       # raised surfaces
+CARD_HOVER = "#161b27" # hover state
+BORDER = "#1c2230"     # default 1px border
+BORDER_STRONG = "#2a3142"  # hover/active border
 
 REFRESH_SECS = 5       # dashboard + open trades auto-refresh cadence
 
@@ -54,12 +56,12 @@ def _css() -> str:
     /* ---------- Global tokens + typography ---------- */
     :root {{
       --bg: {BG};
-      --bg-grad-top: {BG_GRAD_TOP};
+      --bg-grad-top: {BG};
       --card: {CARD};
       --card-hover: {CARD_HOVER};
       --border: {BORDER};
       --primary: {PRIMARY};
-      --primary-soft: {PRIMARY_SOFT};
+      --primary-soft: {PRIMARY};
       --secondary: {SECONDARY};
       --profit: {PROFIT};
       --loss: {LOSS};
@@ -82,10 +84,7 @@ def _css() -> str:
     .stApp {{
       max-width: 920px;
       margin: auto;
-      background:
-        radial-gradient(1200px 600px at 80% -100px, rgba(124,58,237,.10), transparent 60%),
-        radial-gradient(800px 500px at 0% -50px, rgba(34,211,238,.06), transparent 60%),
-        linear-gradient(180deg, {BG_GRAD_TOP} 0%, {BG} 240px);
+      background: {BG};
       color: {TEXT};
     }}
     /* Strip Streamlit's default top header so we can render our own */
@@ -95,7 +94,7 @@ def _css() -> str:
 
     /* ---------- Sidebar ---------- */
     [data-testid="stSidebar"] {{
-      background: linear-gradient(180deg, #0d1220 0%, #0a0e1a 100%);
+      background: {BG};
       border-right: 1px solid {BORDER};
       padding: 18px 14px;
     }}
@@ -104,15 +103,14 @@ def _css() -> str:
       letter-spacing: .12em; margin: 18px 6px 8px 6px; font-weight: 700;
     }}
     .sidebar-brand {{
-      margin: 4px 6px 2px; color: #f8fafc;
-      font-size: 1.2rem; font-weight: 800; letter-spacing: -.01em;
+      margin: 4px 6px 2px; color: {TEXT};
+      font-size: 1.05rem; font-weight: 700; letter-spacing: -.005em;
       display: flex; align-items: center; gap: 8px;
     }}
     .sidebar-brand .brand-mark {{
-      width: 28px; height: 28px; border-radius: 8px;
-      background: linear-gradient(135deg, {PRIMARY} 0%, {SECONDARY} 100%);
+      width: 24px; height: 24px; border-radius: 6px;
+      background: {PRIMARY};
       display: inline-flex; align-items: center; justify-content: center;
-      box-shadow: 0 4px 12px rgba(124,58,237,.35);
     }}
     .sidebar-subtitle {{
       margin: 0 6px 16px; color: {MUTED}; font-size: .74rem;
@@ -127,19 +125,18 @@ def _css() -> str:
       transition: background .15s ease, border-color .15s ease, color .15s ease, transform .1s ease;
     }}
     [data-testid="stRadio"] label:hover {{
-      background: rgba(124,58,237,.06); color: {TEXT};
+      background: rgba(59,130,246,.06); color: {TEXT};
     }}
     [data-testid="stRadio"] label:has(input:checked) {{
-      background: linear-gradient(90deg, rgba(124,58,237,.18) 0%, rgba(124,58,237,.04) 100%);
-      border-color: rgba(124,58,237,.5);
-      color: #ede9fe;
-      box-shadow: inset 3px 0 0 {PRIMARY};
+      background: rgba(59,130,246,.10);
+      border-color: {BORDER_STRONG};
+      color: {TEXT};
+      box-shadow: inset 2px 0 0 {PRIMARY};
     }}
     .sidebar-card {{
-      background: rgba(255,255,255,.02);
-      border: 1px solid {BORDER}; border-radius: 12px;
+      background: {CARD};
+      border: 1px solid {BORDER}; border-radius: 6px;
       padding: 11px 13px; margin: 6px 4px;
-      backdrop-filter: blur(6px);
     }}
     .sidebar-card-title {{
       color: {MUTED}; font-size: .68rem; font-weight: 700;
@@ -154,39 +151,36 @@ def _css() -> str:
     .status-dot {{
       width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: {MUTED};
     }}
-    .status-dot.ok {{ background: {PROFIT}; box-shadow: 0 0 8px rgba(16,185,129,.7); }}
-    .status-dot.warn {{ background: {WARN}; box-shadow: 0 0 8px rgba(251,191,36,.7); }}
-    .status-dot.err {{ background: {LOSS}; box-shadow: 0 0 8px rgba(244,63,94,.7); }}
+    .status-dot.ok {{ background: {PROFIT}; }}
+    .status-dot.warn {{ background: {WARN}; }}
+    .status-dot.err {{ background: {LOSS}; }}
 
     /* ---------- Top app bar ---------- */
     .appbar {{
       position: sticky; top: 0; z-index: 50;
       display: flex; align-items: center; gap: 12px;
       padding: 12px 16px; margin: -8px -16px 16px -16px;
-      background: rgba(10,14,26,.7);
-      backdrop-filter: blur(14px) saturate(140%);
-      -webkit-backdrop-filter: blur(14px) saturate(140%);
+      background: {BG};
       border-bottom: 1px solid {BORDER};
     }}
     .appbar-title {{
-      font-size: 1.05rem; font-weight: 700; color: #f8fafc;
-      letter-spacing: -.01em; display: flex; align-items: center; gap: 9px;
+      font-size: 1.0rem; font-weight: 700; color: {TEXT};
+      letter-spacing: -.005em; display: flex; align-items: center; gap: 9px;
     }}
     .appbar-title .brand-mark {{
-      width: 26px; height: 26px; border-radius: 8px;
-      background: linear-gradient(135deg, {PRIMARY} 0%, {SECONDARY} 100%);
+      width: 22px; height: 22px; border-radius: 5px;
+      background: {PRIMARY};
       display: inline-flex; align-items: center; justify-content: center;
-      box-shadow: 0 4px 12px rgba(124,58,237,.4);
     }}
     .pill {{
       display: inline-flex; align-items: center; gap: 6px;
-      padding: 4px 10px; border-radius: 999px; font-size: .74rem; font-weight: 600;
-      background: rgba(255,255,255,.04); border: 1px solid {BORDER};
-      color: #cbd5e1; white-space: nowrap;
+      padding: 3px 9px; border-radius: 3px; font-size: .73rem; font-weight: 600;
+      background: {CARD}; border: 1px solid {BORDER};
+      color: {TEXT}; white-space: nowrap;
     }}
-    .pill.profit {{ background: rgba(16,185,129,.12); border-color: rgba(16,185,129,.4); color: #6ee7b7; }}
-    .pill.loss {{ background: rgba(244,63,94,.12); border-color: rgba(244,63,94,.4); color: #fda4af; }}
-    .pill.warn {{ background: rgba(251,191,36,.12); border-color: rgba(251,191,36,.4); color: #fcd34d; }}
+    .pill.profit {{ color: {PROFIT}; border-color: rgba(34,197,94,.3); }}
+    .pill.loss {{ color: {LOSS}; border-color: rgba(239,68,68,.3); }}
+    .pill.warn {{ color: {WARN}; border-color: rgba(245,158,11,.3); }}
     .pill.muted {{ color: {MUTED}; }}
     .pill-dot {{
       width: 7px; height: 7px; border-radius: 50%;
@@ -196,17 +190,9 @@ def _css() -> str:
 
     /* ---------- Hero P&L card ---------- */
     .hero {{
-      position: relative; overflow: hidden;
-      background:
-        linear-gradient(135deg, rgba(124,58,237,.18) 0%, rgba(34,211,238,.08) 50%, transparent 100%),
-        rgba(255,255,255,.02);
-      border: 1px solid {BORDER}; border-radius: 18px;
+      background: {CARD};
+      border: 1px solid {BORDER}; border-radius: 8px;
       padding: 22px 24px; margin: 8px 0 16px 0;
-      backdrop-filter: blur(8px);
-    }}
-    .hero::before {{
-      content: ''; position: absolute; inset: 0; pointer-events: none;
-      background: radial-gradient(600px 200px at 100% 0%, rgba(124,58,237,.18), transparent 60%);
     }}
     .hero-label {{
       font-size: .75rem; color: {MUTED}; text-transform: uppercase;
@@ -217,8 +203,8 @@ def _css() -> str:
       letter-spacing: -.02em; margin: 6px 0 4px 0;
       font-variant-numeric: tabular-nums;
     }}
-    .hero-amount.profit {{ color: #34d399; text-shadow: 0 0 30px rgba(16,185,129,.25); }}
-    .hero-amount.loss {{ color: #fb7185; text-shadow: 0 0 30px rgba(244,63,94,.25); }}
+    .hero-amount.profit {{ color: {PROFIT}; }}
+    .hero-amount.loss {{ color: {LOSS}; }}
     .hero-amount.flat {{ color: {TEXT}; }}
     .hero-meta {{
       display: flex; gap: 14px; flex-wrap: wrap;
@@ -229,12 +215,11 @@ def _css() -> str:
     /* ---------- Stat tiles (modernised) ---------- */
     .stat-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }}
     .stat-tile {{
-      background: {CARD}; border: 1px solid {BORDER}; border-radius: 14px;
-      padding: 12px 14px; transition: border-color .15s ease, transform .12s ease, background .15s ease;
+      background: {CARD}; border: 1px solid {BORDER}; border-radius: 6px;
+      padding: 12px 14px; transition: border-color .12s ease, background .12s ease;
     }}
     .stat-tile:hover {{
-      border-color: rgba(124,58,237,.4); background: {CARD_HOVER};
-      transform: translateY(-1px);
+      border-color: {BORDER_STRONG}; background: {CARD_HOVER};
     }}
     .stat-label {{
       color: {MUTED}; font-size: .7rem; text-transform: uppercase;
@@ -256,23 +241,22 @@ def _css() -> str:
       color: {MUTED}; margin-right: 6px; border: 1px solid {BORDER};
     }}
     .chip-active {{
-      background: rgba(124,58,237,.15); color: {PRIMARY_SOFT};
-      border-color: rgba(124,58,237,.5);
+      background: rgba(59,130,246,.10); color: {PRIMARY};
+      border-color: {BORDER_STRONG};
     }}
     .dot {{ width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }}
     @keyframes ks-pulse {{
-      0% {{ box-shadow: 0 0 0 0 rgba(244,63,94,.55); }}
-      70% {{ box-shadow: 0 0 0 10px rgba(244,63,94,0); }}
-      100% {{ box-shadow: 0 0 0 0 rgba(244,63,94,0); }}
+      0%, 100% {{ opacity: 1; }}
+      50% {{ opacity: 0.35; }}
     }}
     .ks-dot {{
       width: 10px; height: 10px; border-radius: 50%; background: {LOSS};
       display: inline-block; animation: ks-pulse 1.5s infinite;
     }}
     .ks-banner {{
-      border-radius: 12px; padding: 12px 16px; margin: 6px 0;
-      border: 1px solid; font-weight: 600;
-      background: linear-gradient(90deg, rgba(244,63,94,.15) 0%, rgba(244,63,94,.04) 100%);
+      border-radius: 6px; padding: 12px 16px; margin: 6px 0;
+      border: 1px solid {BORDER}; border-left: 2px solid {LOSS};
+      font-weight: 600; background: {CARD};
     }}
 
     /* ---------- Position cards (open trades) ---------- */
@@ -285,8 +269,8 @@ def _css() -> str:
       display: flex; align-items: center; gap: 8px;
     }}
     .sec-title::before {{
-      content: ''; width: 3px; height: 14px; border-radius: 2px;
-      background: linear-gradient(180deg, {PRIMARY}, {SECONDARY});
+      content: ''; width: 2px; height: 14px;
+      background: {TEXT_DIM};
     }}
     .big-num {{ font-size: 1.6rem; font-weight: 700; font-variant-numeric: tabular-nums; }}
     .muted {{ color: {MUTED}; font-size: 0.85rem; }}
@@ -295,9 +279,9 @@ def _css() -> str:
       padding: 16px; margin: 10px 0;
       transition: border-color .15s ease, transform .12s ease;
     }}
-    .pos-card:hover {{ border-color: rgba(124,58,237,.4); transform: translateY(-1px); }}
-    .pos-card.up {{ border-left: 3px solid {PROFIT}; }}
-    .pos-card.down {{ border-left: 3px solid {LOSS}; }}
+    .pos-card:hover {{ border-color: {BORDER_STRONG}; }}
+    .pos-card.up {{ border-left: 2px solid {PROFIT}; }}
+    .pos-card.down {{ border-left: 2px solid {LOSS}; }}
     .pos-card.flat {{ border-left: 3px solid {MUTED}; }}
 
     /* ---------- Buttons ---------- */
@@ -307,44 +291,41 @@ def _css() -> str:
                   box-shadow .15s ease, transform .05s ease;
     }}
     [data-testid="stButton"] button[kind="primary"] {{
-      background: linear-gradient(135deg, {PRIMARY} 0%, #6d28d9 100%);
-      border-color: transparent;
-      box-shadow: 0 4px 14px rgba(124,58,237,.35);
+      background: {PRIMARY};
+      border-color: {PRIMARY};
     }}
     [data-testid="stButton"] button[kind="primary"]:hover {{
-      box-shadow: 0 6px 20px rgba(124,58,237,.5);
-      transform: translateY(-1px);
+      background: #2563eb;
+      border-color: #2563eb;
     }}
-    [data-testid="stButton"] button[kind="primary"]:active {{ transform: translateY(0); }}
+    [data-testid="stButton"] button[kind="primary"]:active {{ background: #1d4ed8; }}
     [data-testid="stButton"] button[kind="secondary"] {{
       background: rgba(255,255,255,.04); border: 1px solid {BORDER};
     }}
     [data-testid="stButton"] button[kind="secondary"]:hover {{
-      background: rgba(255,255,255,.06); border-color: rgba(124,58,237,.4);
+      background: rgba(255,255,255,.06); border-color: rgba(59,130,246,.4);
     }}
     /* Lead Generate button: extra emphasis — bigger, glowing */
     .lead-toolbar .stButton > button[kind="primary"] {{
-      min-height: 52px; font-size: 1.0rem;
-      box-shadow: 0 6px 22px rgba(124,58,237,.45);
+      min-height: 48px; font-size: 0.98rem;
     }}
 
     /* SSO login + sidebar logout — same visual language as primary buttons */
     .sso-login-btn {{
       display: inline-flex; align-items: center; justify-content: center;
       gap: 8px; cursor: pointer; user-select: none;
-      background: linear-gradient(135deg, {PRIMARY} 0%, #6d28d9 100%);
-      color: #fff; padding: 0.65rem 1.1rem; border-radius: 12px;
-      font-weight: 700; font-size: 1rem; line-height: 1.2;
+      background: {PRIMARY}; color: #fff;
+      padding: 0.7rem 1rem; border-radius: 6px;
+      font-weight: 600; font-size: 0.95rem; line-height: 1.2;
       text-decoration: none; margin: 8px 0; width: 100%;
-      border: none; box-shadow: 0 6px 20px rgba(124,58,237,.4);
-      transition: box-shadow .15s ease, transform .1s ease;
+      border: 1px solid {PRIMARY};
+      transition: background .12s ease, border-color .12s ease;
     }}
     .sso-login-btn:hover {{
-      box-shadow: 0 8px 26px rgba(124,58,237,.55);
-      transform: translateY(-1px); color: #fff;
+      background: #2563eb; border-color: #2563eb; color: #fff;
     }}
-    .sso-login-btn:active {{ transform: translateY(0); }}
-    .sso-login-btn:focus-visible {{ outline: 2px solid {PRIMARY_SOFT}; outline-offset: 2px; }}
+    .sso-login-btn:active {{ background: #1d4ed8; }}
+    .sso-login-btn:focus-visible {{ outline: 2px solid {PRIMARY}; outline-offset: 2px; }}
     .sidebar-logout-btn {{
       display: flex; align-items: center; justify-content: center;
       gap: 8px; cursor: pointer; user-select: none;
@@ -356,13 +337,13 @@ def _css() -> str:
       transition: background .15s ease, border-color .15s ease, color .15s ease;
     }}
     .sidebar-logout-btn:hover {{
-      background: rgba(244,63,94,.08); border-color: rgba(244,63,94,.5); color: #fda4af;
+      background: {CARD_HOVER}; border-color: {BORDER_STRONG}; color: {LOSS};
     }}
-    .sidebar-logout-btn:focus-visible {{ outline: 2px solid rgba(244,63,94,.5); outline-offset: 2px; }}
+    .sidebar-logout-btn:focus-visible {{ outline: 2px solid {PRIMARY}; outline-offset: 2px; }}
 
     /* Bigger sidebar controls */
     [data-testid="stSidebar"] [data-testid="stRadio"] label {{
-      font-size: 0.92rem; padding: 9px 12px; border-radius: 10px;
+      font-size: 0.92rem; padding: 8px 12px; border-radius: 4px;
     }}
     [data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] {{ gap: 3px; }}
     [data-testid="stSidebar"] [data-testid="stButton"] button {{
@@ -378,7 +359,7 @@ def _css() -> str:
 
     /* ---------- Tables ---------- */
     div[data-testid="stDataFrame"] {{
-      background: {CARD}; border: 1px solid {BORDER}; border-radius: 12px;
+      background: {CARD}; border: 1px solid {BORDER}; border-radius: 6px;
       overflow: hidden;
     }}
     div[data-testid="stDataFrame"] table {{ font-size: 0.86rem; }}
@@ -394,6 +375,23 @@ def _css() -> str:
     button[kind="primary"], button[kind="secondary"] {{ min-height: 42px; padding: 8px 16px; }}
     .stPlotlyChart, .stLineChart, .stAreaChart, .stBarChart {{
       margin: 16px 0; width: 100% !important;
+    }}
+
+    /* Streamlit's built-in metric (Dashboard P&L row) — match the flat theme */
+    [data-testid="stMetric"] {{
+      background: {CARD}; border: 1px solid {BORDER}; border-radius: 6px;
+      padding: 12px 14px;
+    }}
+    [data-testid="stMetricLabel"] {{
+      color: {MUTED}; font-size: 0.74rem;
+      text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;
+    }}
+    [data-testid="stMetricValue"] {{
+      color: {TEXT}; font-size: 1.4rem; font-weight: 700;
+      font-variant-numeric: tabular-nums; padding-top: 2px;
+    }}
+    [data-testid="stMetricDelta"] {{
+      font-size: 0.78rem; font-variant-numeric: tabular-nums;
     }}
 
     /* ---------- History page ---------- */
@@ -412,16 +410,16 @@ def _css() -> str:
     }}
     .lead-section-header {{
       display: flex; align-items: center; justify-content: space-between;
-      gap: 10px; margin: 18px 0 10px 0;
-      padding-bottom: 8px; border-bottom: 1px solid {BORDER};
+      gap: 10px; margin: 16px 0 8px 0;
+      padding-bottom: 6px; border-bottom: 1px solid {BORDER};
     }}
     .lead-section-title {{
       font-size: 1.0rem; font-weight: 700; color: {TEXT}; letter-spacing: -.01em;
     }}
     .lead-section-count {{
-      background: rgba(124,58,237,.15); color: {PRIMARY_SOFT};
-      border: 1px solid rgba(124,58,237,.5); border-radius: 999px;
-      padding: 3px 12px; font-size: 0.78rem; font-weight: 700;
+      background: {CARD}; color: {TEXT};
+      border: 1px solid {BORDER}; border-radius: 4px;
+      padding: 2px 9px; font-size: 0.75rem; font-weight: 600;
       font-variant-numeric: tabular-nums;
     }}
     .lead-section-count.warn {{
@@ -432,7 +430,7 @@ def _css() -> str:
       padding: 16px; margin: 10px 0;
       transition: border-color .15s ease, transform .12s ease;
     }}
-    .lead-card:hover {{ border-color: rgba(124,58,237,.5); transform: translateY(-1px); }}
+    .lead-card:hover {{ border-color: {BORDER_STRONG}; }}
     .lead-card.queued {{ border-left: 3px solid {PRIMARY}; }}
     .lead-card.skipped {{ border-left: 3px solid {MUTED}; }}
     .lead-head {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }}
@@ -441,9 +439,9 @@ def _css() -> str:
     .lead-time {{ color: {MUTED}; font-size: 0.78rem; white-space: nowrap; flex-shrink: 0; }}
     .lead-chips {{ margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }}
     .lead-instrument {{
-      margin-top: 10px; background: rgba(255,255,255,.02);
-      border: 1px solid {BORDER}; border-radius: 10px;
-      padding: 9px 11px; font-size: 0.84rem; color: #cbd5e1; word-break: break-word;
+      margin-top: 10px; background: {BG};
+      border: 1px solid {BORDER}; border-radius: 4px;
+      padding: 8px 11px; font-size: 0.84rem; color: {TEXT}; word-break: break-word;
     }}
     .lead-instrument .lbl {{ color: {MUTED}; font-weight: 600; }}
     .lead-plan {{
@@ -462,20 +460,21 @@ def _css() -> str:
     .lead-score-bar {{ flex: 1; }}
     .lead-score-meta {{ color: {MUTED}; font-size: 0.72rem; margin-top: 3px; display: flex; justify-content: space-between; }}
     .lead-note {{
-      margin-top: 10px; padding: 9px 11px;
-      background: rgba(244,63,94,.10); border: 1px solid rgba(244,63,94,.35);
-      border-radius: 10px; color: #fecdd3; font-size: 0.82rem; word-break: break-word;
+      margin-top: 10px; padding: 8px 11px;
+      background: {BG}; border: 1px solid {BORDER};
+      border-left: 2px solid {LOSS};
+      border-radius: 4px; color: {MUTED}; font-size: 0.82rem; word-break: break-word;
     }}
 
     /* Lead-gen live progress panel */
     .lg-panel {{
-      background: linear-gradient(135deg, rgba(124,58,237,.10) 0%, rgba(34,211,238,.04) 100%);
-      border: 1px solid rgba(124,58,237,.4); border-radius: 14px;
+      background: {CARD};
+      border: 1px solid {BORDER}; border-radius: 6px;
       padding: 14px 16px; margin: 6px 0 14px 0;
     }}
     .lg-head {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }}
     .lg-phase {{ display: flex; align-items: center; gap: 8px; color: {TEXT}; font-size: 0.92rem; }}
-    .lg-elapsed {{ font-variant-numeric: tabular-nums; font-size: 0.85rem; color: {PRIMARY_SOFT}; }}
+    .lg-elapsed {{ font-variant-numeric: tabular-nums; font-size: 0.85rem; color: {MUTED}; }}
     .lg-spinner {{
       display: inline-block; width: 14px; height: 14px; border-radius: 50%;
       border: 2px solid {BORDER}; border-top-color: {PRIMARY};
@@ -485,7 +484,7 @@ def _css() -> str:
     .lg-bar {{ height: 6px; border-radius: 999px; background: rgba(255,255,255,.05); overflow: hidden; margin-bottom: 8px; }}
     .lg-fill {{ height: 6px; border-radius: 999px; transition: width 0.4s ease; }}
     .lg-meta {{ display: flex; gap: 14px; flex-wrap: wrap; font-size: 0.78rem; margin-bottom: 8px; color: {MUTED}; }}
-    .lg-current {{ font-size: 0.84rem; margin: 4px 0 8px 0; color: {SECONDARY}; }}
+    .lg-current {{ font-size: 0.84rem; margin: 4px 0 8px 0; color: {TEXT}; }}
     .lg-recent {{ display: flex; flex-direction: column; gap: 3px; border-top: 1px solid rgba(255,255,255,.05); padding-top: 8px; }}
     .lg-recent-row {{ display: flex; align-items: center; gap: 8px; font-size: 0.82rem; padding: 2px 0; }}
 
@@ -509,10 +508,10 @@ def _css() -> str:
       transition: background .2s ease, border-color .2s ease;
     }}
     .lg-tool-pill {{
-      background: rgba(124,58,237,.18); color: {PRIMARY_SOFT};
-      border: 1px solid rgba(124,58,237,.4); border-radius: 999px;
-      padding: 1px 9px; font-size: 0.72rem; font-weight: 700;
-      letter-spacing: .02em; white-space: nowrap; flex-shrink: 0;
+      background: {BG}; color: {TEXT};
+      border: 1px solid {BORDER}; border-radius: 3px;
+      padding: 1px 8px; font-size: 0.72rem; font-weight: 600;
+      white-space: nowrap; flex-shrink: 0;
     }}
     .lg-tool-args {{
       flex: 1; min-width: 0;
@@ -521,8 +520,8 @@ def _css() -> str:
       font-size: 0.74rem;
     }}
     .lg-tool-sym {{
-      background: rgba(34,211,238,.12); color: {SECONDARY};
-      border: 1px solid rgba(34,211,238,.3); border-radius: 6px;
+      background: {BG}; color: {MUTED};
+      border: 1px solid {BORDER}; border-radius: 3px;
       padding: 1px 7px; font-size: 0.72rem; font-weight: 600;
       flex-shrink: 0;
     }}
@@ -540,16 +539,16 @@ def _css() -> str:
       background: rgba(255,255,255,.08); border-radius: 999px;
       border: 2px solid transparent; background-clip: padding-box;
     }}
-    ::-webkit-scrollbar-thumb:hover {{ background: rgba(124,58,237,.4); background-clip: padding-box; border: 2px solid transparent; }}
+    ::-webkit-scrollbar-thumb:hover {{ background: rgba(59,130,246,.4); background-clip: padding-box; border: 2px solid transparent; }}
 
     /* ---------- Responsive ---------- */
     @media (max-width: 768px) {{
       .stApp {{ max-width: 100%; }}
       .hero {{ padding: 18px; }}
-      .hero-amount {{ font-size: 2.1rem; }}
+      .hero-amount {{ font-size: 2.0rem; }}
       .stat-tile {{ padding: 10px 12px; }}
       .stat-value {{ font-size: 1.05rem; }}
-      .lead-card {{ padding: 13px; }}
+      .lead-card {{ padding: 12px 14px; }}
       .lead-symbol {{ font-size: 1rem; }}
       .row {{ flex-wrap: wrap; gap: 12px; justify-content: flex-start; }}
     }}
@@ -710,10 +709,13 @@ def _llm_status_color(llm: dict) -> str:
 def render_login():
     """Modern fintech landing page shown when no SSO session is present.
 
-    Streamlit's stApp container is reused, but we override the page background
-    (full-bleed radial gradient) and centre a glassmorphism hero card.
+    Streamlit's stApp container is reused; the login surface is a centred
+    card with sharp corners and thin borders (no gradients, no glow).
     """
-    st.markdown(_login_css(), unsafe_allow_html=True)
+    # Two `st.markdown(..., unsafe_allow_html=True)` calls in a single render
+    # sometimes confuse Streamlit's markdown renderer (the second one renders
+    # the HTML as escaped text). We use a single `st.html()` call carrying
+    # both the CSS and the card markup so there's nothing to fall through.
 
     auth_error = st.query_params.get("auth_error")
     error_html = ""
@@ -741,42 +743,7 @@ def render_login():
         ]
     )
 
-    st.markdown(
-        f"""
-        <div class='login-shell'>
-          <div class='login-card'>
-            <div class='login-brand'>
-              <div class='login-mark'></div>
-              <div class='login-name'>TradePilot</div>
-            </div>
-            <div class='login-tagline'>
-              Automated intraday breakout trading,
-              <span class='login-grad'>powered by LLMs.</span>
-            </div>
-            {error_html}
-            <a href='{api.login_url()}' target='_top' class='sso-login-btn login-cta'>
-              <svg width='18' height='18' viewBox='0 0 24 24' fill='none'
-                   xmlns='http://www.w3.org/2000/svg' aria-hidden='true'>
-                <path d='M12 2L3 7v6c0 5 3.8 9.4 9 11 5.2-1.6 9-6 9-11V7l-9-5z'
-                      stroke='currentColor' stroke-width='2' stroke-linejoin='round'/>
-                <path d='M9 12l2 2 4-4' stroke='currentColor' stroke-width='2'
-                      stroke-linecap='round' stroke-linejoin='round'/>
-              </svg>
-              Continue with Upstox SSO
-            </a>
-            <div class='login-divider'>
-              <span>What you get</span>
-            </div>
-            <ul class='login-features'>{features_html}</ul>
-            <div class='login-foot'>
-              You'll be redirected to Upstox, then back here.
-              Your tokens never touch this dashboard's storage.
-            </div>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.html(_login_css() + _login_card_html(api.login_url(), features_html, error_html))
 
 
 def _login_css() -> str:
@@ -789,11 +756,7 @@ def _login_css() -> str:
     return f"""
     <style>
     .stApp {{
-      background:
-        radial-gradient(900px 600px at 18% 12%, rgba(124,58,237,.35), transparent 55%),
-        radial-gradient(700px 500px at 88% 88%, rgba(34,211,238,.22), transparent 55%),
-        radial-gradient(500px 400px at 50% 0%, rgba(244,63,94,.10), transparent 60%),
-        linear-gradient(180deg, {BG_GRAD_TOP} 0%, {BG} 60%);
+      background: {BG};
       min-height: 100vh;
     }}
     [data-testid="stHeader"], footer, #MainMenu {{ display: none !important; }}
@@ -803,44 +766,35 @@ def _login_css() -> str:
       min-height: calc(100vh - 80px); padding: 24px 16px;
     }}
     .login-card {{
-      width: 100%; max-width: 460px;
-      background: rgba(255,255,255,.03);
-      backdrop-filter: blur(18px) saturate(150%);
-      -webkit-backdrop-filter: blur(18px) saturate(150%);
+      width: 100%; max-width: 420px;
+      background: {CARD};
       border: 1px solid {BORDER};
-      border-radius: 22px;
-      padding: 32px 30px;
-      box-shadow:
-        0 24px 60px rgba(0,0,0,.45),
-        inset 0 1px 0 rgba(255,255,255,.04);
+      border-radius: 8px;
+      padding: 28px 26px;
     }}
     .login-brand {{
       display: flex; align-items: center; gap: 12px; margin-bottom: 16px;
     }}
     .login-mark {{
-      width: 42px; height: 42px; border-radius: 12px;
-      background: linear-gradient(135deg, {PRIMARY} 0%, {SECONDARY} 100%);
-      box-shadow: 0 8px 24px rgba(124,58,237,.45);
-      position: relative;
+      width: 28px; height: 28px; border-radius: 6px;
+      background: {PRIMARY};
     }}
     .login-mark::after {{
-      content: ''; position: absolute; inset: 8px;
-      background: rgba(255,255,255,.18);
-      clip-path: polygon(50% 8%, 92% 50%, 50% 92%, 8% 50%);
-      border-radius: 4px;
+      content: 'T'; position: relative; display: block;
+      line-height: 28px; text-align: center;
+      color: #fff; font-weight: 800; font-size: 14px;
+      font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
     }}
     .login-name {{
-      font-size: 1.6rem; font-weight: 800; letter-spacing: -.02em;
-      color: #f8fafc;
+      font-size: 1.4rem; font-weight: 700; letter-spacing: -.01em;
+      color: {TEXT};
     }}
     .login-tagline {{
-      color: #cbd5e1; font-size: 1.05rem; line-height: 1.45;
-      margin-bottom: 22px; font-weight: 500;
+      color: {MUTED}; font-size: 0.98rem; line-height: 1.5;
+      margin-bottom: 22px; font-weight: 400;
     }}
     .login-grad {{
-      background: linear-gradient(90deg, {PRIMARY_SOFT} 0%, {SECONDARY} 100%);
-      -webkit-background-clip: text; background-clip: text; color: transparent;
-      font-weight: 600;
+      color: {PRIMARY}; font-weight: 600;
     }}
     .login-cta {{
       margin: 6px 0 0 0 !important;
@@ -859,9 +813,7 @@ def _login_css() -> str:
     }}
     .login-error-dot {{
       width: 8px; height: 8px; border-radius: 50%;
-      background: {LOSS};
-      box-shadow: 0 0 8px rgba(244,63,94,.6);
-      flex-shrink: 0;
+      background: {LOSS}; flex-shrink: 0;
     }}
     .login-divider {{
       display: flex; align-items: center; gap: 12px;
@@ -877,15 +829,14 @@ def _login_css() -> str:
     }}
     .login-features li {{
       display: flex; align-items: flex-start; gap: 11px;
-      padding: 11px 13px;
-      background: rgba(255,255,255,.025);
-      border: 1px solid {BORDER}; border-radius: 12px;
+      padding: 10px 12px;
+      background: {BG};
+      border: 1px solid {BORDER}; border-radius: 4px;
     }}
     .login-feat-dot {{
-      width: 8px; height: 8px; border-radius: 50%;
-      background: linear-gradient(135deg, {PRIMARY} 0%, {SECONDARY} 100%);
+      width: 6px; height: 6px; border-radius: 50%;
+      background: {PRIMARY};
       flex-shrink: 0; margin-top: 7px;
-      box-shadow: 0 0 8px rgba(124,58,237,.4);
     }}
     .login-features b {{
       color: {TEXT}; font-weight: 600; font-size: 0.93rem;
@@ -898,11 +849,50 @@ def _login_css() -> str:
       color: {MUTED}; font-size: 0.78rem; line-height: 1.5;
     }}
     @media (max-width: 540px) {{
-      .login-card {{ padding: 26px 22px; border-radius: 18px; }}
-      .login-name {{ font-size: 1.4rem; }}
-      .login-tagline {{ font-size: 0.98rem; }}
+      .login-card {{ padding: 22px 18px; border-radius: 6px; }}
+      .login-name {{ font-size: 1.35rem; }}
+      .login-tagline {{ font-size: 0.95rem; }}
     }}
     </style>
+    """
+
+
+def _login_card_html(login_url: str, features_html: str, error_html: str) -> str:
+    """HTML body of the login card. Concatenated with `_login_css()` so the
+    whole surface lands in a single `st.html()` call (avoids the two-`unsafe_allow_html`
+    bug where the second block renders as escaped text)."""
+    return f"""
+    <div class='login-shell'>
+      <div class='login-card'>
+        <div class='login-brand'>
+          <div class='login-mark'></div>
+          <div class='login-name'>TradePilot</div>
+        </div>
+        <div class='login-tagline'>
+          Automated intraday breakout trading,
+          <span class='login-grad'>powered by LLMs.</span>
+        </div>
+        {error_html}
+        <a href='{_html_escape(login_url)}' target='_top' class='sso-login-btn login-cta'>
+          <svg width='18' height='18' viewBox='0 0 24 24' fill='none'
+               xmlns='http://www.w3.org/2000/svg' aria-hidden='true'>
+            <path d='M12 2L3 7v6c0 5 3.8 9.4 9 11 5.2-1.6 9-6 9-11V7l-9-5z'
+                  stroke='currentColor' stroke-width='2' stroke-linejoin='round'/>
+            <path d='M9 12l2 2 4-4' stroke='currentColor' stroke-width='2'
+                  stroke-linecap='round' stroke-linejoin='round'/>
+          </svg>
+          Continue with Upstox SSO
+        </a>
+        <div class='login-divider'>
+          <span>What you get</span>
+        </div>
+        <ul class='login-features'>{features_html}</ul>
+        <div class='login-foot'>
+          You'll be redirected to Upstox, then back here.
+          Your tokens never touch this dashboard's storage.
+        </div>
+      </div>
+    </div>
     """
 
 
@@ -1055,7 +1045,7 @@ def render_killswitch():
     _html(
         f"""
         <div style="display:flex;align-items:center;gap:14px;
-                    background:linear-gradient(90deg,#2c0b18,#1c0a12);
+                    background:{CARD};border-left:2px solid {LOSS};
                     border:1px solid {LOSS};border-radius:12px;padding:14px 16px;margin:8px 0;">
           <span class="ks-dot" style="flex-shrink:0;"></span>
           <div>
@@ -1915,8 +1905,8 @@ def _render_llm_tool_calls(tool_calls: list[dict]) -> str:
         iter_n = tc.get("iter")
         # First row gets a slightly stronger tint to mark "most recent".
         is_latest = idx == 0
-        bg = "rgba(124,58,237,.14)" if is_latest else "rgba(255,255,255,.03)"
-        border = "rgba(124,58,237,.5)" if is_latest else "rgba(255,255,255,.05)"
+        bg = f"rgba(59,130,246,.10)" if is_latest else f"{CARD}"
+        border = f"{BORDER_STRONG}" if is_latest else f"{BORDER}"
         sym_html = (
             f"<span class='lg-tool-sym'>{_html_escape(sym)}</span>" if sym else ""
         )
