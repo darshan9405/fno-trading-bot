@@ -17,6 +17,7 @@ Enhanced for ease of use:
 
 from datetime import datetime, time, timezone
 from zoneinfo import ZoneInfo
+import json
 
 import pandas as pd
 import streamlit as st
@@ -1503,7 +1504,7 @@ def render_leads():
     if active_rows:
         for r in active_rows:
             _render_lead_card(r, show_note=False)
-            _render_lead_detail_expander(r)
+            _render_lead_detail_button(r)
     else:
         _html("<div class='muted' style='padding:6px 2px;'>No active queued leads right now.</div>")
 
@@ -1517,9 +1518,19 @@ def render_leads():
     if skipped_rows:
         for r in skipped_rows:
             _render_lead_card(r, show_note=True)
-            _render_lead_detail_expander(r)
+            _render_lead_detail_button(r)
     else:
         _html("<div class='muted' style='padding:6px 2px;'>No skipped leads in retention window.</div>")
+
+    # Lead-detail dialog hook: opened by the "Why this lead?" button under
+    # each card. We need the full lead dict from the list payload to fall
+    # back on if the per-id fetch fails, so build an id→row map and pass
+    # the right one in.
+    open_id = st.session_state.pop("open_lead_dialog", None)
+    if open_id:
+        row_by_id = {int(r.get("id")): r for r in rows if r.get("id") is not None}
+        fallback = row_by_id.get(int(open_id), {"id": open_id})
+        _render_lead_detail_dialog(int(open_id), fallback)
 
 
 @st.dialog("Delete all leads")
@@ -1655,72 +1666,305 @@ def _render_lead_card(r: dict, show_note: bool = False):
     )
 
 
-def _render_lead_detail_expander(r: dict) -> None:
-    """"Why this lead?" expander — shows the LLM rationale + tool-call log.
+def _render_lead_detail_button(r: dict) -> None:
+    """Small "Why this lead?" button under each card.
 
-    Pulls the full lead detail (meta + trade linkage) lazily on first click
-    so the dashboard stays snappy. Falls back to the slim meta returned by
-    /api/trades/leads if the per-id fetch fails.
+    On click, opens the lead-detail dialog (`_render_lead_detail_dialog`)
+    which shows the full reason, LLM rationale, tool-call log, indicators,
+    score breakdown, and (if placed) the trade row.
     """
     lead_id = r.get("id")
     if not lead_id:
         return
-    with st.expander(
-        f"Why this lead? (LLM rationale + tool calls)",
-        expanded=False,
-    ):
-        with st.spinner("Loading lead detail…"):
-            resp = api.get_lead_detail(int(lead_id))
-        if resp.get("status") != "ok":
-            # Fall back to the slim meta from the list payload.
-            meta = r.get("meta") or {}
-            _render_lead_detail_meta(meta, r)
-            st.caption("(Detail endpoint unavailable — showing slim summary.)")
-            return
+    btn = st.button(
+        "Why this lead?",
+        key=f"why_lead_{lead_id}",
+        type="secondary",
+        use_container_width=False,
+    )
+    if btn:
+        st.session_state["open_lead_dialog"] = int(lead_id)
+
+
+@st.dialog("Lead detail", width="large")
+def _render_lead_detail_dialog(lead_id: int, fallback_row: dict) -> None:
+    """Full explanation of why a lead was generated / skipped / placed.
+
+    Opened by the small button under every lead card. Layout (top-down):
+      1. Header — symbol, direction pill, status pill, signal price, confidence
+      2. "Reason" — explicit one-line answer (Generated / Skipped / Placed because …)
+      3. LLM rationale — the full reasoning text
+      4. Tool calls — full arg payload + result keys, expandable per row
+      5. Indicators — slim snapshot dict
+      6. Score breakdown — per-dimension contribution bars
+      7. Trade — entry / SL / exit / P&L (if placed)
+      8. Raw meta JSON — collapsed by default (for power users)
+    """
+    # Lazy-fetch the full detail. Falls back to the list-row meta if the
+    # per-id endpoint is unavailable (e.g. 500 on the leads endpoint).
+    resp = api.get_lead_detail(lead_id)
+    if resp.get("status") != "ok":
+        meta = fallback_row.get("meta") or {}
+        _render_lead_detail_body(meta, fallback_row, fallback_meta=True)
+    else:
         data = resp.get("data") or {}
         meta = data.get("meta") or {}
-        _render_lead_detail_meta(meta, data)
-        # If the lead was placed, also show the trade row.
-        trade = data.get("trade")
-        if trade:
-            _render_trade_for_lead(trade)
+        _render_lead_detail_body(meta, data, fallback_meta=False)
+    if st.button("Close", type="secondary", key=f"close_lead_dialog_{lead_id}"):
+        st.session_state.pop("open_lead_dialog", None)
+        st.rerun()
 
 
-def _render_lead_detail_meta(meta: dict, fallback: dict) -> None:
-    """Render the slim meta block (rationale + tool calls + indicators)."""
+def _render_lead_detail_body(meta: dict, row: dict, *, fallback_meta: bool) -> None:
+    """Render the full dialog body for a single lead."""
+    symbol = row.get("symbol") or (row.get("underlying") or "?").split("|")[-1]
+    direction = row.get("direction") or ""
+    status = row.get("status") or "?"
+    signal_type = row.get("signal_type") or ""
+    signal_level = row.get("signal_level")
+    confidence = row.get("confidence")
+    note = row.get("note")
+    components = row.get("components") or {}
+    score_breakdown = row.get("score_breakdown") or []
+    trade = row.get("trade") if not fallback_meta else None
+
+    # Direction pill colour
+    dir_color = PROFIT if direction == "CALL" else (LOSS if direction == "PUT" else MUTED)
+
+    _html(
+        f"""
+        <div style='display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;'>
+          <span style='font-size:1.25rem;font-weight:700;color:{TEXT};'>{_html_escape(symbol)}</span>
+          <span class='badge' style='color:{dir_color};background:{dir_color}22;border:1px solid {dir_color}66;'>
+            {_html_escape(direction or '—')}
+          </span>
+          <span class='badge' style='color:{MUTED};background:rgba(255,255,255,.05);border:1px solid {BORDER};'>
+            {_html_escape(status)}
+          </span>
+          <span class='badge' style='color:{SECONDARY};background:rgba(34,211,238,.10);border:1px solid rgba(34,211,238,.35);'>
+            {_html_escape(signal_type or '—')}
+          </span>
+        </div>
+        """
+    )
+
+    # ---- 2. The reason (one-line answer to "why was this lead generated/not generated?") ----
+    pct = int((confidence or 0) * 100)
+    reason_title, reason_body = _format_lead_reason(status, note, meta, pct)
+    _html(
+        f"""
+        <div style='background:{CARD};border:1px solid {BORDER};border-left:3px solid {PRIMARY};
+                    border-radius:4px;padding:10px 14px;margin-bottom:10px;'>
+          <div style='font-size:0.7rem;text-transform:uppercase;letter-spacing:.08em;
+                      color:{MUTED};font-weight:700;margin-bottom:4px;'>
+            {_html_escape(reason_title)}
+          </div>
+          <div style='color:{TEXT};font-size:0.92rem;line-height:1.5;'>{reason_body}</div>
+        </div>
+        """
+    )
+
+    if fallback_meta:
+        st.caption("(Detail endpoint unavailable — showing slim summary from the list payload.)")
+
+    # ---- 3. LLM rationale ----
     rationale = meta.get("llm_rationale")
     if rationale:
         st.markdown("**LLM rationale**")
         st.info(str(rationale))
+
+    # ---- 4. Tool calls (full agent-loop log) ----
     tool_calls = meta.get("llm_tool_calls") or []
     if tool_calls:
-        st.markdown("**Tool calls (agent loop)**")
-        rows_html = []
-        for c in tool_calls[-10:]:
-            name = c.get("name") or "?"
-            args = c.get("args")
-            res_keys = list((c.get("result") or {}).keys())[:4]
-            rows_html.append({
-                "tool": name,
-                "args": str(args)[:120] if args else "",
-                "result_keys": ", ".join(res_keys) if res_keys else "",
-            })
-        st.dataframe(rows_html, use_container_width=True, hide_index=True)
+        st.markdown(f"**Tool calls** ({len(tool_calls)})")
+        _render_tool_calls_full(tool_calls)
+
+    # ---- 5. Indicators ----
     indicators = meta.get("indicators") or {}
     if indicators:
-        st.markdown("**Indicators (slim)**")
-        ind_rows = [{"key": k, "value": v} for k, v in indicators.items()]
+        st.markdown("**Indicators**")
+        ind_rows = [{"Key": str(k), "Value": _short_value(v)} for k, v in indicators.items()]
         st.dataframe(ind_rows, use_container_width=True, hide_index=True)
-    if not (rationale or tool_calls or indicators):
-        # Slim fallback: show whatever signal/confidence info we DO have.
-        sig_level = fallback.get("signal_level")
-        conf = fallback.get("confidence")
-        bits = []
-        if sig_level is not None:
-            bits.append(f"Signal level: **{_num(sig_level)}**")
-        if conf is not None:
-            bits.append(f"Confidence: **{int(conf * 100)}%**")
-        st.caption(" · ".join(bits) or "No rationale captured for this lead.")
+
+    # ---- 6. Score breakdown ----
+    if score_breakdown:
+        st.markdown("**Score breakdown**")
+        _render_score_breakdown_bars(score_breakdown, float(confidence or 0))
+
+    # ---- 7. Trade info (only when placed) ----
+    if trade:
+        st.markdown("**Trade**")
+        _render_trade_for_lead(trade)
+
+    # ---- 8. Raw meta (collapsed) ----
+    with st.expander("Raw meta (JSON)", expanded=False):
+        st.code(json.dumps({k: v for k, v in meta.items() if v}, indent=2, default=str),
+                language="json")
+
+
+def _format_lead_reason(status: str, note: str | None, meta: dict, confidence_pct: int) -> tuple[str, str]:
+    """Return (title, body_html) for the 'reason' box at the top of the dialog.
+
+    The title is one of:
+      - "Generated because"      (status=queued|placed)
+      - "Skipped because"        (status=skipped)
+      - "Expired because"        (status=expired)
+      - "Status: <status>"       (anything else)
+    The body is the most informative human-readable string we have:
+      the explicit `note` if present, else the LLM's first sentence of
+      rationale, else a confidence-based explanation.
+    """
+    if status == "skipped":
+        title = "Skipped because"
+        body = note or meta.get("skip_reason") or _format_reason_fallback(meta, confidence_pct)
+        body_html = f"<b>{_html_escape(body)}</b>"
+    elif status == "queued":
+        title = "Generated because"
+        body = (
+            note
+            or _first_sentence(meta.get("llm_rationale"))
+            or _format_reason_fallback(meta, confidence_pct)
+        )
+        body_html = f"<b>{_html_escape(body)}</b>"
+    elif status == "placed":
+        title = "Traded because"
+        body = (
+            note
+            or _first_sentence(meta.get("llm_rationale"))
+            or _format_reason_fallback(meta, confidence_pct)
+        )
+        body_html = f"<b>{_html_escape(body)}</b>"
+    elif status == "expired":
+        title = "Expired because"
+        body = note or "24-hour queue TTL elapsed before the order could be placed."
+        body_html = f"<b>{_html_escape(body)}</b>"
+    else:
+        title = f"Status: {status}"
+        body = note or "(no reason recorded)"
+        body_html = f"<b>{_html_escape(body)}</b>"
+
+    if meta.get("indicator_sample"):
+        body_html += (
+            f"<div style='color:{MUTED};font-size:0.78rem;margin-top:4px;'>"
+            f"Indicator snapshot: {_html_escape(_short_value(meta['indicator_sample']))}"
+            f"</div>"
+        )
+    return title, body_html
+
+
+def _format_reason_fallback(meta: dict, confidence_pct: int) -> str:
+    """Last-resort reason text when neither `note` nor rationale is set."""
+    pattern_fit = (meta.get("components") or {}).get("pattern_fit")
+    bits = []
+    if pattern_fit is not None:
+        try:
+            bits.append(f"pattern fit {float(pattern_fit):.2f}")
+        except (TypeError, ValueError):
+            pass
+    bits.append(f"confidence {confidence_pct}%")
+    return "Model signal met the threshold (" + ", ".join(bits) + ")."
+
+
+def _first_sentence(text: str | None) -> str | None:
+    """First sentence (up to first `.` or `;`), trimmed."""
+    if not text:
+        return None
+    for sep in (".", ";", "\n"):
+        i = text.find(sep)
+        if 0 < i < 200:
+            return text[: i + 1].strip()
+    return text[:200].strip() + ("…" if len(text) > 200 else "")
+
+
+def _short_value(v) -> str:
+    """Compact repr for table values — truncates long strings/JSON."""
+    if isinstance(v, str):
+        return v if len(v) <= 80 else v[:77] + "…"
+    if isinstance(v, (int, float, bool)):
+        return str(v)
+    s = repr(v)
+    return s if len(s) <= 80 else s[:77] + "…"
+
+
+def _render_tool_calls_full(tool_calls: list[dict]) -> None:
+    """Render every tool call as a small expandable card with full args + result keys."""
+    tool_labels = {
+        "compute_indicators": "compute indicators",
+        "breakout_calc":      "breakout calc",
+        "fetch_news":         "fetch news",
+        "option_chain_summary": "option chain summary",
+    }
+    for i, c in enumerate(tool_calls, 1):
+        name = c.get("name") or "?"
+        label = tool_labels.get(name, name)
+        args = c.get("args")
+        result = c.get("result") or {}
+        result_keys = list(result.keys())
+        with st.expander(
+            f"`{i}. {label}`"
+            + (f"  →  {', '.join(result_keys[:4])}" if result_keys else ""),
+            expanded=False,
+        ):
+            ca, cb = st.columns(2)
+            with ca:
+                st.markdown("**Args**")
+                st.code(_format_args_for_display(args), language="json")
+            with cb:
+                st.markdown("**Result keys**")
+                if result_keys:
+                    st.code(", ".join(result_keys), language=None)
+                else:
+                    st.caption("(no result captured)")
+
+
+def _format_args_for_display(args) -> str:
+    """Pretty-print args payload — accept either a dict or a JSON string."""
+    if isinstance(args, str):
+        try:
+            return json.dumps(json.loads(args), indent=2)
+        except (json.JSONDecodeError, ValueError):
+            return args
+    if isinstance(args, dict):
+        return json.dumps(args, indent=2, default=str)
+    if args is None:
+        return "(no args)"
+    return repr(args)
+
+
+def _render_score_breakdown_bars(rows: list[dict], composite: float) -> None:
+    """Render each score component as a labelled bar + numeric contribution."""
+    for r in rows:
+        key = r.get("label") or r.get("key") or "?"
+        value = float(r.get("value") or 0)
+        weight = float(r.get("weight") or 0)
+        contrib = float(r.get("contribution") or 0)
+        max_abs = max(abs(value) for r in rows) or 1.0
+        pct = max(8, min(100, int(abs(value) / max_abs * 100)))
+        bar_color = (
+            PROFIT if value > 0.6
+            else (WARN if value >= 0.4 else MUTED)
+        )
+        _html(
+            f"""
+            <div style='margin-bottom:6px;'>
+              <div style='display:flex;justify-content:space-between;
+                          font-size:0.78rem;color:{MUTED};margin-bottom:2px;'>
+                <span style='color:{TEXT};font-weight:600;'>{_html_escape(str(key))}</span>
+                <span>value {value:.2f} · weight {weight:.2f} ·
+                      <b style='color:{PROFIT};'>+{contrib:.3f}</b></span>
+              </div>
+              <div style='height:6px;background:{BORDER};border-radius:999px;overflow:hidden;'>
+                <div style='height:6px;width:{pct}%;background:{bar_color};
+                            border-radius:999px;'></div>
+              </div>
+            </div>
+            """
+        )
+    _html(
+        f"<div style='margin-top:8px;font-size:0.78rem;color:{MUTED};'>"
+        f"Composite confidence: <b style='color:{TEXT};font-variant-numeric:tabular-nums;'>"
+        f"{int(composite * 100)}%</b></div>"
+    )
 
 
 def _render_trade_for_lead(trade: dict) -> None:
