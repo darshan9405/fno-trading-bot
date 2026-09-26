@@ -25,504 +25,437 @@ import api_client as api
 
 st.set_page_config(page_title="TradePilot", page_icon=":material/show_chart:", layout="centered")
 
-# Palette — monochrome dark, semantic accents only.
-# No gradients, no glow, no glassmorphism — just sharp surfaces, thin
-# borders, and functional color (green = profit, red = loss, blue = action).
-PRIMARY = "#3b82f6"    # single accent for actions / focus
+# Palette — Kite/Groww-inspired dark trading-terminal theme.
+# Pure black backgrounds, single orange accent (Kite-style), semantic
+# green/red for P&L. Sharp 4px corners, dense data, tabular numerals.
+PRIMARY = "#ff6f00"    # Kite orange — single accent for actions / focus
 SECONDARY = "#94a3b8"  # informational, not a decoration
-PROFIT = "#22c55e"     # positive P&L
-LOSS = "#ef4444"       # negative P&L
-WARN = "#f59e0b"       # warnings / killswitch
-MUTED = "#8b93a7"      # secondary text
-TEXT = "#e6e8ee"       # primary text
-TEXT_DIM = "#5a6276"   # tertiary text / dividers
-BG = "#0a0d14"         # app background
-CARD = "#11151f"       # raised surfaces
-CARD_HOVER = "#161b27" # hover state
-BORDER = "#1c2230"     # default 1px border
-BORDER_STRONG = "#2a3142"  # hover/active border
+PROFIT = "#00b386"     # Kite-style green for positive P&L
+LOSS = "#e74c3c"       # Kite-style red for negative P&L
+WARN = "#f5a623"       # amber for warnings / killswitch
+MUTED = "#8a8a8a"      # secondary text
+TEXT = "#e6e6e6"       # primary text (slightly off-white, less harsh than #fff)
+TEXT_DIM = "#5a5a5a"   # tertiary text / dividers
+BG = "#0e0e0e"         # near-black app background (Kite-style)
+CARD = "#1a1a1a"       # raised surfaces
+CARD_HOVER = "#222222" # hover state
+BORDER = "#2a2a2a"     # default 1px border
+BORDER_STRONG = "#3a3a3a"  # hover/active border
 
 REFRESH_SECS = 5       # dashboard + open trades auto-refresh cadence
 
 
 def _css() -> str:
-    """Modern dark fintech design system.
+    """Kite/Groww-style dark trading-terminal design.
 
-    Visual language inspired by Robinhood / Coinbase / Delta / Binance —
-    glassy surfaces, vivid accents, generous spacing, animated micro-states.
+    Pure black background, orange action accent, sharp 4px corners, dense
+    tabular data. Semantic green/red for P&L — colour means something.
     """
     return f"""
     <style>
-    /* ---------- Global tokens + typography ---------- */
-    :root {{
-      --bg: {BG};
-      --bg-grad-top: {BG};
-      --card: {CARD};
-      --card-hover: {CARD_HOVER};
-      --border: {BORDER};
-      --primary: {PRIMARY};
-      --primary-soft: {PRIMARY};
-      --secondary: {SECONDARY};
-      --profit: {PROFIT};
-      --loss: {LOSS};
-      --warn: {WARN};
-      --muted: {MUTED};
-      --text: {TEXT};
-    }}
-    html, body, [class*="css"], .stApp {{
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
-                   Roboto, 'Helvetica Neue', Arial, sans-serif;
+    /* ---------- Typography ---------- */
+    html, body, [class*="css"], .stApp, .stMarkdown {{
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui,
+                   'Helvetica Neue', Arial, sans-serif;
       -webkit-font-smoothing: antialiased;
       -moz-osx-font-smoothing: grayscale;
     }}
+    /* Tabular nums everywhere — Kite-style aligned numeric columns */
+    .stApp, [data-testid="stMetricValue"], [data-testid="stMetricDelta"],
+    .stat-value, .big-num, [data-testid="stDataFrame"] {{
+      font-variant-numeric: tabular-nums;
+    }}
     code, .mono, [data-testid="stDataFrame"], .stMarkdown pre {{
-      font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, Consolas, monospace;
+      font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
       font-variant-numeric: tabular-nums;
     }}
 
     /* ---------- App shell ---------- */
     .stApp {{
-      max-width: 920px;
-      margin: auto;
-      background: {BG};
-      color: {TEXT};
+      max-width: 1000px; margin: auto;
+      background: {BG}; color: {TEXT};
     }}
-    /* Strip Streamlit's default top header so we can render our own */
     [data-testid="stHeader"] {{ background: transparent; height: 0; }}
     footer {{ visibility: hidden; }}
     #MainMenu {{ visibility: hidden; }}
 
-    /* ---------- Sidebar ---------- */
+    /* ---------- Sidebar — Kite-style compact nav ---------- */
     [data-testid="stSidebar"] {{
-      background: {BG};
+      background: #050505;
       border-right: 1px solid {BORDER};
-      padding: 18px 14px;
+      padding: 14px 10px;
+      min-width: 200px;
     }}
     [data-testid="stSidebar"] h3 {{
-      color: {MUTED}; font-size: 0.7rem; text-transform: uppercase;
-      letter-spacing: .12em; margin: 18px 6px 8px 6px; font-weight: 700;
+      color: {MUTED}; font-size: 0.65rem; text-transform: uppercase;
+      letter-spacing: .14em; margin: 16px 8px 6px 8px; font-weight: 700;
     }}
     .sidebar-brand {{
-      margin: 4px 6px 2px; color: {TEXT};
-      font-size: 1.05rem; font-weight: 700; letter-spacing: -.005em;
+      margin: 2px 8px 2px; color: {TEXT};
+      font-size: 1.0rem; font-weight: 700; letter-spacing: -.005em;
       display: flex; align-items: center; gap: 8px;
     }}
     .sidebar-brand .brand-mark {{
-      width: 24px; height: 24px; border-radius: 6px;
+      width: 20px; height: 20px; border-radius: 4px;
       background: {PRIMARY};
       display: inline-flex; align-items: center; justify-content: center;
+      color: #fff; font-weight: 800; font-size: 11px; font-family: -apple-system, sans-serif;
     }}
     .sidebar-subtitle {{
-      margin: 0 6px 16px; color: {MUTED}; font-size: .74rem;
+      margin: 0 8px 14px; color: {MUTED}; font-size: .72rem;
     }}
     .sidebar-divider {{
-      border: 0; border-top: 1px solid {BORDER}; margin: 14px 6px;
+      border: 0; border-top: 1px solid {BORDER}; margin: 12px 6px;
     }}
+    /* Compact radio nav: 32px row height, no inner padding bloat */
+    [data-testid="stSidebar"] [data-testid="stRadio"] label {{
+      font-size: 0.86rem; padding: 6px 10px;
+      border-radius: 3px; min-height: 30px;
+      font-weight: 500;
+    }}
+    [data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] {{ gap: 1px; }}
     [data-testid="stRadio"] label {{
-      display: flex; align-items: center; min-height: 40px;
-      padding: 8px 12px; border: 1px solid transparent; border-radius: 10px;
-      font-size: .9rem; font-weight: 500; color: #b6c1d3;
-      transition: background .15s ease, border-color .15s ease, color .15s ease, transform .1s ease;
+      transition: background .12s ease, color .12s ease;
     }}
     [data-testid="stRadio"] label:hover {{
-      background: rgba(59,130,246,.06); color: {TEXT};
+      background: #1a1a1a; color: {TEXT};
     }}
     [data-testid="stRadio"] label:has(input:checked) {{
-      background: rgba(59,130,246,.10);
-      border-color: {BORDER_STRONG};
-      color: {TEXT};
+      background: #1a1a1a; color: {PRIMARY};
+      font-weight: 600;
       box-shadow: inset 2px 0 0 {PRIMARY};
     }}
     .sidebar-card {{
-      background: {CARD};
-      border: 1px solid {BORDER}; border-radius: 6px;
-      padding: 11px 13px; margin: 6px 4px;
+      background: {CARD}; border: 1px solid {BORDER};
+      border-radius: 4px; padding: 8px 10px; margin: 4px 4px;
     }}
     .sidebar-card-title {{
-      color: {MUTED}; font-size: .68rem; font-weight: 700;
-      letter-spacing: .09em; text-transform: uppercase; margin-bottom: 9px;
+      color: {MUTED}; font-size: .65rem; font-weight: 700;
+      letter-spacing: .1em; text-transform: uppercase; margin-bottom: 6px;
     }}
     .status-row {{
-      display: flex; align-items: center; gap: 8px;
-      min-height: 22px; font-size: .8rem; color: #cbd5e1;
+      display: flex; align-items: center; gap: 7px;
+      min-height: 18px; font-size: .76rem; color: {TEXT};
     }}
-    .status-label {{ flex: 1; color: {MUTED}; }}
-    .status-value {{ font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }}
+    .status-label {{ flex: 1; color: {MUTED}; font-size: .74rem; }}
+    .status-value {{ font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; font-size: .76rem; }}
     .status-dot {{
-      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: {MUTED};
+      width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: {MUTED};
     }}
     .status-dot.ok {{ background: {PROFIT}; }}
     .status-dot.warn {{ background: {WARN}; }}
     .status-dot.err {{ background: {LOSS}; }}
 
-    /* ---------- Top app bar ---------- */
-    .appbar {{
-      position: sticky; top: 0; z-index: 50;
-      display: flex; align-items: center; gap: 12px;
-      padding: 12px 16px; margin: -8px -16px 16px -16px;
-      background: {BG};
-      border-bottom: 1px solid {BORDER};
-    }}
-    .appbar-title {{
-      font-size: 1.0rem; font-weight: 700; color: {TEXT};
-      letter-spacing: -.005em; display: flex; align-items: center; gap: 9px;
-    }}
-    .appbar-title .brand-mark {{
-      width: 22px; height: 22px; border-radius: 5px;
-      background: {PRIMARY};
-      display: inline-flex; align-items: center; justify-content: center;
-    }}
-    .pill {{
-      display: inline-flex; align-items: center; gap: 6px;
-      padding: 3px 9px; border-radius: 3px; font-size: .73rem; font-weight: 600;
-      background: {CARD}; border: 1px solid {BORDER};
-      color: {TEXT}; white-space: nowrap;
-    }}
-    .pill.profit {{ color: {PROFIT}; border-color: rgba(34,197,94,.3); }}
-    .pill.loss {{ color: {LOSS}; border-color: rgba(239,68,68,.3); }}
-    .pill.warn {{ color: {WARN}; border-color: rgba(245,158,11,.3); }}
-    .pill.muted {{ color: {MUTED}; }}
-    .pill-dot {{
-      width: 7px; height: 7px; border-radius: 50%;
-    }}
-    .appbar-spacer {{ flex: 1; }}
-    .appbar-meta {{ display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }}
-
-    /* ---------- Hero P&L card ---------- */
-    .hero {{
-      background: {CARD};
-      border: 1px solid {BORDER}; border-radius: 8px;
-      padding: 22px 24px; margin: 8px 0 16px 0;
-    }}
-    .hero-label {{
-      font-size: .75rem; color: {MUTED}; text-transform: uppercase;
-      letter-spacing: .12em; font-weight: 700;
-    }}
-    .hero-amount {{
-      font-size: 2.6rem; font-weight: 800; line-height: 1.05;
-      letter-spacing: -.02em; margin: 6px 0 4px 0;
-      font-variant-numeric: tabular-nums;
-    }}
-    .hero-amount.profit {{ color: {PROFIT}; }}
-    .hero-amount.loss {{ color: {LOSS}; }}
-    .hero-amount.flat {{ color: {TEXT}; }}
-    .hero-meta {{
-      display: flex; gap: 14px; flex-wrap: wrap;
-      font-size: .82rem; color: {MUTED}; margin-top: 4px;
-    }}
-    .hero-meta b {{ color: {TEXT}; font-weight: 600; }}
-
-    /* ---------- Stat tiles (modernised) ---------- */
-    .stat-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }}
+    /* ---------- Stat tiles — dense ---------- */
+    .stat-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }}
     .stat-tile {{
-      background: {CARD}; border: 1px solid {BORDER}; border-radius: 6px;
-      padding: 12px 14px; transition: border-color .12s ease, background .12s ease;
+      background: {CARD}; border: 1px solid {BORDER};
+      border-radius: 4px; padding: 8px 10px;
+      transition: border-color .12s ease, background .12s ease;
     }}
-    .stat-tile:hover {{
-      border-color: {BORDER_STRONG}; background: {CARD_HOVER};
-    }}
+    .stat-tile:hover {{ border-color: {BORDER_STRONG}; background: {CARD_HOVER}; }}
     .stat-label {{
-      color: {MUTED}; font-size: .7rem; text-transform: uppercase;
+      color: {MUTED}; font-size: .65rem; text-transform: uppercase;
       letter-spacing: .08em; font-weight: 700;
     }}
     .stat-value {{
-      color: {TEXT}; font-size: 1.2rem; font-weight: 700;
-      margin-top: 4px; font-variant-numeric: tabular-nums;
+      color: {TEXT}; font-size: 1.1rem; font-weight: 700;
+      margin-top: 2px; font-variant-numeric: tabular-nums;
     }}
 
     /* ---------- Badges + chips ---------- */
     .badge {{
-      display: inline-block; border-radius: 999px; padding: 3px 10px;
-      font-size: 0.75rem; font-weight: 600; letter-spacing: .01em;
+      display: inline-block; border-radius: 2px; padding: 2px 7px;
+      font-size: 0.7rem; font-weight: 600; letter-spacing: .02em;
+      font-variant-numeric: tabular-nums;
     }}
     .chip {{
-      display: inline-block; border-radius: 8px; padding: 3px 10px;
-      font-size: 0.75rem; font-weight: 600; background: rgba(255,255,255,.04);
-      color: {MUTED}; margin-right: 6px; border: 1px solid {BORDER};
+      display: inline-block; border-radius: 3px; padding: 2px 8px;
+      font-size: 0.7rem; font-weight: 600;
+      background: {CARD}; color: {MUTED};
+      margin-right: 4px; border: 1px solid {BORDER};
+      font-variant-numeric: tabular-nums;
     }}
     .chip-active {{
-      background: rgba(59,130,246,.10); color: {PRIMARY};
-      border-color: {BORDER_STRONG};
+      background: rgba(255,111,0,.10); color: {PRIMARY};
+      border-color: rgba(255,111,0,.4);
     }}
-    .dot {{ width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }}
-    @keyframes ks-pulse {{
-      0%, 100% {{ opacity: 1; }}
-      50% {{ opacity: 0.35; }}
-    }}
+    .dot {{ width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }}
+    @keyframes ks-pulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.35; }} }}
     .ks-dot {{
-      width: 10px; height: 10px; border-radius: 50%; background: {LOSS};
+      width: 8px; height: 8px; border-radius: 50%; background: {LOSS};
       display: inline-block; animation: ks-pulse 1.5s infinite;
     }}
     .ks-banner {{
-      border-radius: 6px; padding: 12px 16px; margin: 6px 0;
+      border-radius: 4px; padding: 10px 14px; margin: 6px 0;
       border: 1px solid {BORDER}; border-left: 2px solid {LOSS};
       font-weight: 600; background: {CARD};
     }}
 
     /* ---------- Position cards (open trades) ---------- */
     .row {{ display: flex; gap: 8px; align-items: center; }}
-    .conf-bar {{ height: 6px; border-radius: 999px; background: {BORDER}; overflow: hidden; }}
-    .conf-fill {{ height: 6px; border-radius: 999px; transition: width .3s ease; }}
+    .conf-bar {{ height: 4px; background: {BORDER}; overflow: hidden; }}
+    .conf-fill {{ height: 4px; transition: width .3s ease; }}
     .sec-title {{
-      color: {MUTED}; font-size: 0.78rem; text-transform: uppercase;
-      letter-spacing: .1em; margin: 18px 0 8px 0; font-weight: 700;
-      display: flex; align-items: center; gap: 8px;
+      color: {MUTED}; font-size: 0.72rem; text-transform: uppercase;
+      letter-spacing: .12em; margin: 16px 0 6px 0; font-weight: 700;
     }}
-    .sec-title::before {{
-      content: ''; width: 2px; height: 14px;
-      background: {TEXT_DIM};
-    }}
-    .big-num {{ font-size: 1.6rem; font-weight: 700; font-variant-numeric: tabular-nums; }}
-    .muted {{ color: {MUTED}; font-size: 0.85rem; }}
+    .big-num {{ font-size: 1.4rem; font-weight: 700; font-variant-numeric: tabular-nums; }}
+    .muted {{ color: {MUTED}; font-size: 0.82rem; }}
     .pos-card {{
-      background: {CARD}; border: 1px solid {BORDER}; border-radius: 14px;
-      padding: 16px; margin: 10px 0;
-      transition: border-color .15s ease, transform .12s ease;
+      background: {CARD}; border: 1px solid {BORDER};
+      border-radius: 4px; padding: 12px 14px; margin: 6px 0;
+      transition: border-color .12s ease;
     }}
     .pos-card:hover {{ border-color: {BORDER_STRONG}; }}
     .pos-card.up {{ border-left: 2px solid {PROFIT}; }}
     .pos-card.down {{ border-left: 2px solid {LOSS}; }}
-    .pos-card.flat {{ border-left: 3px solid {MUTED}; }}
+    .pos-card.flat {{ border-left: 2px solid {TEXT_DIM}; }}
 
-    /* ---------- Buttons ---------- */
+    /* ---------- Buttons — flat, sharp ---------- */
     [data-testid="stButton"] button {{
-      border-radius: 10px; font-weight: 600;
-      transition: background .15s ease, border-color .15s ease,
-                  box-shadow .15s ease, transform .05s ease;
+      border-radius: 3px; font-weight: 600;
+      transition: background .12s ease, border-color .12s ease;
     }}
     [data-testid="stButton"] button[kind="primary"] {{
-      background: {PRIMARY};
-      border-color: {PRIMARY};
+      background: {PRIMARY}; border-color: {PRIMARY}; color: #000;
     }}
     [data-testid="stButton"] button[kind="primary"]:hover {{
-      background: #2563eb;
-      border-color: #2563eb;
+      background: #ff8a1a; border-color: #ff8a1a; color: #000;
     }}
-    [data-testid="stButton"] button[kind="primary"]:active {{ background: #1d4ed8; }}
+    [data-testid="stButton"] button[kind="primary"]:active {{ background: #e66600; }}
     [data-testid="stButton"] button[kind="secondary"] {{
-      background: rgba(255,255,255,.04); border: 1px solid {BORDER};
+      background: {CARD}; border: 1px solid {BORDER}; color: {TEXT};
     }}
     [data-testid="stButton"] button[kind="secondary"]:hover {{
-      background: rgba(255,255,255,.06); border-color: rgba(59,130,246,.4);
+      background: {CARD_HOVER}; border-color: {BORDER_STRONG};
     }}
-    /* Lead Generate button: extra emphasis — bigger, glowing */
+    /* Generate button — same primary orange, slightly taller */
     .lead-toolbar .stButton > button[kind="primary"] {{
-      min-height: 48px; font-size: 0.98rem;
+      min-height: 42px; font-size: 0.95rem;
     }}
 
-    /* SSO login + sidebar logout — same visual language as primary buttons */
+    /* SSO login button — same flat orange */
     .sso-login-btn {{
       display: inline-flex; align-items: center; justify-content: center;
       gap: 8px; cursor: pointer; user-select: none;
-      background: {PRIMARY}; color: #fff;
-      padding: 0.7rem 1rem; border-radius: 6px;
-      font-weight: 600; font-size: 0.95rem; line-height: 1.2;
-      text-decoration: none; margin: 8px 0; width: 100%;
+      background: {PRIMARY}; color: #000;
+      padding: 0.75rem 1rem; border-radius: 3px;
+      font-weight: 700; font-size: 0.95rem; line-height: 1.2;
+      text-decoration: none; margin: 6px 0; width: 100%;
       border: 1px solid {PRIMARY};
       transition: background .12s ease, border-color .12s ease;
     }}
     .sso-login-btn:hover {{
-      background: #2563eb; border-color: #2563eb; color: #fff;
+      background: #ff8a1a; border-color: #ff8a1a; color: #000;
     }}
-    .sso-login-btn:active {{ background: #1d4ed8; }}
+    .sso-login-btn:active {{ background: #e66600; }}
     .sso-login-btn:focus-visible {{ outline: 2px solid {PRIMARY}; outline-offset: 2px; }}
+
+    /* Sidebar logout — neutral, hover reveals danger */
     .sidebar-logout-btn {{
       display: flex; align-items: center; justify-content: center;
       gap: 8px; cursor: pointer; user-select: none;
-      background: rgba(255,255,255,.04); color: {TEXT};
-      border: 1px solid {BORDER}; border-radius: 12px;
-      padding: 0 1rem; margin: 4px 0 6px 0; height: 44px;
-      font-size: 1.0rem; font-weight: 600; line-height: 1.2;
+      background: {CARD}; color: {TEXT};
+      border: 1px solid {BORDER}; border-radius: 3px;
+      padding: 0 1rem; margin: 4px 0 6px 0; height: 34px;
+      font-size: 0.86rem; font-weight: 600; line-height: 1.2;
       text-decoration: none; box-sizing: border-box;
-      transition: background .15s ease, border-color .15s ease, color .15s ease;
+      transition: background .12s ease, border-color .12s ease, color .12s ease;
     }}
     .sidebar-logout-btn:hover {{
       background: {CARD_HOVER}; border-color: {BORDER_STRONG}; color: {LOSS};
     }}
     .sidebar-logout-btn:focus-visible {{ outline: 2px solid {PRIMARY}; outline-offset: 2px; }}
 
-    /* Bigger sidebar controls */
-    [data-testid="stSidebar"] [data-testid="stRadio"] label {{
-      font-size: 0.92rem; padding: 8px 12px; border-radius: 4px;
-    }}
-    [data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] {{ gap: 3px; }}
+    /* Sidebar controls — Kite-compact */
     [data-testid="stSidebar"] [data-testid="stButton"] button {{
-      height: 44px; font-size: 1.0rem; border-radius: 10px; font-weight: 600;
+      height: 34px; font-size: 0.86rem; border-radius: 3px; font-weight: 600;
     }}
-    [data-testid="stSidebar"] [data-testid="stExpander"] details {{ border-radius: 10px; }}
+    [data-testid="stSidebar"] [data-testid="stExpander"] details {{ border-radius: 3px; }}
 
-    /* Settings form labels — slightly heavier */
+    /* Form labels — small caps for density */
     [data-testid="stNumberInput"] label, [data-testid="stSlider"] label,
     [data-testid="stCheckbox"] label, [data-testid="stTextInput"] label,
     [data-testid="stTimeInput"] label, [data-testid="stSelectbox"] label,
-    [data-testid="stMultiSelect"] label {{ font-weight: 500; }}
-
-    /* ---------- Tables ---------- */
-    div[data-testid="stDataFrame"] {{
-      background: {CARD}; border: 1px solid {BORDER}; border-radius: 6px;
-      overflow: hidden;
+    [data-testid="stMultiSelect"] label {{
+      font-weight: 500; font-size: 0.78rem; color: {MUTED};
+      text-transform: uppercase; letter-spacing: .04em;
     }}
-    div[data-testid="stDataFrame"] table {{ font-size: 0.86rem; }}
+
+    /* ---------- Tables — dense Kite look ---------- */
+    div[data-testid="stDataFrame"] {{
+      background: {CARD}; border: 1px solid {BORDER};
+      border-radius: 4px; overflow: hidden;
+      font-variant-numeric: tabular-nums;
+    }}
+    div[data-testid="stDataFrame"] table {{ font-size: 0.82rem; }}
     div[data-testid="stDataFrame"] th {{
-      background: rgba(255,255,255,.02) !important;
+      background: #050505 !important;
       color: {MUTED} !important; font-weight: 700;
-      text-transform: uppercase; font-size: 0.72rem; letter-spacing: .06em;
+      text-transform: uppercase; font-size: 0.66rem; letter-spacing: .08em;
+      padding: 8px 10px !important;
+      border-bottom: 1px solid {BORDER} !important;
+    }}
+    div[data-testid="stDataFrame"] td {{
+      padding: 7px 10px !important;
+      border-bottom: 1px solid #1f1f1f !important;
+      color: {TEXT};
     }}
 
     /* Touch-friendly select + buttons + charts */
-    div[data-baseweb="select"] > div {{ min-height: 38px; }}
-    div[data-baseweb="select"] [role="option"] {{ min-height: 34px; }}
-    button[kind="primary"], button[kind="secondary"] {{ min-height: 42px; padding: 8px 16px; }}
+    div[data-baseweb="select"] > div {{ min-height: 32px; }}
+    div[data-baseweb="select"] [role="option"] {{ min-height: 30px; }}
+    button[kind="primary"], button[kind="secondary"] {{ min-height: 36px; padding: 6px 14px; }}
     .stPlotlyChart, .stLineChart, .stAreaChart, .stBarChart {{
-      margin: 16px 0; width: 100% !important;
+      margin: 12px 0; width: 100% !important;
     }}
 
-    /* Streamlit's built-in metric (Dashboard P&L row) — match the flat theme */
+    /* Streamlit's built-in metric (Dashboard P&L row) */
     [data-testid="stMetric"] {{
-      background: {CARD}; border: 1px solid {BORDER}; border-radius: 6px;
-      padding: 12px 14px;
+      background: {CARD}; border: 1px solid {BORDER};
+      border-radius: 4px; padding: 10px 12px;
     }}
     [data-testid="stMetricLabel"] {{
-      color: {MUTED}; font-size: 0.74rem;
-      text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;
+      color: {MUTED}; font-size: 0.66rem;
+      text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700;
     }}
     [data-testid="stMetricValue"] {{
-      color: {TEXT}; font-size: 1.4rem; font-weight: 700;
-      font-variant-numeric: tabular-nums; padding-top: 2px;
+      color: {TEXT}; font-size: 1.25rem; font-weight: 700;
+      font-variant-numeric: tabular-nums; padding-top: 1px;
     }}
     [data-testid="stMetricDelta"] {{
-      font-size: 0.78rem; font-variant-numeric: tabular-nums;
+      font-size: 0.74rem; font-variant-numeric: tabular-nums;
     }}
 
     /* ---------- History page ---------- */
     .history-section {{ padding: 0 4px; }}
-    .history-divider {{ border: 0; border-top: 1px solid {BORDER}; margin: 18px 0; }}
+    .history-divider {{ border: 0; border-top: 1px solid {BORDER}; margin: 14px 0; }}
     .history-mobile-header {{
-      font-size: 0.85rem; font-weight: 700; color: {TEXT};
-      text-transform: uppercase; letter-spacing: 0.08em;
-      margin: 14px 0 8px 0; padding-bottom: 6px;
-      border-bottom: 2px solid {PRIMARY};
+      font-size: 0.78rem; font-weight: 700; color: {TEXT};
+      text-transform: uppercase; letter-spacing: 0.1em;
+      margin: 12px 0 6px 0; padding-bottom: 4px;
+      border-bottom: 1px solid {PRIMARY};
     }}
 
     /* ---------- Leads page ---------- */
     .lead-toolbar {{
-      display: flex; flex-direction: column; gap: 8px; margin: 4px 0 14px 0;
+      display: flex; flex-direction: column; gap: 6px; margin: 4px 0 12px 0;
     }}
     .lead-section-header {{
       display: flex; align-items: center; justify-content: space-between;
-      gap: 10px; margin: 16px 0 8px 0;
-      padding-bottom: 6px; border-bottom: 1px solid {BORDER};
+      gap: 10px; margin: 14px 0 6px 0;
+      padding-bottom: 4px; border-bottom: 1px solid {BORDER};
     }}
     .lead-section-title {{
-      font-size: 1.0rem; font-weight: 700; color: {TEXT}; letter-spacing: -.01em;
+      font-size: 0.92rem; font-weight: 700; color: {TEXT}; letter-spacing: -.005em;
     }}
     .lead-section-count {{
       background: {CARD}; color: {TEXT};
-      border: 1px solid {BORDER}; border-radius: 4px;
-      padding: 2px 9px; font-size: 0.75rem; font-weight: 600;
+      border: 1px solid {BORDER}; border-radius: 2px;
+      padding: 1px 7px; font-size: 0.7rem; font-weight: 600;
       font-variant-numeric: tabular-nums;
     }}
     .lead-section-count.warn {{
-      background: rgba(251,191,36,.12); color: {WARN}; border-color: rgba(251,191,36,.5);
+      background: rgba(245,166,35,.10); color: {WARN};
+      border-color: rgba(245,166,35,.4);
     }}
     .lead-card {{
-      background: {CARD}; border: 1px solid {BORDER}; border-radius: 14px;
-      padding: 16px; margin: 10px 0;
-      transition: border-color .15s ease, transform .12s ease;
+      background: {CARD}; border: 1px solid {BORDER};
+      border-radius: 4px; padding: 12px 14px; margin: 6px 0;
+      transition: border-color .12s ease;
     }}
     .lead-card:hover {{ border-color: {BORDER_STRONG}; }}
-    .lead-card.queued {{ border-left: 3px solid {PRIMARY}; }}
-    .lead-card.skipped {{ border-left: 3px solid {MUTED}; }}
+    .lead-card.queued {{ border-left: 2px solid {PRIMARY}; }}
+    .lead-card.skipped {{ border-left: 2px solid {MUTED}; }}
     .lead-head {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }}
     .lead-head-left {{ flex: 1; min-width: 0; }}
-    .lead-symbol {{ font-size: 1.05rem; font-weight: 700; color: #f8fafc; word-break: break-word; }}
-    .lead-time {{ color: {MUTED}; font-size: 0.78rem; white-space: nowrap; flex-shrink: 0; }}
-    .lead-chips {{ margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }}
+    .lead-symbol {{ font-size: 0.98rem; font-weight: 700; color: {TEXT}; word-break: break-word; }}
+    .lead-time {{ color: {MUTED}; font-size: 0.74rem; white-space: nowrap; flex-shrink: 0; font-variant-numeric: tabular-nums; }}
+    .lead-chips {{ margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }}
     .lead-instrument {{
-      margin-top: 10px; background: {BG};
-      border: 1px solid {BORDER}; border-radius: 4px;
-      padding: 8px 11px; font-size: 0.84rem; color: {TEXT}; word-break: break-word;
+      margin-top: 8px; background: #050505;
+      border: 1px solid {BORDER}; border-radius: 3px;
+      padding: 6px 10px; font-size: 0.82rem; color: {TEXT}; word-break: break-word;
     }}
     .lead-instrument .lbl {{ color: {MUTED}; font-weight: 600; }}
     .lead-plan {{
-      display: flex; flex-wrap: wrap; gap: 10px 16px;
-      margin-top: 10px; padding-top: 10px;
+      display: flex; flex-wrap: wrap; gap: 8px 14px;
+      margin-top: 8px; padding-top: 8px;
       border-top: 1px dashed {BORDER};
     }}
-    .lead-plan > div {{ font-size: 0.84rem; }}
+    .lead-plan > div {{ font-size: 0.82rem; font-variant-numeric: tabular-nums; }}
     .lead-plan .lbl {{ color: {MUTED}; font-weight: 600; margin-right: 3px; }}
     .lead-plan .val {{ color: {TEXT}; font-weight: 600; }}
     .lead-score-row {{
       display: flex; align-items: center; gap: 10px;
-      margin-top: 12px; padding-top: 10px;
+      margin-top: 8px; padding-top: 8px;
       border-top: 1px dashed {BORDER};
     }}
     .lead-score-bar {{ flex: 1; }}
-    .lead-score-meta {{ color: {MUTED}; font-size: 0.72rem; margin-top: 3px; display: flex; justify-content: space-between; }}
+    .lead-score-meta {{ color: {MUTED}; font-size: 0.7rem; margin-top: 3px; display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; }}
     .lead-note {{
-      margin-top: 10px; padding: 8px 11px;
-      background: {BG}; border: 1px solid {BORDER};
+      margin-top: 8px; padding: 6px 10px;
+      background: #050505; border: 1px solid {BORDER};
       border-left: 2px solid {LOSS};
-      border-radius: 4px; color: {MUTED}; font-size: 0.82rem; word-break: break-word;
+      border-radius: 3px; color: {MUTED}; font-size: 0.8rem; word-break: break-word;
     }}
 
     /* Lead-gen live progress panel */
     .lg-panel {{
       background: {CARD};
-      border: 1px solid {BORDER}; border-radius: 6px;
-      padding: 14px 16px; margin: 6px 0 14px 0;
+      border: 1px solid {BORDER}; border-radius: 4px;
+      padding: 12px 14px; margin: 4px 0 12px 0;
     }}
-    .lg-head {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }}
-    .lg-phase {{ display: flex; align-items: center; gap: 8px; color: {TEXT}; font-size: 0.92rem; }}
-    .lg-elapsed {{ font-variant-numeric: tabular-nums; font-size: 0.85rem; color: {MUTED}; }}
+    .lg-head {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }}
+    .lg-phase {{ display: flex; align-items: center; gap: 8px; color: {TEXT}; font-size: 0.86rem; }}
+    .lg-elapsed {{ font-variant-numeric: tabular-nums; font-size: 0.82rem; color: {MUTED}; }}
     .lg-spinner {{
-      display: inline-block; width: 14px; height: 14px; border-radius: 50%;
+      display: inline-block; width: 12px; height: 12px; border-radius: 50%;
       border: 2px solid {BORDER}; border-top-color: {PRIMARY};
       animation: lg-spin 0.9s linear infinite;
     }}
     @keyframes lg-spin {{ to {{ transform: rotate(360deg); }} }}
-    .lg-bar {{ height: 6px; border-radius: 999px; background: rgba(255,255,255,.05); overflow: hidden; margin-bottom: 8px; }}
-    .lg-fill {{ height: 6px; border-radius: 999px; transition: width 0.4s ease; }}
-    .lg-meta {{ display: flex; gap: 14px; flex-wrap: wrap; font-size: 0.78rem; margin-bottom: 8px; color: {MUTED}; }}
-    .lg-current {{ font-size: 0.84rem; margin: 4px 0 8px 0; color: {TEXT}; }}
-    .lg-recent {{ display: flex; flex-direction: column; gap: 3px; border-top: 1px solid rgba(255,255,255,.05); padding-top: 8px; }}
-    .lg-recent-row {{ display: flex; align-items: center; gap: 8px; font-size: 0.82rem; padding: 2px 0; }}
+    .lg-bar {{ height: 4px; background: #050505; overflow: hidden; margin-bottom: 8px; }}
+    .lg-fill {{ height: 4px; transition: width 0.4s ease; }}
+    .lg-meta {{ display: flex; gap: 14px; flex-wrap: wrap; font-size: 0.76rem; margin-bottom: 8px; color: {MUTED}; font-variant-numeric: tabular-nums; }}
+    .lg-current {{ font-size: 0.82rem; margin: 4px 0 8px 0; color: {TEXT}; font-variant-numeric: tabular-nums; }}
+    .lg-recent {{ display: flex; flex-direction: column; gap: 2px; border-top: 1px solid {BORDER}; padding-top: 6px; }}
+    .lg-recent-row {{ display: flex; align-items: center; gap: 8px; font-size: 0.8rem; padding: 1px 0; font-variant-numeric: tabular-nums; }}
 
     /* LLM activity feed (live tool-call stream during agent loop) */
     .lg-tool-wrap {{
-      margin: 10px 0 4px 0; padding-top: 8px;
-      border-top: 1px dashed rgba(255,255,255,.08);
+      margin: 8px 0 4px 0; padding-top: 6px;
+      border-top: 1px dashed {BORDER};
     }}
     .lg-tool-head {{
       display: flex; align-items: center; justify-content: space-between;
-      font-size: 0.72rem; text-transform: uppercase; letter-spacing: .08em;
-      margin-bottom: 6px;
+      font-size: 0.66rem; text-transform: uppercase; letter-spacing: .1em;
+      margin-bottom: 5px;
     }}
-    .lg-tool-list {{
-      display: flex; flex-direction: column; gap: 4px;
-    }}
+    .lg-tool-list {{ display: flex; flex-direction: column; gap: 3px; }}
     .lg-tool-row {{
       display: flex; align-items: center; gap: 8px;
-      padding: 6px 9px; border: 1px solid; border-radius: 8px;
-      font-size: 0.78rem; line-height: 1.3;
-      transition: background .2s ease, border-color .2s ease;
+      padding: 5px 8px; border: 1px solid; border-radius: 3px;
+      font-size: 0.76rem; line-height: 1.3;
+      font-variant-numeric: tabular-nums;
     }}
     .lg-tool-pill {{
-      background: {BG}; color: {TEXT};
-      border: 1px solid {BORDER}; border-radius: 3px;
-      padding: 1px 8px; font-size: 0.72rem; font-weight: 600;
+      background: #050505; color: {TEXT};
+      border: 1px solid {BORDER}; border-radius: 2px;
+      padding: 1px 6px; font-size: 0.7rem; font-weight: 600;
       white-space: nowrap; flex-shrink: 0;
     }}
     .lg-tool-args {{
       flex: 1; min-width: 0;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-      color: #cbd5e1; font-family: 'JetBrains Mono', 'SF Mono', monospace;
-      font-size: 0.74rem;
+      color: {MUTED}; font-family: 'JetBrains Mono', 'SF Mono', monospace;
+      font-size: 0.72rem;
     }}
     .lg-tool-sym {{
-      background: {BG}; color: {MUTED};
-      border: 1px solid {BORDER}; border-radius: 3px;
-      padding: 1px 7px; font-size: 0.72rem; font-weight: 600;
+      background: #050505; color: {TEXT};
+      border: 1px solid {BORDER}; border-radius: 2px;
+      padding: 1px 6px; font-size: 0.7rem; font-weight: 600;
       flex-shrink: 0;
     }}
 
@@ -533,24 +466,21 @@ def _css() -> str:
     .gauge-num {{ position: relative; text-align: center; font-weight: 700; font-size: 0.85rem; padding-top: 4px; color: {TEXT}; }}
 
     /* ---------- Custom scrollbar ---------- */
-    ::-webkit-scrollbar {{ width: 10px; height: 10px; }}
+    ::-webkit-scrollbar {{ width: 8px; height: 8px; }}
     ::-webkit-scrollbar-track {{ background: transparent; }}
     ::-webkit-scrollbar-thumb {{
-      background: rgba(255,255,255,.08); border-radius: 999px;
-      border: 2px solid transparent; background-clip: padding-box;
+      background: #2a2a2a; border-radius: 0;
     }}
-    ::-webkit-scrollbar-thumb:hover {{ background: rgba(59,130,246,.4); background-clip: padding-box; border: 2px solid transparent; }}
+    ::-webkit-scrollbar-thumb:hover {{ background: {PRIMARY}; }}
 
     /* ---------- Responsive ---------- */
     @media (max-width: 768px) {{
-      .stApp {{ max-width: 100%; }}
-      .hero {{ padding: 18px; }}
-      .hero-amount {{ font-size: 2.0rem; }}
-      .stat-tile {{ padding: 10px 12px; }}
-      .stat-value {{ font-size: 1.05rem; }}
-      .lead-card {{ padding: 12px 14px; }}
-      .lead-symbol {{ font-size: 1rem; }}
-      .row {{ flex-wrap: wrap; gap: 12px; justify-content: flex-start; }}
+      .stApp {{ max-width: 100%; padding: 0 4px; }}
+      .stat-tile {{ padding: 8px 10px; }}
+      .stat-value {{ font-size: 1.0rem; }}
+      .lead-card {{ padding: 10px 12px; }}
+      .lead-symbol {{ font-size: 0.92rem; }}
+      .row {{ flex-wrap: wrap; gap: 10px; justify-content: flex-start; }}
     }}
     </style>
     """
@@ -1177,36 +1107,9 @@ def render_dashboard():
     # Day-at-a-glance stats (combines open + today's closed)
     _render_day_stats()
 
-    st.markdown("#### Today's queued signals")
-    # The leads API no longer accepts status/date params; fetch the current
-    # set and filter for queued on the client. The cleanup scheduler keeps
-    # this list small (only active queued signals survive).
-    leads_resp = api.get_leads()
-    if leads_resp.get("status") == "ok":
-        rows = [r for r in leads_resp["data"]["leads"] if r.get("status") == "queued"]
-        if rows:
-            df = pd.DataFrame(
-                [
-                    {
-                        "Time (IST)": (
-                            r.get("created_at_ist_label")
-                            or _utc_to_ist_hm(r.get("created_at"))
-                        ),
-                        "Symbol": r.get("symbol") or r["underlying"].split("|")[-1],
-                        "Instrument": r.get("trading_symbol") or "—",
-                        "Dir": r["direction"],
-                        "Pattern": r["signal_type"],
-                        "Signal Price": r["signal_level"],
-                        "Conf": r["confidence"],
-                        "Margin": _money(r.get("margin_needed")) if r.get("margin_needed") is not None else "—",
-                        "Status": r["status"],
-                    }
-                    for r in rows
-                ]
-            )
-            st.dataframe(df, use_container_width=True, hide_index=True, height=min(40 + 35 * len(df), 420))
-        else:
-            st.info("No queued signals today. Head to the **Leads** tab and tap **Generate now** to scan underlyings.")
+    # Note: "Today's queued signals" preview lives in the Leads section so the
+    # Dashboard stays focused on P&L. The Leads tab reuses `_render_queued_signals_table()`
+    # for its own queued preview and the full lead list below.
 
 
 def _track_pnl_history(total: float):
@@ -1368,6 +1271,43 @@ def _render_position_card(r: dict):
     )
 
 
+def _render_queued_signals_table(queued_rows: list[dict]) -> None:
+    """Compact queued-signals preview used inside the Leads tab.
+
+    Kept as a small dataframe so the section above the rich lead cards
+    doesn't dominate the page. Empty state shows a single info line so the
+    user knows the data path is alive (just no signals yet).
+    """
+    if not queued_rows:
+        st.info("No queued signals. Tap **Generate now** above to scan underlyings.")
+        return
+    df = pd.DataFrame(
+        [
+            {
+                "Time (IST)": (
+                    r.get("created_at_ist_label")
+                    or _utc_to_ist_hm(r.get("created_at"))
+                ),
+                "Symbol": r.get("symbol") or r["underlying"].split("|")[-1],
+                "Instrument": r.get("trading_symbol") or "—",
+                "Dir": r["direction"],
+                "Pattern": r["signal_type"],
+                "Signal Price": r["signal_level"],
+                "Conf": r["confidence"],
+                "Margin": _money(r.get("margin_needed")) if r.get("margin_needed") is not None else "—",
+                "Status": r["status"],
+            }
+            for r in queued_rows
+        ]
+    )
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        height=min(40 + 32 * len(df), 360),
+    )
+
+
 def render_leads():
     st.subheader("Leads")
 
@@ -1375,19 +1315,37 @@ def render_leads():
     # - Queued leads age out at 24h
     # - Processed leads (skipped/placed/expired) retained for 7 days
 
-    # Fetch the lead list once and reuse it for both the toolbar (to size
-    # the destructive-action confirmation) and the section rendering.
+    # Generate button renders BEFORE the lead-list fetch so the user can
+    # always kick off a run, even if `/api/trades/leads` is briefly failing.
+    # The button only needs `api.get_active_lead_gen_job()` (which is cheap
+    # and silently no-ops on failure), so it stays usable during outages.
+    _html("<div class='lead-toolbar'>")
+    _render_generate_lead_button("leads_tab")
+    _html("</div>")
+
+    # Now try to load the lead list. We surface the API error rather than
+    # hiding it behind a generic warning so the user knows whether the
+    # outage is auth (re-login) or transient (just refresh).
     resp = api.get_leads()
     if resp.get("status") != "ok":
-        st.warning("Could not load leads.")
+        err = resp.get("error") or {}
+        msg = err.get("message") or "Could not load leads."
+        code = err.get("code") or ""
+        if code in ("unauthorized", "jwt_expired") or "auth" in code.lower():
+            st.error(f"{msg} — your session has expired. Use the sidebar **Logout** and re-login.")
+        else:
+            st.warning(f"{msg}  \n*(Generate Lead above still works; the list will repopulate when the API is reachable.)*")
         return
     rows = resp["data"].get("leads", [])
     lead_count = len(rows)
 
-    # Action buttons in their own column so each stays full-width on mobile
-    # (a side column would shrink to ~20% of the screen width).
-    _html("<div class='lead-toolbar'>")
-    _render_generate_lead_button("leads_tab")
+    # Compact queued-signals table — quick scan of today's pending signals
+    # before the richer detail cards. Same data the Dashboard used to show.
+    queued_rows = [r for r in rows if r.get("status") == "queued"]
+    _render_queued_signals_table(queued_rows)
+
+    # Delete-all button — depends on `lead_count`, so it sits below the
+    # load guard. Only enabled when there's something to delete.
     if st.button(
         "Delete all leads",
         type="secondary",
@@ -1403,7 +1361,6 @@ def render_leads():
         st.session_state["purge_leads_count"] = lead_count
         st.session_state["purge_dialog_open"] = True
         st.rerun()
-    _html("</div>")
 
     if st.session_state.pop("purge_dialog_open", False):
         _render_purge_leads_dialog(lead_count)
@@ -1423,14 +1380,13 @@ def render_leads():
         return
 
     # Split into active (queued) and skipped
-    active_rows = [r for r in rows if r.get("status") == "queued"]
     skipped_rows = [r for r in rows if r.get("status") == "skipped"]
 
-    # --- Active Leads ---
+    # --- Active Leads (rich detail cards) ---
     _html(
         f"<div class='lead-section-header'>"
         f"<div class='lead-section-title'>Active leads (queued)</div>"
-        f"<div class='lead-section-count'>{len(active_rows)} waiting</div>"
+        f"<div class='lead-section-count'>{len(queued_rows)} waiting</div>"
         f"</div>"
     )
     if active_rows:
@@ -2293,7 +2249,15 @@ def render_drifts():
     st.subheader("Drift audit")
     resp = api.get_drifts()
     if resp.get("status") != "ok":
-        st.warning("Could not load drift events.")
+        err = resp.get("error") or {}
+        msg = err.get("message") or "Could not load drift events."
+        code = err.get("code") or ""
+        if code in ("unauthorized", "jwt_expired") or "auth" in code.lower():
+            st.error(f"{msg} — your session has expired. Use the sidebar **Logout** and re-login.")
+        else:
+            st.warning(f"{msg}  \n*(Drift events are an audit log; the bot keeps trading even when this view is offline.)*")
+        if st.button("Retry", type="secondary", key="retry_drift_load"):
+            st.rerun()
         return
     rows = (resp.get("data") or {}).get("drifts") or []
     summary = api.get_drift_summary()

@@ -131,32 +131,207 @@ def _execute_tool(tools: list[LLMTool], name: str, raw_args: Any) -> dict[str, A
 def _parse_final(content: str) -> dict[str, Any] | None:
     """Pull the JSON payload out of the assistant's final message.
 
-    Tolerates ```json fences and stray whitespace. Returns None on
-    malformed input — caller surfaces a parse error.
+    LLMs reliably emit final answers in one of these shapes:
+      A. Pure JSON:                     `{"signals": []}`
+      B. JSON in a code fence:          `` ```json\\n{...}\\n``` ``
+      C. JSON fenced but unlabeled:     `` ```\\n{...}\\n``` ``
+      D. JSON with prose around it:      `Here is the call: {...} — end`
+      E. JSON with trailing commas:     `{"a": 1,}` (some open-source models)
+      F. JSON with leading bullet/list: `- {"signals": [...]}` (rare)
+
+    We try them in order of cheapness; first success wins. Returns None
+    only when nothing parses, which the caller surfaces as the
+    "final content not parseable JSON" health error.
+
+    Logs the full content at debug level when all attempts fail so the
+    operator can reproduce the model output without losing detail.
     """
     if not isinstance(content, str):
         return None
     s = content.strip()
-    if s.startswith("```"):
-        # strip leading ``` or ```json
-        first_nl = s.find("\n")
-        if first_nl >= 0:
-            s = s[first_nl + 1 :]
-        if s.endswith("```"):
-            s = s[: -3]
-        s = s.strip()
-    try:
-        return json.loads(s)
-    except json.JSONDecodeError:
-        # last-ditch: find the first {...} block
-        start = s.find("{")
-        end = s.rfind("}")
-        if start >= 0 and end > start:
-            try:
-                return json.loads(s[start : end + 1])
-            except json.JSONDecodeError:
-                return None
+    if not s:
         return None
+
+    # (A) direct parse — fast path for well-behaved models
+    parsed = _try_loads(s)
+    if parsed is not None:
+        return parsed
+
+    # (B)+(C) strip a single code fence (with or without language tag)
+    fenced = _strip_code_fence(s)
+    if fenced is not None and fenced != s:
+        parsed = _try_loads(fenced)
+        if parsed is not None:
+            return parsed
+
+    # (D) extract the largest balanced { ... } block from the content.
+    #     We pick the OUTERMOST braces (not the first inner-most), since
+    #     the model's outer wrapper tends to be {"signals": [...]}.
+    block = _extract_outer_json(s)
+    if block is not None:
+        parsed = _try_loads(block)
+        if parsed is not None:
+            return parsed
+
+    # Last resort: drop trailing commas before `}` / `]` (some OSS models
+    # emit them despite the prompt forbidding them) and retry the
+    # outer-block attempt.
+    cleaned = _strip_trailing_commas(s)
+    if cleaned != s:
+        parsed = _try_loads(cleaned)
+        if parsed is not None:
+            return parsed
+        block = _extract_outer_json(cleaned)
+        if block is not None:
+            parsed = _try_loads(block)
+            if parsed is not None:
+                return parsed
+
+    log.debug("agent_loop: parse_final exhausted; raw content=%r", content)
+    return None
+
+
+def _try_loads(s: str) -> dict[str, Any] | None:
+    """Single-attempt `json.loads` — None on failure. No exception escape."""
+    try:
+        loaded = json.loads(s)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(loaded, dict):
+        # The model occasionally wraps a JSON list or scalar in its reply;
+        # those don't fit our `{signals: [...]}` contract, so reject.
+        return None
+    return loaded
+
+
+def _strip_code_fence(s: str) -> str | None:
+    """Strip ONE surrounding `` ``` `` fence (any language tag).
+
+    Returns the unwrapped body, or None if `s` doesn't start with a fence.
+    Tolerates ```` ``` `` ``, ```` ```json ``, ```` ```jsonc ``, etc., and
+    a missing closing fence (we just return everything after the opener).
+    """
+    if not s.startswith("```"):
+        return None
+    # Drop the opening fence + optional language tag on the same line.
+    first_nl = s.find("\n")
+    if first_nl == -1:
+        # No newline at all — there's no body to extract.
+        return None
+    body = s[first_nl + 1 :]
+    # Drop the closing fence if present.
+    if body.endswith("```"):
+        body = body[: -3]
+    return body.strip()
+
+
+def _extract_outer_json(s: str) -> str | None:
+    """Return the outermost balanced `{ ... }` substring, or None.
+
+    LLMs sometimes wrap the JSON in prose ("Here is the answer: {...}.").
+    Picking the first `{` and the last `}` is wrong when the outer block
+    also contains inner braces (a `signals` list of dicts). Instead we
+    scan for the first `{` and match braces to find its true closer.
+
+    If the content opens with a `[...]` (a list wrapper, with or without
+    prose), we skip past that wrapper before searching for the dict.
+    A top-level JSON list does not fit the `{signals: [...]}` contract,
+    so a payload that is *only* a list is rejected as a parse failure.
+    """
+    # Skip leading whitespace.
+    i = 0
+    while i < len(s) and s[i] in " \t\r\n":
+        i += 1
+    # If we land on a `[`, walk past one balanced list. Pure-list payloads
+    # are not contract-compliant, but skipping lets us recover lists that
+    # the model wrapped in extra prose.
+    if i < len(s) and s[i] == "[":
+        depth = 0
+        in_str = False
+        escape = False
+        for j in range(i, len(s)):
+            c = s[j]
+            if in_str:
+                if escape:
+                    escape = False
+                elif c == "\\":
+                    escape = True
+                elif c == '"':
+                    in_str = False
+                continue
+            if c == '"':
+                in_str = True
+            elif c == "[":
+                depth += 1
+            elif c == "]":
+                depth -= 1
+                if depth == 0:
+                    i = j + 1
+                    break
+        else:
+            return None
+        while i < len(s) and s[i] in " \t\r\n":
+            i += 1
+
+    start = s.find("{", i)
+    if start == -1:
+        return None
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(s)):
+        c = s[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif c == "\\":
+                escape = True
+            elif c == '"':
+                in_str = False
+            continue
+        if c == '"':
+            in_str = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return s[start : i + 1]
+    return None
+
+
+def _strip_trailing_commas(s: str) -> str:
+    """Remove trailing commas that precede `}` or `]` (some OSS models do this).
+
+    Doesn't touch commas inside string literals — we step character-by-
+    character and only act on commas that are at "structure" positions.
+    """
+    out: list[str] = []
+    in_str = False
+    escape = False
+    for i, c in enumerate(s):
+        if in_str:
+            out.append(c)
+            if escape:
+                escape = False
+            elif c == "\\":
+                escape = True
+            elif c == '"':
+                in_str = False
+            continue
+        if c == '"':
+            in_str = True
+            out.append(c)
+            continue
+        if c == ",":
+            # Look ahead to see if the next non-whitespace char is } or ].
+            j = i + 1
+            while j < len(s) and s[j] in " \t\r\n":
+                j += 1
+            if j < len(s) and s[j] in "}]":
+                continue  # skip this trailing comma
+        out.append(c)
+    return "".join(out)
 
 
 def run_agent_loop(
