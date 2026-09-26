@@ -458,6 +458,109 @@ def _css() -> str:
       padding: 1px 6px; font-size: 0.7rem; font-weight: 600;
       flex-shrink: 0;
     }}
+    .lg-tool-keys {{
+      display: inline-flex; gap: 2px; flex-shrink: 0;
+    }}
+    .lg-tool-key {{
+      background: rgba(0,179,134,.10); color: {PROFIT};
+      border: 1px solid rgba(0,179,134,.30); border-radius: 2px;
+      padding: 1px 5px; font-size: 0.66rem; font-weight: 600;
+      font-family: 'JetBrains Mono', 'SF Mono', monospace;
+    }}
+    .lg-tool-key.muted {{
+      background: transparent; color: {MUTED}; border-color: {BORDER};
+    }}
+    .lg-tool-ts {{
+      font-family: 'JetBrains Mono', 'SF Mono', monospace;
+      font-size: 0.66rem; flex-shrink: 0;
+      font-variant-numeric: tabular-nums;
+    }}
+
+    /* Args display: collapsed preview that expands to full JSON on click.
+       Tools like `breakout_calc` carry large payloads (ATR series of 200
+       values) that don't fit in a 60-char truncate — let the user
+       click to see the full arg block. */
+    .lg-tool-meta {{
+      display: inline-flex; gap: 6px; align-items: center;
+      margin-left: auto; flex-shrink: 0;
+    }}
+    .lg-tool-args-wrap {{
+      flex: 1; min-width: 0;
+      margin: 0;
+    }}
+    .lg-tool-args-wrap > summary {{
+      list-style: none;
+      cursor: pointer;
+      color: {MUTED}; font-family: 'JetBrains Mono', 'SF Mono', monospace;
+      font-size: 0.72rem;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      padding: 1px 0;
+      user-select: none;
+    }}
+    .lg-tool-args-wrap > summary::-webkit-details-marker {{ display: none; }}
+    .lg-tool-args-wrap > summary::before {{
+      content: '▸';
+      display: inline-block; margin-right: 5px;
+      color: {MUTED}; font-size: 0.66rem;
+      transition: transform .12s ease;
+    }}
+    .lg-tool-args-wrap[open] > summary::before {{
+      transform: rotate(90deg); color: {PRIMARY};
+    }}
+    .lg-tool-args-wrap > summary:hover {{ color: {TEXT}; }}
+    .lg-tool-args-full {{
+      background: #050505;
+      border: 1px solid {BORDER}; border-radius: 3px;
+      padding: 6px 9px; margin: 4px 0 0 14px;
+      font-family: 'JetBrains Mono', 'SF Mono', monospace;
+      font-size: 0.7rem; color: {TEXT};
+      max-height: 240px; overflow: auto;
+      white-space: pre-wrap; word-break: break-all;
+    }}
+    .lg-tool-args-empty {{
+      color: {MUTED}; font-size: 0.72rem;
+    }}
+
+    /* Per-symbol timeline (groups tool calls by underlying) */
+    .lg-tl-wrap {{
+      margin: 8px 0 4px 0; padding-top: 6px;
+      border-top: 1px dashed {BORDER};
+    }}
+    .lg-tl-head {{
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: 0.66rem; text-transform: uppercase; letter-spacing: .1em;
+      margin-bottom: 5px;
+    }}
+    .lg-tl-list {{ display: flex; flex-direction: column; gap: 6px; }}
+    .lg-tl-sym {{
+      display: flex; align-items: center; gap: 8px;
+      padding: 4px 8px;
+      background: #050505; border: 1px solid {BORDER};
+      border-radius: 3px;
+    }}
+    .lg-tl-name {{
+      color: {TEXT}; font-weight: 700; font-size: 0.78rem;
+      flex-shrink: 0;
+    }}
+    .lg-tl-count {{
+      color: {MUTED}; font-size: 0.68rem; margin-left: auto;
+      font-variant-numeric: tabular-nums;
+    }}
+    .lg-tl-steps {{
+      display: flex; flex-wrap: wrap; gap: 6px 10px;
+      padding: 4px 8px 0 14px;
+    }}
+    .lg-tl-step {{
+      font-size: 0.74rem;
+    }}
+
+    /* Direction pill in the recent-results list (CALL / PUT) */
+    .lg-recent-dir {{
+      background: rgba(0,179,134,.05);
+      border: 1px solid; border-radius: 2px;
+      padding: 0 6px; font-size: 0.66rem; font-weight: 700;
+      letter-spacing: .04em;
+    }}
 
     /* Gauges + small bits */
     .gauge {{ position: relative; width: 64px; height: 32px; overflow: hidden; }}
@@ -1779,13 +1882,38 @@ def _render_lead_progress_panel(data: dict) -> None:
         "error": ("✗", LOSS),
     }
 
+    def _short_status(item: dict) -> str:
+        """Format the 'status' field the way we stored it (a string when the
+        recent dict came from `lead_generator._emit_progress`, never None
+        in practice but we defend anyway)."""
+        s = item.get("status")
+        return s if isinstance(s, str) else "empty"
+
     def _recent_row(item: dict) -> str:
         sym = item.get("symbol") or "?"
-        st_name = item.get("status") or "empty"
+        st_name = _short_status(item)
         glyph, color = status_glyph.get(st_name, ("?", MUTED))
         n = int(item.get("leads") or 0)
+        conf = item.get("confidence")
+        direction = item.get("direction") or ""
+        signal_type = item.get("signal_type") or ""
         if st_name == "leads":
-            tail = f" <span style='color:{PROFIT};font-weight:600;'>{n} lead{'s' if n != 1 else ''}</span>"
+            # The recent dict from `lead_generator._emit_progress` carries
+            # just `{symbol, status, leads, error}` — direction/confidence
+            # show up when the lead was actually persisted, which we get
+            # from `created` but not from this row. Show count + direction
+            # pill if present.
+            pill = ""
+            if direction in ("CALL", "PUT"):
+                d_color = PROFIT if direction == "CALL" else LOSS
+                pill = (
+                    f"<span class='lg-recent-dir' style='color:{d_color};border-color:{d_color}66;'>"
+                    f"{_html_escape(direction)}</span>"
+                )
+            tail = (
+                f" {pill}"
+                f"<span style='color:{PROFIT};font-weight:600;'>{n} lead{'s' if n != 1 else ''}</span>"
+            )
         elif st_name == "error":
             err_msg = item.get("error") or ""
             tail = f" <span style='color:{LOSS};font-size:0.78rem;'>{_html_escape(err_msg[:60])}</span>"
@@ -1795,7 +1923,7 @@ def _render_lead_progress_panel(data: dict) -> None:
             f"<div class='lg-recent-row'>"
             f"<span style='color:{color};font-weight:700;width:14px;flex-shrink:0;'>{glyph}</span>"
             f"<span style='flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'>{_html_escape(sym)}</span>"
-            f"<span style='flex-shrink:0;'>{tail}</span>"
+            f"<span style='flex-shrink:0;display:flex;gap:6px;align-items:center;'>{tail}</span>"
             f"</div>"
         )
 
@@ -1815,6 +1943,7 @@ def _render_lead_progress_panel(data: dict) -> None:
     # so the user can see what the model is reasoning about in real time.
     tool_calls = progress.get("current_tool_calls") or []
     tool_html = _render_llm_tool_calls(tool_calls)
+    timeline_html = _render_llm_tool_calls_timeline(tool_calls)
 
     _html(
         f"""
@@ -1836,9 +1965,70 @@ def _render_lead_progress_panel(data: dict) -> None:
           </div>
           {current_html}
           {tool_html}
+          {timeline_html}
           <div class='lg-recent'>{rows_html}</div>
         </div>
         """
+    )
+
+
+def _render_llm_tool_calls_timeline(tool_calls: list[dict]) -> str:
+    """Per-symbol timeline of tool calls during the agent loop.
+
+    Groups `tool_calls` by `symbol` (newest symbol last) and shows a
+    compact step list per symbol:
+
+        RELIANCE
+          → indicators      iter 1
+          → breakout calc   iter 2
+          → option chain    iter 3
+
+    Lets the user see *the full agent journey per instrument* without
+    having to read the raw stream.
+    """
+    if not tool_calls:
+        return ""
+
+    # Preserve insertion order so symbols appear in the order the agent
+    # first touched them.
+    grouped: dict[str, list[dict]] = {}
+    for tc in tool_calls:
+        s = tc.get("symbol") or "?"
+        grouped.setdefault(s, []).append(tc)
+
+    tool_labels = {
+        "compute_indicators": "indicators",
+        "breakout_calc":      "breakout calc",
+        "fetch_news":         "news",
+        "option_chain_summary": "option chain",
+    }
+
+    rows = []
+    for sym, calls in grouped.items():
+        steps = "".join(
+            f"<span class='lg-tl-step'>"
+            f"<span class='muted'>→</span> "
+            f"<b>{_html_escape(tool_labels.get(c.get('name') or '?', c.get('name') or '?'))}</b>"
+            f" <span class='muted'>iter {c.get('iter') or '?'}</span>"
+            f"</span>"
+            for c in calls
+        )
+        rows.append(
+            f"<div class='lg-tl-sym'>"
+            f"<span class='lg-tl-name'>{_html_escape(sym)}</span>"
+            f"<span class='lg-tl-count'>{len(calls)} step{'s' if len(calls) != 1 else ''}</span>"
+            f"</div>"
+            f"<div class='lg-tl-steps'>{steps}</div>"
+        )
+
+    return (
+        f"<div class='lg-tl-wrap'>"
+        f"<div class='lg-tl-head'>"
+        f"<span class='muted'>Per-symbol timeline</span>"
+        f"<span class='muted' style='font-weight:600;'>{len(grouped)} symbol{'s' if len(grouped) != 1 else ''}</span>"
+        f"</div>"
+        f"<div class='lg-tl-list'>{''.join(rows)}</div>"
+        f"</div>"
     )
 
 
@@ -1846,9 +2036,14 @@ def _render_llm_tool_calls(tool_calls: list[dict]) -> str:
     """Render the live LLM agent-loop activity feed.
 
     Each entry is the compact payload emitted by
-    `agent.run_agent_loop` via `on_tool_call`. We show the tool name as a
-    pill, the (truncated) args, and which underlying the LLM was reasoning
-    about — newest event at the top.
+    `agent.run_agent_loop` via `on_tool_call`. Layout per row:
+        [HH:MM:SS]  [tool-name]  [args (truncated)]  [symbol]  iter N
+    plus a small badge showing the result-keys the tool returned, so the
+    user can see at a glance *what data the model just got back*.
+
+    Newest event at the top with a faint orange tint; older events are
+    flat. Capped at 8 rows — the server already keeps a 12-entry ring
+    buffer, but past that becomes visual noise.
     """
     if not tool_calls:
         return ""
@@ -1856,10 +2051,21 @@ def _render_llm_tool_calls(tool_calls: list[dict]) -> str:
     # falls back to its raw name so future tools don't go missing silently.
     tool_labels = {
         "compute_indicators": "indicators",
-        "breakout_calc": "breakout calc",
-        "fetch_news": "news",
+        "breakout_calc":      "breakout calc",
+        "fetch_news":         "news",
         "option_chain_summary": "option chain",
     }
+
+    def _short_ts(ts_iso: str | None) -> str:
+        # Server stamps `YYYY-MM-DDTHH:MM:SS.ffffff`; render HH:MM:SS only.
+        if not ts_iso:
+            return ""
+        # `T` separator → split, then HH:MM:SS
+        try:
+            t = ts_iso.split("T", 1)[1][:8]
+            return t
+        except Exception:
+            return ""
 
     def _row(tc: dict, idx: int) -> str:
         name = tc.get("name") or "?"
@@ -1867,30 +2073,88 @@ def _render_llm_tool_calls(tool_calls: list[dict]) -> str:
         sym = tc.get("symbol") or ""
         args = tc.get("args") or ""
         iter_n = tc.get("iter")
-        # First row gets a slightly stronger tint to mark "most recent".
+        ts = _short_ts(tc.get("ts"))
+        result_keys = tc.get("result_keys") or []
+
+        # Args rendering: a tool's args payload can be a long JSON
+        # (e.g. `breakout_calc` with an `atr_series` array of 200
+        # candles). Showing the first 60 chars inline gets cut off
+        # mid-key; showing the full string blows the layout out.
+        # Compromise: render the args inside a `<details>` element so
+        # the user sees a one-line preview and can click to expand the
+        # full JSON in a monospace block.
+        args_str = str(args) if args else ""
+        if args_str.strip() in ("{}", ""):
+            args_block = "<span class='muted lg-tool-args-empty'>(no args)</span>"
+        else:
+            preview = args_str[:80].rstrip()
+            if len(args_str) > 80:
+                preview += "…"
+            full = _html_escape(args_str)
+            args_block = (
+                f"<details class='lg-tool-args-wrap'>"
+                f"<summary class='lg-tool-args-preview'>{_html_escape(preview)}</summary>"
+                f"<pre class='lg-tool-args-full'>{full}</pre>"
+                f"</details>"
+            )
+
+        result_keys_html = ""
+        if result_keys:
+            chips = "".join(
+                f"<span class='lg-tool-key'>{_html_escape(k)}</span>"
+                for k in result_keys[:4]
+            )
+            if len(result_keys) > 4:
+                chips += f"<span class='lg-tool-key muted'>+{len(result_keys) - 4}</span>"
+            result_keys_html = f"<span class='lg-tool-keys'>{chips}</span>"
+
         is_latest = idx == 0
-        bg = f"rgba(59,130,246,.10)" if is_latest else f"{CARD}"
-        border = f"{BORDER_STRONG}" if is_latest else f"{BORDER}"
+        bg = "rgba(255,111,0,.10)" if is_latest else "transparent"
+        border = BORDER_STRONG if is_latest else BORDER
         sym_html = (
             f"<span class='lg-tool-sym'>{_html_escape(sym)}</span>" if sym else ""
         )
         iter_html = (
-            f"<span class='muted'>iter {iter_n}</span>" if iter_n is not None else ""
+            f"<span class='muted' style='font-size:0.68rem;'>iter {iter_n}</span>"
+            if iter_n is not None else ""
         )
+        ts_html = (
+            f"<span class='muted lg-tool-ts'>{ts}</span>" if ts else ""
+        )
+
         return (
             f"<div class='lg-tool-row' style='background:{bg};border-color:{border};'>"
             f"<span class='lg-tool-pill'>{_html_escape(label)}</span>"
-            f"<span class='lg-tool-args'>{_html_escape(str(args)[:80])}</span>"
-            f"{sym_html}{iter_html}"
+            f"{args_block}"
+            f"{result_keys_html}"
+            f"<span class='lg-tool-meta'>{sym_html}{iter_html}{ts_html}</span>"
             f"</div>"
         )
 
-    rows = "".join(_row(tc, i) for i, tc in enumerate(tool_calls[:6]))
+    rows = "".join(_row(tc, i) for i, tc in enumerate(tool_calls[:8]))
+
+    # Group count by tool name + symbol for the summary line.
+    by_tool: dict[str, int] = {}
+    by_symbol: dict[str, int] = {}
+    for tc in tool_calls:
+        n = tc.get("name") or "?"
+        s = tc.get("symbol") or "?"
+        by_tool[n] = by_tool.get(n, 0) + 1
+        by_symbol[s] = by_symbol.get(s, 0) + 1
+    top_tools = sorted(by_tool.items(), key=lambda kv: -kv[1])[:3]
+    tool_summary = " · ".join(
+        f"{tool_labels.get(n, n)} ×{c}" for n, c in top_tools
+    )
+    symbols_touched = len(by_symbol)
+
     return (
         f"<div class='lg-tool-wrap'>"
         f"<div class='lg-tool-head'>"
-        f"<span class='muted'>LLM activity</span>"
-        f"<span class='muted' style='font-weight:600;'>{len(tool_calls)} call{'s' if len(tool_calls) != 1 else ''}</span>"
+        f"<span class='muted'>LLM agent loop</span>"
+        f"<span class='muted' style='font-weight:600;'>{len(tool_calls)} call{'s' if len(tool_calls) != 1 else ''}"
+        f" · {tool_summary or '—'}"
+        f" · {symbols_touched} symbol{'s' if symbols_touched != 1 else ''}"
+        f"</span>"
         f"</div>"
         f"<div class='lg-tool-list'>{rows}</div>"
         f"</div>"
