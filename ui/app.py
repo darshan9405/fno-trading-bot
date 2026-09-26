@@ -343,6 +343,35 @@ def _css() -> str:
     .lead-toolbar {{
       display: flex; flex-direction: column; gap: 6px; margin: 4px 0 12px 0;
     }}
+
+    /* Top-level summary strip: 4 cells (Queued / Placed / Skipped / Expired).
+       Always visible, so the user has the overall state without
+       scrolling. Cells collapse to a 2x2 grid on narrow screens. */
+    .lead-summary {{
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      margin: 8px 0 14px 0;
+    }}
+    .lead-summary-cell {{
+      background: {CARD}; border: 1px solid {BORDER};
+      border-radius: 6px; padding: 8px 10px;
+      text-align: center;
+    }}
+    .lead-summary-num {{
+      font-size: 1.4rem; font-weight: 800;
+      color: {TEXT}; line-height: 1.1;
+      font-variant-numeric: tabular-nums;
+    }}
+    .lead-summary-lbl {{
+      font-size: 0.65rem; text-transform: uppercase;
+      letter-spacing: .08em; color: {MUTED};
+      font-weight: 700; margin-top: 2px;
+    }}
+    @media (max-width: 540px) {{
+      .lead-summary {{ grid-template-columns: repeat(2, 1fr); }}
+    }}
+
     .lead-section-header {{
       display: flex; align-items: center; justify-content: space-between;
       gap: 10px; margin: 14px 0 6px 0;
@@ -395,6 +424,49 @@ def _css() -> str:
     }}
     .lead-score-bar {{ flex: 1; }}
     .lead-score-meta {{ color: {MUTED}; font-size: 0.7rem; margin-top: 3px; display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; }}
+
+    /* Inline reason strip — the most important piece of info on the
+       card. Thin accent left-border with a label and the explanation
+       in plain English so users don't need to open a modal to see
+       WHY this lead was generated/skipped. */
+    .lead-reason {{
+      margin-top: 10px; padding: 7px 11px;
+      background: #050505; border: 1px solid {BORDER};
+      border-left: 3px solid {PRIMARY};
+      border-radius: 3px;
+      display: flex; align-items: flex-start; gap: 6px;
+      flex-wrap: wrap;
+    }}
+    .lead-reason-label {{
+      font-size: 0.7rem; text-transform: uppercase;
+      letter-spacing: .06em; font-weight: 700;
+      flex-shrink: 0; padding-top: 1px;
+    }}
+    .lead-reason-body {{
+      color: {TEXT}; font-size: 0.86rem; line-height: 1.45;
+      flex: 1; min-width: 0;
+    }}
+
+    /* Top-3 score components as compact chips */
+    .lead-sb-row {{
+      display: flex; align-items: center; gap: 8px;
+      margin-top: 6px; flex-wrap: wrap;
+    }}
+    .lead-sb-chip {{
+      background: #050505; color: {TEXT};
+      border: 1px solid {BORDER}; border-radius: 2px;
+      padding: 2px 7px; font-size: 0.72rem; font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }}
+    .lead-sb-chip b {{ color: {PRIMARY}; margin-left: 2px; }}
+
+    /* Tool-call count strip — tells the user there's more inside the modal */
+    .lead-tc-strip {{
+      margin-top: 6px; font-size: 0.74rem;
+      color: {MUTED}; line-height: 1.4;
+    }}
+    .lead-tc-strip b {{ color: {PRIMARY}; font-weight: 700; }}
+
     .lead-note {{
       margin-top: 8px; padding: 6px 10px;
       background: #050505; border: 1px solid {BORDER};
@@ -582,9 +654,82 @@ def _css() -> str:
       .stApp {{ max-width: 100%; padding: 0 4px; }}
       .stat-tile {{ padding: 8px 10px; }}
       .stat-value {{ font-size: 1.0rem; }}
+
+      /* Lead cards: tighter padding, smaller symbols, full-width
+         chips so they wrap cleanly on narrow screens. */
       .lead-card {{ padding: 10px 12px; }}
       .lead-symbol {{ font-size: 0.92rem; }}
+      .lead-chips {{ gap: 4px; }}
+      .lead-chips .badge {{ font-size: 0.68rem; padding: 2px 6px; }}
+      .lead-plan {{ gap: 6px 12px; }}
+      .lead-plan > div {{ font-size: 0.78rem; }}
+      .lead-time {{ font-size: 0.7rem; }}
+
+      /* Reason strip: keep readable but allow wrap */
+      .lead-reason {{ padding: 6px 9px; }}
+      .lead-reason-body {{ font-size: 0.82rem; }}
+
+      /* Score chips: smaller, still readable */
+      .lead-sb-chip {{ font-size: 0.68rem; padding: 1px 6px; }}
+
+      /* Inline generate button — already use_container_width, but
+         ensure min 44px touch target */
+      .lead-toolbar .stButton > button[kind="primary"] {{
+        min-height: 44px; font-size: 0.92rem;
+      }}
+
+      /* Summary strip on mobile already collapses to 2-col above */
+      .lead-summary-num {{ font-size: 1.2rem; }}
+
       .row {{ flex-wrap: wrap; gap: 10px; justify-content: flex-start; }}
+
+      /* "Look up by ID" expander: stack the input + button vertically */
+      [data-testid="stExpander"] {{
+        border-radius: 4px;
+      }}
+    }}
+
+    /* Extra-tight mobile breakpoint for small phones */
+    @media (max-width: 480px) {{
+      /* Summary becomes a single tight row */
+      .lead-summary {{ grid-template-columns: repeat(2, 1fr); gap: 6px; }}
+      .lead-summary-cell {{ padding: 6px 8px; }}
+      .lead-summary-num {{ font-size: 1.1rem; }}
+      .lead-summary-lbl {{ font-size: 0.6rem; }}
+
+      /* Lead card header: symbol on its own line, chips below */
+      .lead-head {{ flex-direction: column; align-items: flex-start; gap: 6px; }}
+      .lead-time {{ align-self: flex-end; }}
+    }}
+
+    /* Lead-detail dialog: full-width on phones, larger viewport on
+       desktop. Streamlit renders the dialog inside a portal; the
+       modal panel is the section > div with the title row + content. */
+    div[role="dialog"] section,
+    [data-testid="stDialog"] section {{
+      max-width: 720px;
+    }}
+    @media (max-width: 768px) {{
+      div[role="dialog"], [data-testid="stDialog"] {{
+        max-width: 100vw !important;
+        width: 100vw !important;
+        margin: 0 !important;
+        border-radius: 0 !important;
+      }}
+      div[role="dialog"] section,
+      [data-testid="stDialog"] section {{
+        max-width: 100vw;
+        width: 100vw;
+        padding: 12px 14px !important;
+      }}
+    }}
+    /* Tighter content padding inside the dialog on mobile so the
+       scrollable content area isn't dominated by gaps */
+    @media (max-width: 768px) {{
+      [data-testid="stDialog"] .stMarkdown {{ margin-bottom: 6px; }}
+      [data-testid="stDialog"] [data-testid="stExpander"] summary {{
+        font-size: 0.84rem;
+      }}
     }}
     </style>
     """
@@ -766,18 +911,7 @@ def render_login():
     # top-frame navigation pattern that works inside Streamlit's sandboxed
     # iframe. JS-clicking a hidden top-doc anchor is silently dropped by
     # modern browsers (no allow-top-navigation).
-    features_html = "".join(
-        f"<li><span class='login-feat-dot'></span>"
-        f"<div><b>{_html_escape(title)}</b>"
-        f"<div class='login-feat-sub'>{_html_escape(sub)}</div></div></li>"
-        for title, sub in [
-            ("LLM in the loop", "Breakout detector calls real-time tools for indicators, news, and option chain."),
-            ("Risk first", "Every position has a bot SL with a tight ratchet trail; a one-tap killswitch squares off."),
-            ("Full audit trail", "Every SL change, fill, and broker mismatch is logged for post-trade review."),
-        ]
-    )
-
-    st.html(_login_css() + _login_card_html(api.login_url(), features_html, error_html))
+    st.html(_login_css() + _login_card_html(api.login_url(), error_html))
 
 
 def _login_css() -> str:
@@ -849,35 +983,6 @@ def _login_css() -> str:
       width: 8px; height: 8px; border-radius: 50%;
       background: {LOSS}; flex-shrink: 0;
     }}
-    .login-divider {{
-      display: flex; align-items: center; gap: 12px;
-      margin: 22px 0 14px 0; color: {MUTED}; font-size: 0.74rem;
-      text-transform: uppercase; letter-spacing: .12em; font-weight: 700;
-    }}
-    .login-divider::before, .login-divider::after {{
-      content: ''; flex: 1; height: 1px; background: {BORDER};
-    }}
-    .login-features {{
-      list-style: none; padding: 0; margin: 0;
-      display: flex; flex-direction: column; gap: 10px;
-    }}
-    .login-features li {{
-      display: flex; align-items: flex-start; gap: 11px;
-      padding: 10px 12px;
-      background: {BG};
-      border: 1px solid {BORDER}; border-radius: 4px;
-    }}
-    .login-feat-dot {{
-      width: 6px; height: 6px; border-radius: 50%;
-      background: {PRIMARY};
-      flex-shrink: 0; margin-top: 7px;
-    }}
-    .login-features b {{
-      color: {TEXT}; font-weight: 600; font-size: 0.93rem;
-    }}
-    .login-feat-sub {{
-      color: {MUTED}; font-size: 0.82rem; margin-top: 2px; line-height: 1.4;
-    }}
     .login-foot {{
       margin-top: 18px; text-align: center;
       color: {MUTED}; font-size: 0.78rem; line-height: 1.5;
@@ -891,7 +996,7 @@ def _login_css() -> str:
     """
 
 
-def _login_card_html(login_url: str, features_html: str, error_html: str) -> str:
+def _login_card_html(login_url: str, error_html: str) -> str:
     """HTML body of the login card. Concatenated with `_login_css()` so the
     whole surface lands in a single `st.html()` call (avoids the two-`unsafe_allow_html`
     bug where the second block renders as escaped text)."""
@@ -917,10 +1022,6 @@ def _login_card_html(login_url: str, features_html: str, error_html: str) -> str
           </svg>
           Continue with Upstox SSO
         </a>
-        <div class='login-divider'>
-          <span>What you get</span>
-        </div>
-        <ul class='login-features'>{features_html}</ul>
         <div class='login-foot'>
           You'll be redirected to Upstox, then back here.
           Your tokens never touch this dashboard's storage.
@@ -1427,6 +1528,28 @@ def render_leads():
     _render_generate_lead_button("leads_tab")
     _html("</div>")
 
+    # Manual lead-detail lookup: useful when the leads list endpoint is
+    # failing (e.g. mid-deploy) but you still want to drill into a
+    # specific lead. Just type the lead ID and click Open.
+    with st.expander("Look up a lead by ID", expanded=False):
+        _lookup_l, _lookup_r = st.columns([3, 1], vertical_alignment="bottom")
+        with _lookup_l:
+            lookup_id = st.number_input(
+                "Lead ID",
+                min_value=1,
+                step=1,
+                key="lead_lookup_id",
+                label_visibility="visible",
+            )
+        with _lookup_r:
+            if st.button(
+                "Open",
+                type="primary",
+                use_container_width=True,
+                key="lead_lookup_open",
+            ):
+                st.session_state["open_lead_dialog"] = int(lookup_id)
+
     # Now try to load the lead list. We surface the API error rather than
     # hiding it behind a generic warning so the user knows whether the
     # outage is auth (re-login) or transient (just refresh).
@@ -1447,9 +1570,15 @@ def render_leads():
             )
             with st.expander("Response body"):
                 st.code(err.get("body") or "(empty)", language=None)
+        # Still allow opening the modal: the manual lookup expander can
+        # pass an ID straight in without a list response.
         return
     rows = resp["data"].get("leads", [])
     lead_count = len(rows)
+    # Cache for `_open_lead_detail_modal`'s fallback row lookup. Stored
+    # at top level so the modal can find the matching row without
+    # re-fetching the list.
+    st.session_state["_last_leads_rows"] = rows
 
     # Compact queued-signals table — quick scan of today's pending signals
     # before the richer detail cards. Same data the Dashboard used to show.
@@ -1493,6 +1622,31 @@ def render_leads():
 
     # Split into active (queued) and skipped
     skipped_rows = [r for r in rows if r.get("status") == "skipped"]
+    placed_rows = [r for r in rows if r.get("status") == "placed"]
+    expired_rows = [r for r in rows if r.get("status") == "expired"]
+
+    # Top-level summary strip — counts at a glance, so the user can
+    # see the overall state without scrolling through every card.
+    _html(
+        f"<div class='lead-summary'>"
+        f"<div class='lead-summary-cell'>"
+        f"<div class='lead-summary-num'>{len(queued_rows)}</div>"
+        f"<div class='lead-summary-lbl'>Queued</div>"
+        f"</div>"
+        f"<div class='lead-summary-cell'>"
+        f"<div class='lead-summary-num' style='color:{PROFIT};'>{len(placed_rows)}</div>"
+        f"<div class='lead-summary-lbl'>Placed</div>"
+        f"</div>"
+        f"<div class='lead-summary-cell'>"
+        f"<div class='lead-summary-num' style='color:{WARN};'>{len(skipped_rows)}</div>"
+        f"<div class='lead-summary-lbl'>Skipped</div>"
+        f"</div>"
+        f"<div class='lead-summary-cell'>"
+        f"<div class='lead-summary-num' style='color:{MUTED};'>{len(expired_rows)}</div>"
+        f"<div class='lead-summary-lbl'>Expired</div>"
+        f"</div>"
+        f"</div>"
+    )
 
     # --- Active Leads (rich detail cards) ---
     _html(
@@ -1501,8 +1655,8 @@ def render_leads():
         f"<div class='lead-section-count'>{len(queued_rows)} waiting</div>"
         f"</div>"
     )
-    if active_rows:
-        for r in active_rows:
+    if queued_rows:
+        for r in queued_rows:
             _render_lead_card(r, show_note=False)
             _render_lead_detail_button(r)
     else:
@@ -1522,15 +1676,9 @@ def render_leads():
     else:
         _html("<div class='muted' style='padding:6px 2px;'>No skipped leads in retention window.</div>")
 
-    # Lead-detail dialog hook: opened by the "Why this lead?" button under
-    # each card. We need the full lead dict from the list payload to fall
-    # back on if the per-id fetch fails, so build an id→row map and pass
-    # the right one in.
-    open_id = st.session_state.pop("open_lead_dialog", None)
-    if open_id:
-        row_by_id = {int(r.get("id")): r for r in rows if r.get("id") is not None}
-        fallback = row_by_id.get(int(open_id), {"id": open_id})
-        _render_lead_detail_dialog(int(open_id), fallback)
+    # Lead-detail dialog is invoked from `main()` at script top level
+    # — Streamlit's @st.dialog decorator requires top-level calls.
+    # `render_leads` only sets `session_state["open_lead_dialog"]`.
 
 
 @st.dialog("Delete all leads")
@@ -1579,11 +1727,19 @@ def _render_purge_leads_dialog(lead_count: int):
 
 
 def _render_lead_card(r: dict, show_note: bool = False):
-    """Render a single lead card. Single-column mobile-first layout."""
+    """Render a single lead card. Single-column mobile-first layout.
+
+    The card shows the LEAD's REASON inline so the user can read it
+    without opening a modal — the most common question ("why was this
+    generated?") should not require a click. The full detail (tool
+    calls, score breakdown, trade row) lives behind the
+    "Why this lead?" button which opens the modal.
+    """
     created_ist = (
         r.get("created_at_ist_label")
         or _utc_to_ist_hm(r.get("created_at"))
     )
+    status = r.get("status") or "?"
     direction_class = "up" if r["direction"] == "CALL" else "down"
     status_class = "warn" if r["status"] == "queued" else "muted"
     card_class = "queued" if r["status"] == "queued" else "skipped"
@@ -1622,6 +1778,32 @@ def _render_lead_card(r: dict, show_note: bool = False):
 
     instrument_html = _lead_plan_line(r)
 
+    # Build a short inline "reason" string from the best signal we
+    # have, so the user can read WHY the lead was generated/skipped
+    # without opening the modal. Same precedence as the modal:
+    # `note` → first sentence of LLM rationale → components+confidence
+    # fallback.
+    meta = r.get("meta") or {}
+    note = r.get("note")
+    inline_reason_text = (
+        note
+        or _first_sentence(meta.get("llm_rationale"))
+        or _format_reason_fallback(meta, pct)
+    )
+    reason_titles = {
+        "queued": "Generated",
+        "placed": "Traded",
+        "skipped": "Skipped",
+        "expired": "Expired",
+    }
+    reason_title = reason_titles.get(status, f"Status: {status}")
+    reason_color = {
+        "queued":  PRIMARY,
+        "placed":  PROFIT,
+        "skipped": WARN,
+        "expired": MUTED,
+    }.get(status, MUTED)
+
     note_html = ""
     if show_note and r.get("note"):
         note_html = (
@@ -1632,6 +1814,51 @@ def _render_lead_card(r: dict, show_note: bool = False):
             f"<div class='lead-note' style='background:rgba(34,211,238,.08);"
             f"border-color:rgba(34,211,238,.35);color:#a5f3fc;'>"
             f"ℹ {r['note']}</div>"
+        )
+
+    # Top-3 score components as small chips so the user can see at a
+    # glance *what* drove the confidence (pattern fit / volume /
+    # trend alignment, etc).
+    sb_rows = (r.get("score_breakdown") or [])[:3]
+    sb_html = ""
+    if sb_rows:
+        chips = "".join(
+            f"<span class='lead-sb-chip'>"
+            f"<span class='muted'>{_html_escape(str(r_.get('label') or r_.get('key') or '?'))}</span>"
+            f" <b>{float(r_.get('contribution') or 0):.2f}</b>"
+            f"</span>"
+            for r_ in sb_rows
+        )
+        sb_html = (
+            f"<div class='lead-sb-row'>"
+            f"<span class='muted' style='font-size:0.66rem;text-transform:uppercase;"
+            f"letter-spacing:.06em;'>Score</span>{chips}</div>"
+        )
+
+    # Inline reason strip: a thin accent-bordered line at the top of
+    # the body section explaining why this lead exists in plain
+    # English. This is the single most important piece of info on
+    # the card.
+    reason_html = (
+        f"<div class='lead-reason' style='border-left-color:{reason_color};'>"
+        f"<span class='lead-reason-label' style='color:{reason_color};'>"
+        f"{_html_escape(reason_title)} because</span>"
+        f"<span class='lead-reason-body'>{_html_escape(inline_reason_text)}</span>"
+        f"</div>"
+    )
+
+    # Tool-call summary strip — show count of tool calls stored in
+    # meta so the user knows there's activity to drill into.
+    tc_list = meta.get("llm_tool_calls") or []
+    tc_count = len(tc_list)
+    tc_strip = ""
+    if tc_count:
+        tc_strip = (
+            f"<div class='lead-tc-strip'>"
+            f"<span class='muted'>Agent loop:</span> "
+            f"<b>{tc_count}</b> tool call{'s' if tc_count != 1 else ''} "
+            f"captured — open the modal for the full log."
+            f"</div>"
         )
 
     _html(
@@ -1651,6 +1878,8 @@ def _render_lead_card(r: dict, show_note: bool = False):
           </div>
           {instrument_html}
           {f"<div class='lead-plan'>{plan_html}</div>" if plan_pairs else ""}
+          {reason_html}
+          {sb_html}
           <div class='lead-score-row'>
             <span class='badge {badge_color}' style='flex-shrink:0;'>{pct}%</span>
             <div class='lead-score-bar'>
@@ -1660,6 +1889,7 @@ def _render_lead_card(r: dict, show_note: bool = False):
               <div class='lead-score-meta'><span>Confidence</span><span>{score_label}</span></div>
             </div>
           </div>
+          {tc_strip}
           {note_html}
         </div>
         """
@@ -1667,11 +1897,12 @@ def _render_lead_card(r: dict, show_note: bool = False):
 
 
 def _render_lead_detail_button(r: dict) -> None:
-    """Small "Why this lead?" button under each card.
+    """Primary "Why this lead?" button below each card.
 
-    On click, opens the lead-detail dialog (`_render_lead_detail_dialog`)
-    which shows the full reason, LLM rationale, tool-call log, indicators,
-    score breakdown, and (if placed) the trade row.
+    Full-width, primary-coloured so it can't be missed on mobile. On
+    click, opens the lead-detail dialog (`_render_lead_detail_dialog`)
+    which shows the full reason, LLM rationale, tool-call log,
+    indicators, score breakdown, and (if placed) the trade row.
     """
     lead_id = r.get("id")
     if not lead_id:
@@ -1679,11 +1910,35 @@ def _render_lead_detail_button(r: dict) -> None:
     btn = st.button(
         "Why this lead?",
         key=f"why_lead_{lead_id}",
-        type="secondary",
-        use_container_width=False,
+        type="primary",
+        use_container_width=True,
+        help="See the full LLM reasoning, tool calls, score breakdown, and trade (if placed).",
     )
     if btn:
         st.session_state["open_lead_dialog"] = int(lead_id)
+
+
+def _open_lead_detail_modal(lead_id: int) -> None:
+    """Top-level entry point that opens the lead-detail modal.
+
+    `render_leads` sets `session_state["open_lead_dialog"]` when the user
+    clicks the inline button (or the manual lookup expander). `main()`
+    sees the flag and invokes THIS function at script top level —
+    Streamlit's @st.dialog decorator requires the function call to be at
+    top level (not nested at the end of another function) for the modal
+    to actually render.
+
+    The function builds a "best-effort" fallback row from the latest
+    leads list response (if present in session_state) so the dialog has
+    something to render even if the per-id endpoint is down.
+    """
+    fallback_row: dict = {"id": lead_id}
+    cached_rows: list[dict] = st.session_state.get("_last_leads_rows") or []
+    for r in cached_rows:
+        if int(r.get("id") or 0) == lead_id:
+            fallback_row = r
+            break
+    _render_lead_detail_dialog(lead_id, fallback_row)
 
 
 @st.dialog("Lead detail", width="large")
@@ -1702,16 +1957,22 @@ def _render_lead_detail_dialog(lead_id: int, fallback_row: dict) -> None:
     """
     # Lazy-fetch the full detail. Falls back to the list-row meta if the
     # per-id endpoint is unavailable (e.g. 500 on the leads endpoint).
-    resp = api.get_lead_detail(lead_id)
+    with st.spinner("Loading lead detail…"):
+        resp = api.get_lead_detail(lead_id)
     if resp.get("status") != "ok":
+        err = resp.get("error") or {}
+        st.warning(
+            f"Could not load full detail (`{err.get('code', 'error')}`). "
+            f"Showing slim summary from the list payload."
+        )
         meta = fallback_row.get("meta") or {}
         _render_lead_detail_body(meta, fallback_row, fallback_meta=True)
     else:
         data = resp.get("data") or {}
         meta = data.get("meta") or {}
         _render_lead_detail_body(meta, data, fallback_meta=False)
-    if st.button("Close", type="secondary", key=f"close_lead_dialog_{lead_id}"):
-        st.session_state.pop("open_lead_dialog", None)
+    col1, col2 = st.columns([1, 4])
+    if col1.button("Close", type="secondary", key=f"close_lead_dialog_{lead_id}"):
         st.rerun()
 
 
@@ -2227,8 +2488,9 @@ def _render_llm_tool_calls_timeline(tool_calls: list[dict]) -> str:
           → breakout calc   iter 2
           → option chain    iter 3
 
-    Lets the user see *the full agent journey per instrument* without
-    having to read the raw stream.
+    Mobile-first: only the latest 4 symbols are shown inline. The full
+    list lives inside a `<details>` so it doesn't blow up the
+    viewport on phones.
     """
     if not tool_calls:
         return ""
@@ -2247,8 +2509,7 @@ def _render_llm_tool_calls_timeline(tool_calls: list[dict]) -> str:
         "option_chain_summary": "option chain",
     }
 
-    rows = []
-    for sym, calls in grouped.items():
+    def _sym_block(sym: str, calls: list[dict]) -> str:
         steps = "".join(
             f"<span class='lg-tl-step'>"
             f"<span class='muted'>→</span> "
@@ -2257,7 +2518,7 @@ def _render_llm_tool_calls_timeline(tool_calls: list[dict]) -> str:
             f"</span>"
             for c in calls
         )
-        rows.append(
+        return (
             f"<div class='lg-tl-sym'>"
             f"<span class='lg-tl-name'>{_html_escape(sym)}</span>"
             f"<span class='lg-tl-count'>{len(calls)} step{'s' if len(calls) != 1 else ''}</span>"
@@ -2265,13 +2526,33 @@ def _render_llm_tool_calls_timeline(tool_calls: list[dict]) -> str:
             f"<div class='lg-tl-steps'>{steps}</div>"
         )
 
+    sym_list = list(grouped.items())  # [(sym, [calls...]), ...]
+    PREVIEW_SYMS = 4
+    preview_syms = sym_list[-PREVIEW_SYMS:]  # most recent N
+    full_syms = sym_list
+    total = len(sym_list)
+
+    rows_preview = "".join(_sym_block(s, c) for s, c in preview_syms)
+    rows_full = "".join(_sym_block(s, c) for s, c in full_syms)
+
+    if total > PREVIEW_SYMS:
+        rows_block = (
+            f"<div class='lg-tl-list'>{rows_preview}</div>"
+            f"<details class='lg-tl-more'>"
+            f"<summary>+ {total - PREVIEW_SYMS} earlier symbol{'s' if (total - PREVIEW_SYMS) != 1 else ''}</summary>"
+            f"<div class='lg-tl-list' style='margin-top:6px;'>{rows_full}</div>"
+            f"</details>"
+        )
+    else:
+        rows_block = f"<div class='lg-tl-list'>{rows_preview}</div>"
+
     return (
         f"<div class='lg-tl-wrap'>"
         f"<div class='lg-tl-head'>"
         f"<span class='muted'>Per-symbol timeline</span>"
-        f"<span class='muted' style='font-weight:600;'>{len(grouped)} symbol{'s' if len(grouped) != 1 else ''}</span>"
+        f"<span class='muted' style='font-weight:600;'>{total} symbol{'s' if total != 1 else ''}</span>"
         f"</div>"
-        f"<div class='lg-tl-list'>{''.join(rows)}</div>"
+        f"{rows_block}"
         f"</div>"
     )
 
@@ -2375,7 +2656,14 @@ def _render_llm_tool_calls(tool_calls: list[dict]) -> str:
             f"</div>"
         )
 
-    rows = "".join(_row(tc, i) for i, tc in enumerate(tool_calls[:8]))
+    # Mobile-first: show only the LATEST 3 tool call rows by default
+    # (the rest is usually the same `indicators` call repeated per
+    # symbol — fills the viewport without telling the user anything
+    # new). The full log is still rendered below in a `<details>`
+    # block so a click reveals every call.
+    PREVIEW_ROWS = 3
+    preview_rows_html = "".join(_row(tc, i) for i, tc in enumerate(tool_calls[:PREVIEW_ROWS]))
+    full_rows_html = "".join(_row(tc, i) for i, tc in enumerate(tool_calls))
 
     # Group count by tool name + symbol for the summary line.
     by_tool: dict[str, int] = {}
@@ -2391,6 +2679,20 @@ def _render_llm_tool_calls(tool_calls: list[dict]) -> str:
     )
     symbols_touched = len(by_symbol)
 
+    # Build the rows block. Preview is inline; full list lives inside
+    # a `<details>` so the panel stays compact on mobile.
+    total = len(tool_calls)
+    if total > PREVIEW_ROWS:
+        rows_block = (
+            f"<div class='lg-tool-list'>{preview_rows_html}</div>"
+            f"<details class='lg-tool-more'>"
+            f"<summary>+ {total - PREVIEW_ROWS} more call{'s' if (total - PREVIEW_ROWS) != 1 else ''}</summary>"
+            f"<div class='lg-tool-list' style='margin-top:6px;'>{full_rows_html}</div>"
+            f"</details>"
+        )
+    else:
+        rows_block = f"<div class='lg-tool-list'>{preview_rows_html}</div>"
+
     return (
         f"<div class='lg-tool-wrap'>"
         f"<div class='lg-tool-head'>"
@@ -2400,7 +2702,7 @@ def _render_llm_tool_calls(tool_calls: list[dict]) -> str:
         f" · {symbols_touched} symbol{'s' if symbols_touched != 1 else ''}"
         f"</span>"
         f"</div>"
-        f"<div class='lg-tool-list'>{rows}</div>"
+        f"{rows_block}"
         f"</div>"
     )
 
@@ -3248,6 +3550,16 @@ def main():
 
     st.markdown(_css(), unsafe_allow_html=True)
     page = render_sidebar()
+
+    # Lead-detail dialog: invoked at the TOP LEVEL of the script (not
+    # nested at the bottom of `render_leads`) so Streamlit always
+    # renders it as a modal overlay. `render_leads` only sets the
+    # `open_lead_dialog` session_state flag; the actual call happens
+    # here.
+    open_id = st.session_state.get("open_lead_dialog")
+    if open_id:
+        st.session_state.pop("open_lead_dialog", None)
+        _open_lead_detail_modal(int(open_id))
 
     # Page title with status dot
     ks_active = api.get_killswitch().get("data", {}).get("active", False)
