@@ -391,7 +391,19 @@ def close_trade(session, trade: Trade, *, exit_price: float, exit_reason: str,
 
 def square_off(session, broker, trade: Trade, reason: str = "sqoff",
                closure_cause: str | None = CLOSURE_CAUSE_SQOFF_SESSION) -> float:
-    """Exit an open trade with a market SELL, record the order, close the trade.
+    """Exit an open trade with a STOP-LOSS-LIMIT SELL, record the order, close the trade.
+
+    Upstox rejects MARKET SELL orders through the API in most cases (the
+    exchange still books them, but UDAPI frequently returns UDAPI1028
+    "Order type not allowed for this scrip"). To stay reliable we ALWAYS
+    exit via a `SL` (Stop-Loss-Limit) order:
+
+      - `trigger_price` is the live LTP (slightly above so it fires now —
+        one tick higher, snapped to the option tick).
+      - `price` is the limit, placed strictly below `trigger_price` per the
+        SL price band rule. We cap how far below we go with
+        `SQOFF_SL_LIMIT_OFFSET_PCT` (default 1.0%) so a sudden crash doesn't
+        leave us holding a SELL @ ₹0 while the option is worth ₹200.
 
     Cancels the open SL first to prevent a double-exit (the broker SL trigger
     could fire milliseconds after we send the cancel). The cancel is best-effort:
@@ -413,21 +425,66 @@ def square_off(session, broker, trade: Trade, reason: str = "sqoff",
         # a now-stale order id at the broker.
         trade.sl_order_id = None
     trade.lifecycle_stage = LIFECYCLE_EXITING
+
+    # Fetch LTP and build the SL-limit parameters. If we can't get an LTP we
+    # *fall back* to LIMIT at the current `current_sl` so we still try to exit
+    # — never raise from a sqoff (killswitch would deadlock).
+    sqoff_ltp = (broker.get_ltp([trade.option_instrument_key]) or {}).get(
+        trade.option_instrument_key
+    )
+    from app.config import Config as _Cfg
+    limit_offset_pct = float(getattr(_Cfg, "SQOFF_SL_LIMIT_OFFSET_PCT", 1.0) or 1.0)
+    instrument_tick = 0.0
+    try:
+        from app.services.contract_service import option_tick_for_instrument
+        instrument_tick = option_tick_for_instrument(broker, trade.option_instrument_key)
+    except Exception:
+        instrument_tick = 0.0
+
+    if sqoff_ltp is None or sqoff_ltp <= 0:
+        # Last-resort fallback: place a plain LIMIT at current_sl. Still no
+        # MARKET — Upstox has been refusing those via API.
+        log.warning(
+            "trade_service: no LTP for trade %s sqoff; falling back to LIMIT @ current_sl=%.2f",
+            trade.id, trade.current_sl,
+        )
+        order_type = "LIMIT"
+        trigger_price = 0.0
+        tick = option_tick_for(trade.current_sl, instrument_tick)
+        limit_price = max(round_to_tick(trade.current_sl - tick, tick), tick)
+    else:
+        tick = option_tick_for(sqoff_ltp, instrument_tick)
+        # Trigger = LTP + 1 tick so it fires immediately when the limit book
+        # reaches the live price. Cap to avoid overshooting in fast markets.
+        trigger_price = round_to_tick(sqoff_ltp + tick, tick)
+        offset = max(0.05, limit_offset_pct)  # never tighter than 1 tick
+        limit_price = round_to_tick(sqoff_ltp * (1.0 - offset / 100.0), tick)
+        # Hard guarantee: limit strictly below trigger (Upstox UDAPI1038).
+        if limit_price >= trigger_price:
+            limit_price = sl_price_below_trigger(trigger_price, tick)
+        order_type = "SL"
+
+    log.info("trade_service: placing sqoff for trade %s type=%s qty=%s trigger=%.2f limit=%.2f",
+             trade.id, order_type, trade.quantity, trigger_price, limit_price)
     order_id = broker.place_order(
         OrderRequest(
             instrument_key=trade.option_instrument_key,
             transaction_type="SELL",
             quantity=trade.quantity,
             product=PRODUCT,
-            order_type="MARKET",
+            order_type=order_type,
+            price=limit_price,
+            trigger_price=trigger_price,
             tag=f"trade-{trade.id}",
         )
     )
     exit_price = derive_exit_price(broker, trade, sqoff_id=order_id)
     record_order(
-        session, order_id=order_id, trade_id=trade.id, order_type="MARKET", transaction_type="SELL",
+        session, order_id=order_id, trade_id=trade.id, order_type=order_type,
+        transaction_type="SELL",
         instrument_token=trade.option_instrument_key, quantity=trade.quantity, tag=f"trade-{trade.id}",
         average_price=exit_price, tradingsymbol=trade.tradingsymbol,
+        trigger_price=trigger_price, price=limit_price,
     )
     close_trade(session, trade, exit_price=exit_price, exit_reason=reason, closure_cause=closure_cause)
     log.info("trade_service: square-off completed trade %s | exit=%.2f pnl=%.2f",

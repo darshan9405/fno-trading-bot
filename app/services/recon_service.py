@@ -148,6 +148,26 @@ def reconcile_open_trades(broker) -> dict:
                     skipped.append({"trade_id": trade_id, "symbol": symbol,
                                     "reason": "no_exit_price"})
                     continue
+                # Drift audit: log the closure reason + exit price we ended up
+                # with. This lets the post-trade UI render "broker had a manual
+                # SELL at ₹X, we recorded ₹Y" cleanly.
+                try:
+                    from app.services.drift_service import record_drift
+                    record_drift(
+                        drift_type="position_missing",
+                        trade_id=trade.id,
+                        instrument_token=trade.option_instrument_key,
+                        severity="info",
+                        detail=(f"reconciler closed trade {trade.id} ({trade.tradingsymbol}); "
+                                f"reason={exit_reason} exit_price={exit_price}"),
+                        expected={"status": "open"},
+                        actual={"status": "closed", "reason": exit_reason,
+                                "exit_price": exit_price,
+                                "broker_order_id": broker_order_id},
+                        source="reconciler",
+                    )
+                except Exception:  # noqa: BLE001 — drift logging is best-effort
+                    pass
                 trade_service.set_lifecycle_stage(trade, trade_service.LIFECYCLE_EXITING)
                 closure_cause = (
                     trade_service.CLOSURE_CAUSE_RECON_USER_SL_FILLED

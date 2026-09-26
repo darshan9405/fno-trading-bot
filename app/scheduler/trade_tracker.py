@@ -101,6 +101,15 @@ def process_trade(session, broker, trade: Trade, sl_pct: float, activate_pct: fl
 
     trade.last_broker_check_at = health_service.utcnow()
 
+    # 1b. Drift audit — append any DB-vs-broker discrepancies to the drift log
+    # so the post-trade UI can show *why* a trade diverged from plan. This is
+    # best-effort: drift_service swallows its own errors.
+    try:
+        from app.services.drift_service import reconcile_against_broker
+        reconcile_against_broker(broker, trade)
+    except Exception as e:  # noqa: BLE001
+        log.warning("trade_tracker: drift audit failed for trade %s: %s", trade.id, e)
+
     # 2 + 3. Reconcile broker order book. This is the ONE place that closes the
     # trade. We never close on our own LTP-vs-current_sl check; the broker SL
     # order handles the LTP cross and we observe the fill here.

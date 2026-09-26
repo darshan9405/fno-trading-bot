@@ -177,6 +177,48 @@ def get_leads(status: str | None = None, date: str | None = None, sort: str | No
     return api("GET", path)
 
 
+def get_lead_detail(lead_id: int):
+    """Per-lead detail for the "Why this lead?" expander.
+
+    Returns the same shape as a single item in `get_leads` plus a `trade`
+    block if the lead was placed.
+    """
+    return api("GET", f"/api/trades/leads/{lead_id}")
+
+
+def get_closed_trade_detail(trade_id: int):
+    """Single closed-trade view for post-trade monitoring.
+
+    Returns the same shape as a single item in `get_closed_trades` plus a
+    `drifts` array of audit events recorded while the trade was open.
+    """
+    return api("GET", f"/api/trades/closed/{trade_id}")
+
+
+def get_drifts(trade_id: int | None = None, since: str | None = None, limit: int = 200):
+    """Drift audit events (SL mismatch, position missing, qty mismatch, …).
+
+    Used by the post-trade monitoring tile in the History tab. Pass
+    `trade_id` to scope to a single trade; `since` as an ISO datetime.
+    """
+    params = []
+    if trade_id is not None:
+        params.append(f"trade_id={trade_id}")
+    if since:
+        params.append(f"since={since}")
+    if limit:
+        params.append(f"limit={limit}")
+    path = "/api/drifts"
+    if params:
+        path += "?" + "&".join(params)
+    return api("GET", path)
+
+
+def get_drift_summary():
+    """Counts by drift_type + severity for the last 24h (header tile)."""
+    return api("GET", "/api/drifts/summary")
+
+
 def generate_leads():
     """Kick off a manual lead-generation run.
 

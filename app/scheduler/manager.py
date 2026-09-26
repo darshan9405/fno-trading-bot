@@ -51,12 +51,19 @@ def init_scheduler() -> BackgroundScheduler:
                       max_instances=1, coalesce=True)
     scheduler.add_job(run_reconciler, "interval", seconds=reconciler_seconds, id="reconciler",
                       max_instances=1, coalesce=True)
+    # Drift cleanup piggy-backs on the lead-cleanup interval. Runs in the same
+    # tick so it doesn't add a 6th scheduler job — drift rows are trimmed in
+    # the same DB transaction window. See app.services.drift_service.
+    from app.services.drift_service import cleanup_old_drifts
+    scheduler.add_job(cleanup_old_drifts, "interval", seconds=cleanup_seconds, id="drift_cleanup",
+                      max_instances=1, coalesce=True)
     scheduler.start()
     _scheduler = scheduler
     log.info(
         "schedulers started: lead_generator/%ds, trade_tracker/%ds, order_placer/%ds, "
-        "lead_cleanup/%ds, reconciler/%ds",
-        lead_seconds, track_seconds, place_seconds, cleanup_seconds, reconciler_seconds,
+        "lead_cleanup/%ds, reconciler/%ds, drift_cleanup/%ds",
+        lead_seconds, track_seconds, place_seconds, cleanup_seconds,
+        reconciler_seconds, cleanup_seconds,
     )
     return scheduler
 

@@ -413,6 +413,28 @@ class UpstoxBroker(BrokerBase):
             raise self._to_broker_error("get_option_contracts", e)
         return [to_instrument_view(i) for i in (getattr(resp, "data", None) or [])]
 
+    def get_instruments(self) -> list[InstrumentView]:
+        """Return the Upstox instrument master as InstrumentViews.
+
+        The instrument master is fetched on first use and cached for the
+        lifetime of the broker instance — it's ~50 MB in JSON and rarely
+        changes during a session. Used by `option_tick_for_instrument` to
+        resolve per-instrument tick sizes.
+        """
+        if getattr(self, "_instruments_cache", None) is not None:
+            return self._instruments_cache
+        self._require_token()
+        api = self._api(upstox_client.InstrumentsApi, "instruments")
+        try:
+            resp = api.get_instruments()
+        except ApiException as e:
+            raise self._to_broker_error("get_instruments", e)
+        views = [to_instrument_view(i) for i in (getattr(resp, "data", None) or [])]
+        # Cache the projection rather than the raw SDK objects so a later
+        # parse still uses fresh data.
+        self._instruments_cache = views
+        return views
+
     # --- account ----------------------------------------------------------
 
     def get_profile(self) -> ProfileView:

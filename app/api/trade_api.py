@@ -95,6 +95,43 @@ def closed_trades():
     return ok({"count": len(data), "trades": data})
 
 
+@bp.get("/closed/<int:trade_id>")
+@jwt_required
+def closed_trade_detail(trade_id: int):
+    """Single closed-trade detail view for the post-trade monitoring UI.
+
+    Returns the trade dict (same shape as the list endpoint) plus the
+    drift events recorded for it (any SL mismatch, position-missing,
+    qty-mismatch events that fired while the trade was open).
+    """
+    from app.models import TradeDrift
+    with session_scope() as session:
+        trade = session.get(Trade, trade_id)
+        if trade is None or trade.status != "closed":
+            return error("not_found", f"closed trade {trade_id} not found", 404)
+        data = _trade_dict(trade)
+        drifts = session.execute(
+            select(TradeDrift)
+            .where(TradeDrift.trade_id == trade_id)
+            .order_by(TradeDrift.ts.desc())
+            .limit(50)
+        ).scalars().all()
+        data["drifts"] = [
+            {
+                "id": d.id,
+                "drift_type": d.drift_type,
+                "severity": d.severity,
+                "detail": d.detail,
+                "expected": d.expected,
+                "actual": d.actual,
+                "source": d.source,
+                "ts": d.ts.isoformat() + "Z" if d.ts else None,
+            }
+            for d in drifts
+        ]
+    return ok(data)
+
+
 @bp.get("/pnl")
 @limiter.limit("120 per minute")  # dashboard polls this every 5s
 @jwt_required
@@ -142,6 +179,41 @@ def leads():
         )
         data = [_lead_dict(l) for l in rows]
     return ok({"count": len(data), "leads": data})
+
+
+@bp.get("/leads/<int:lead_id>")
+@jwt_required
+def lead_detail(lead_id: int):
+    """Single-lead detail view for the UI's "Why this lead?" expander.
+
+    Returns the full lead dict (same shape as the list endpoint) plus the
+    trade row if the lead was placed, so the operator can see both the
+    signal-level rationale and the resulting trade state.
+    """
+    with session_scope() as session:
+        lead = session.get(Lead, lead_id)
+        if lead is None:
+            return error("not_found", f"lead {lead_id} not found", 404)
+        data = _lead_dict(lead)
+        if lead.trade is not None:
+            trade = lead.trade
+            data["trade"] = {
+                "id": trade.id,
+                "status": trade.status,
+                "entry_price": trade.entry_price,
+                "entry_time": trade.entry_time.isoformat() if trade.entry_time else None,
+                "quantity": trade.quantity,
+                "initial_sl": trade.initial_sl,
+                "current_sl": trade.current_sl,
+                "exit_price": trade.exit_price,
+                "exit_time": trade.exit_time.isoformat() if trade.exit_time else None,
+                "exit_reason": trade.exit_reason,
+                "closure_cause": trade.closure_cause,
+                "realized_pnl": trade.realized_pnl,
+                "sl_order_id": trade.sl_order_id,
+                "sl_order_type": trade.sl_order_type,
+            }
+    return ok(data)
 
 
 @bp.delete("/leads")
@@ -298,6 +370,9 @@ def _lead_dict(l: Lead) -> dict:
         "premium": plan.get("premium"),
         "margin_needed": plan.get("margin_needed"),
         "spot": plan.get("spot"),
+        # Lead-detail metadata: LLM rationale + slim indicator snapshot +
+        # tool-call summary. The UI's "Why this lead?" expander renders this.
+        "meta": l.lead_meta or {},
     }
 
 

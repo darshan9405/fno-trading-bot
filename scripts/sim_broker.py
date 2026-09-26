@@ -97,6 +97,9 @@ class SimBroker(BrokerBase):
     def get_option_contracts(self, underlying_key, expiry=None):
         return [c for c in self.contracts if c.underlying_key == underlying_key]
 
+    def get_instruments(self):
+        return list(self.contracts)
+
     def get_profile(self):
         return ProfileView(user_id="sim", broker="SIM")
 

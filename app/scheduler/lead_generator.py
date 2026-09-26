@@ -58,7 +58,17 @@ def _process_one(inst, broker, strategy_cls, strategy_interval, from_date, now):
         )
         if candles is None or candles.empty:
             return (inst, [], None)
-        candidates = strategy.generate(inst, candles, now)
+        # Hand the broker + today + lot_size down so the strategy's
+        # tool-calling agent loop can reach for option-chain context if it
+        # wants to. Strategies that don't need them ignore the kwargs.
+        candidates = strategy.generate(
+            inst,
+            candles,
+            now,
+            broker=broker,
+            today=now.date(),
+            lot_size=getattr(inst, "lot_size", 1) or 1,
+        )
         return (inst, candidates, None)
     except Exception as e:  # per-instrument isolation
         return (inst, [], (str(e), traceback.format_exc()))

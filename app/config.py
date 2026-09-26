@@ -73,27 +73,31 @@ class Config:
     # / MODEL is missing. BASE_URL should be the OpenAI-compatible root
     # (no trailing slash, no path); the client appends `/chat/completions`.
     #
-    # Default points at OpenRouter (https://openrouter.ai/api/v1), which is
-    # OpenAI-compatible and lets us swap `LLM_MODEL` between providers via a
-    # single `provider/model` slug (e.g. `minimax/minimax-m3`,
-    # `anthropic/claude-3.5-sonnet`, `openai/gpt-4o`).
+    # We talk to the MiniMax M3 provider DIRECTLY (not via OpenRouter) so we
+    # keep full control over tool-calling, retries, and cost. MiniMax exposes
+    # an OpenAI-compatible chat-completions endpoint; we POST to
+    # `${LLM_BASE_URL}/chat/completions` with Bearer auth.
     LLM_API_KEY = os.getenv("LLM_API_KEY", "")
-    LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
-    LLM_MODEL = os.getenv("LLM_MODEL", "minimax/minimax-m3")
-    LLM_TIMEOUT_S = _as_float(os.getenv("LLM_TIMEOUT_S"), 30.0)
+    LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.minimax.io/v1")
+    LLM_MODEL = os.getenv("LLM_MODEL", "MiniMax-M3")
+    LLM_TIMEOUT_S = _as_float(os.getenv("LLM_TIMEOUT_S"), 60.0)
     LLM_MAX_RETRIES = _as_int(os.getenv("LLM_MAX_RETRIES"), 2)
-    # Reasoning / "thinking" controls. OpenRouter routes per-model:
-    #   * OpenAI-style models: `reasoning_effort` ("low"|"medium"|"high")
-    #   * Anthropic-style models: `reasoning.max_tokens` (int budget)
-    # Empty / 0 disables the field so non-reasoning models don't reject it.
+    # Reasoning / "thinking" controls. Empty / 0 disables the field so models
+    # that don't understand it don't reject the request.
     LLM_REASONING_EFFORT = os.getenv("LLM_REASONING_EFFORT", "medium")
     LLM_REASONING_MAX_TOKENS = _as_int(os.getenv("LLM_REASONING_MAX_TOKENS"), 2000)
-
-    # OpenRouter app-attribution headers. Optional but recommended — OpenRouter
-    # uses them for analytics and they unlock higher rate limits on some
-    # routes. Off by default: set the env vars and the client will send them.
-    OPENROUTER_APP_URL = os.getenv("OPENROUTER_APP_URL", "")
-    OPENROUTER_APP_NAME = os.getenv("OPENROUTER_APP_NAME", "")
+    # Cap the agent-loop iteration depth so a runaway tool-call sequence
+    # cannot burn the whole context budget. The detector short-circuits as
+    # soon as the model returns a final answer.
+    LLM_AGENT_MAX_ITERATIONS = _as_int(os.getenv("LLM_AGENT_MAX_ITERATIONS"), 8)
+    # Bing news search for the `fetch_news` tool. If `LLM_BING_API_KEY` is
+    # set we hit the Bing News Search API; otherwise we scrape the public
+    # Bing News search HTML (no key required).
+    LLM_BING_API_KEY = os.getenv("LLM_BING_API_KEY", "")
+    # Optional LLM provider app-attribution headers (some providers use them
+    # for analytics and rate-limit bumps). Off by default.
+    LLM_APP_URL = os.getenv("LLM_APP_URL", "")
+    LLM_APP_NAME = os.getenv("LLM_APP_NAME", "FnO Trading Bot")
 
     # API rate limiting (Flask-Limiter).
     RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "true").lower() == "true"
@@ -107,6 +111,22 @@ class Config:
 
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
     LOG_FILE = os.getenv("LOG_FILE", "logs/trading.log")
+
+    # Square-off order type. Upstox rejects plain MARKET SELL orders via the
+    # API (UDAPI1028). We always exit via a Stop-Loss-Limit (SL) order with
+    # trigger at LTP and limit priced below by `SQOFF_SL_LIMIT_OFFSET_PCT`.
+    # If LTP is unavailable we fall back to a plain LIMIT @ current_sl.
+    SQOFF_SL_LIMIT_OFFSET_PCT = _as_float(os.getenv("SQOFF_SL_LIMIT_OFFSET_PCT"), 1.0)
+    # Square-off retry policy — how many times we retry a rejected SL
+    # square-off before falling back to LIMIT.
+    SQOFF_MAX_RETRIES = _as_int(os.getenv("SQOFF_MAX_RETRIES"), 2)
+    # Minimum interval between two reconciler passes (seconds). The actual
+    # scheduler interval is also tied to this — we cap it here to avoid
+    # over-polling the broker.
+    RECONCILER_MIN_INTERVAL_S = _as_int(os.getenv("RECONCILER_MIN_INTERVAL_S"), 15)
+    # Reconciliation pass must wait this long after the entry fill before it
+    # trusts the broker positions endpoint (Upstox propagation lag).
+    RECON_MIN_AGE_MINUTES = _as_int(os.getenv("RECON_MIN_AGE_MINUTES"), 2)
 
     @property
     def is_dev(self):

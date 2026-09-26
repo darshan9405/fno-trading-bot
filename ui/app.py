@@ -788,6 +788,7 @@ def render_sidebar() -> str:
                 "Leads",
                 "Instruments",
                 "History",
+                "Drifts",
                 "Health",
                 "Settings",
             ],
@@ -1354,6 +1355,7 @@ def render_leads():
     if active_rows:
         for r in active_rows:
             _render_lead_card(r, show_note=False)
+            _render_lead_detail_expander(r)
     else:
         _html("<div class='muted' style='padding:6px 2px;'>No active queued leads right now.</div>")
 
@@ -1367,6 +1369,7 @@ def render_leads():
     if skipped_rows:
         for r in skipped_rows:
             _render_lead_card(r, show_note=True)
+            _render_lead_detail_expander(r)
     else:
         _html("<div class='muted' style='padding:6px 2px;'>No skipped leads in retention window.</div>")
 
@@ -1502,6 +1505,94 @@ def _render_lead_card(r: dict, show_note: bool = False):
         </div>
         """
     )
+
+
+def _render_lead_detail_expander(r: dict) -> None:
+    """"Why this lead?" expander — shows the LLM rationale + tool-call log.
+
+    Pulls the full lead detail (meta + trade linkage) lazily on first click
+    so the dashboard stays snappy. Falls back to the slim meta returned by
+    /api/trades/leads if the per-id fetch fails.
+    """
+    lead_id = r.get("id")
+    if not lead_id:
+        return
+    with st.expander(
+        f"Why this lead? (LLM rationale + tool calls)",
+        expanded=False,
+    ):
+        with st.spinner("Loading lead detail…"):
+            resp = api.get_lead_detail(int(lead_id))
+        if resp.get("status") != "ok":
+            # Fall back to the slim meta from the list payload.
+            meta = r.get("meta") or {}
+            _render_lead_detail_meta(meta, r)
+            st.caption("(Detail endpoint unavailable — showing slim summary.)")
+            return
+        data = resp.get("data") or {}
+        meta = data.get("meta") or {}
+        _render_lead_detail_meta(meta, data)
+        # If the lead was placed, also show the trade row.
+        trade = data.get("trade")
+        if trade:
+            _render_trade_for_lead(trade)
+
+
+def _render_lead_detail_meta(meta: dict, fallback: dict) -> None:
+    """Render the slim meta block (rationale + tool calls + indicators)."""
+    rationale = meta.get("llm_rationale")
+    if rationale:
+        st.markdown("**LLM rationale**")
+        st.info(str(rationale))
+    tool_calls = meta.get("llm_tool_calls") or []
+    if tool_calls:
+        st.markdown("**Tool calls (agent loop)**")
+        rows_html = []
+        for c in tool_calls[-10:]:
+            name = c.get("name") or "?"
+            args = c.get("args")
+            res_keys = list((c.get("result") or {}).keys())[:4]
+            rows_html.append({
+                "tool": name,
+                "args": str(args)[:120] if args else "",
+                "result_keys": ", ".join(res_keys) if res_keys else "",
+            })
+        st.dataframe(rows_html, use_container_width=True, hide_index=True)
+    indicators = meta.get("indicators") or {}
+    if indicators:
+        st.markdown("**Indicators (slim)**")
+        ind_rows = [{"key": k, "value": v} for k, v in indicators.items()]
+        st.dataframe(ind_rows, use_container_width=True, hide_index=True)
+    if not (rationale or tool_calls or indicators):
+        # Slim fallback: show whatever signal/confidence info we DO have.
+        sig_level = fallback.get("signal_level")
+        conf = fallback.get("confidence")
+        bits = []
+        if sig_level is not None:
+            bits.append(f"Signal level: **{_num(sig_level)}**")
+        if conf is not None:
+            bits.append(f"Confidence: **{int(conf * 100)}%**")
+        st.caption(" · ".join(bits) or "No rationale captured for this lead.")
+
+
+def _render_trade_for_lead(trade: dict) -> None:
+    """Compact trade block shown inside the lead-detail expander."""
+    status = trade.get("status") or "?"
+    color = PROFIT if trade.get("realized_pnl", 0) >= 0 else LOSS
+    rows = [
+        {"key": "Status", "value": status},
+        {"key": "Entry", "value": _num(trade.get("entry_price")) if trade.get("entry_price") is not None else "—"},
+        {"key": "Exit", "value": _num(trade.get("exit_price")) if trade.get("exit_price") is not None else "—"},
+        {"key": "Initial SL", "value": _num(trade.get("initial_sl")) if trade.get("initial_sl") is not None else "—"},
+        {"key": "Current SL", "value": _num(trade.get("current_sl")) if trade.get("current_sl") is not None else "—"},
+        {"key": "Exit reason", "value": trade.get("exit_reason") or "—"},
+        {"key": "Closure cause", "value": trade.get("closure_cause") or "—"},
+        {"key": "Realized P&L", "value": f"₹{(trade.get('realized_pnl') or 0):,.2f}"},
+    ]
+    st.markdown("**Trade**")
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+    if trade.get("sl_order_id"):
+        st.caption(f"SL order id: `{trade['sl_order_id']}` · type: `{trade.get('sl_order_type', '—')}`")
 
 
 def _is_job_running(job: dict | None) -> bool:
@@ -1869,8 +1960,222 @@ def render_history():
     df.columns = ["Symbol", "Dir", "Entry", "Exit", "P&L", "Reason", "Closed (IST)"]
     styled = df.style.apply(_style_pnl_col, subset=["P&L"])
     st.dataframe(styled, use_container_width=True, hide_index=True)
-    
+
+    # --- Post-Trade Monitoring -------------------------------------------
+    # Drift audit + per-trade detail. The two admin-priority questions are:
+    #  (1) Why did a trade close the way it did?  (drift events during life)
+    #  (2) What drift is the system seeing in aggregate right now?
+    _render_post_trade_monitoring(filtered)
+
     st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _render_post_trade_monitoring(filtered_rows: list[dict]) -> None:
+    """Aggregate drift tiles + per-trade drift expander for the visible rows.
+
+    Two pieces:
+      - Summary tiles (last 24h) from GET /api/drifts/summary — handy header.
+      - Per-trade expander inside a selectbox — opens /closed/<id> and shows
+        any drift events recorded for that trade.
+    """
+    st.markdown("<div class='history-mobile-header'>🛰️ Post-trade monitoring</div>",
+                unsafe_allow_html=True)
+    _html("<div class='history-divider'></div>")
+
+    # Aggregate summary
+    summary = api.get_drift_summary()
+    s_data = summary.get("data") or {} if summary.get("status") == "ok" else {}
+    by_type = s_data.get("by_type") or []
+    by_sev = s_data.get("by_severity") or []
+    total_24h = sum(int(x.get("count") or 0) for x in by_sev)
+    critical = next((int(x.get("count") or 0) for x in by_sev
+                     if x.get("severity") == "critical"), 0)
+    warn = next((int(x.get("count") or 0) for x in by_sev
+                 if x.get("severity") == "warn"), 0)
+
+    tiles = [
+        _stat_tile("Drifts (24h)", str(total_24h),
+                   color=LOSS if critical > 0 else (WARN if warn > 0 else MUTED)),
+        _stat_tile("Critical", str(critical), color=LOSS if critical else MUTED),
+        _stat_tile("Warn", str(warn), color=WARN if warn else MUTED),
+    ]
+    _html("<div class='row' style='flex-wrap:wrap;gap:10px;'>" + "".join(tiles) + "</div>")
+
+    if by_type:
+        rows_html = "".join(
+            f"<div class='row' style='justify-content:space-between;'>"
+            f"<span class='muted'>{_html_escape(str(x.get('drift_type') or '?'))}</span>"
+            f"<b>{int(x.get('count') or 0)}</b></div>"
+            for x in by_type[:8]
+        )
+        _html(
+            f"<div class='card' style='margin-top:10px;'>"
+            f"<div class='card-title'>By drift type (last 24h)</div>"
+            f"{rows_html}</div>"
+        )
+
+    # Per-trade picker
+    options = [
+        (r.get("id"), f"#{r.get('id')} · {r.get('symbol', '?')} · "
+                      f"{_money(r.get('realized_pnl') or 0)} · "
+                      f"{r.get('exit_reason') or '—'}")
+        for r in filtered_rows if r.get("id") is not None
+    ]
+    if not options:
+        return
+    with st.expander("Inspect a single trade", expanded=False):
+        labels = [o[1] for o in options]
+        pick = st.selectbox(
+            "Trade", labels, key="post_trade_pick",
+            label_visibility="collapsed",
+        )
+        sel_id = next((o[0] for o in options if o[1] == pick), None)
+        if sel_id is None:
+            return
+        with st.spinner("Loading trade + drift events…"):
+            resp = api.get_closed_trade_detail(int(sel_id))
+        if resp.get("status") != "ok":
+            st.warning("Could not load trade detail.")
+            return
+        td = resp.get("data") or {}
+        trade_rows = [
+            {"key": "Status", "value": str(td.get("status") or "—")},
+            {"key": "Entry", "value": _num(td.get("entry_price"))},
+            {"key": "Exit", "value": _num(td.get("exit_price"))},
+            {"key": "Initial SL", "value": _num(td.get("initial_sl"))},
+            {"key": "Current SL", "value": _num(td.get("current_sl"))},
+            {"key": "Exit reason", "value": str(td.get("exit_reason") or "—")},
+            {"key": "Closure cause", "value": str(td.get("closure_cause") or "—")},
+            {"key": "Realized P&L", "value": _money(td.get("realized_pnl") or 0)},
+        ]
+        st.markdown("**Trade**")
+        st.dataframe(trade_rows, use_container_width=True, hide_index=True)
+        drifts = td.get("drifts") or []
+        if not drifts:
+            st.caption("No drift events recorded for this trade — "
+                       "broker view matched our DB throughout.")
+        else:
+            st.markdown("**Drift events**")
+            sev_color = {"critical": LOSS, "warn": WARN, "info": MUTED}
+            for d in drifts:
+                sev = (d.get("severity") or "info").lower()
+                color = sev_color.get(sev, MUTED)
+                st.markdown(
+                    f"<div class='card' style='border-left:3px solid {color};margin:6px 0;'>"
+                    f"<div style='display:flex;justify-content:space-between;'>"
+                    f"<b>{_html_escape(str(d.get('drift_type') or '?'))}</b>"
+                    f"<span class='muted' style='font-size:0.78rem;'>"
+                    f"{_html_escape(str(d.get('ts') or ''))}</span></div>"
+                    f"<div style='font-size:0.85rem;color:#cbd5e1;'>"
+                    f"{_html_escape(str(d.get('detail') or ''))}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+
+def render_drifts():
+    """Admin-only drift audit page.
+
+    Shows the last 24h of broker-vs-DB discrepancies the trade tracker and
+    reconciler recorded. This is the central place for post-trade monitoring:
+    SL mismatches, position-missing events, qty drift, exit-price mismatches.
+    """
+    st.subheader("Drift audit")
+    resp = api.get_drifts()
+    if resp.get("status") != "ok":
+        st.warning("Could not load drift events.")
+        return
+    rows = (resp.get("data") or {}).get("drifts") or []
+    summary = api.get_drift_summary()
+    s = (summary.get("data") or {}) if summary.get("status") == "ok" else {}
+    by_type = s.get("by_type") or []
+    by_sev = s.get("by_severity") or []
+    crit = next((int(x.get("count") or 0) for x in by_sev
+                 if x.get("severity") == "critical"), 0)
+    warn = next((int(x.get("count") or 0) for x in by_sev
+                 if x.get("severity") == "warn"), 0)
+    info = next((int(x.get("count") or 0) for x in by_sev
+                 if x.get("severity") == "info"), 0)
+
+    # Header tiles
+    tiles = (
+        _stat_tile("Critical", str(crit), color=LOSS if crit else MUTED)
+        + _stat_tile("Warn", str(warn), color=WARN if warn else MUTED)
+        + _stat_tile("Info", str(info), color=MUTED)
+        + _stat_tile("Total", str(len(rows)))
+    )
+    _html("<div class='row' style='flex-wrap:wrap;gap:10px;'>" + tiles + "</div>")
+
+    if by_type:
+        rows_html = "".join(
+            f"<div class='row' style='justify-content:space-between;'>"
+            f"<span class='muted'>{_html_escape(str(x.get('drift_type') or '?'))}</span>"
+            f"<b>{int(x.get('count') or 0)}</b></div>"
+            for x in by_type[:8]
+        )
+        _html(
+            f"<div class='card' style='margin-top:10px;'>"
+            f"<div class='card-title'>By drift type (last 24h)</div>"
+            f"{rows_html}</div>"
+        )
+
+    # Filter chips
+    drift_types = sorted({r.get("drift_type") for r in rows if r.get("drift_type")})
+    severity_opts = sorted({r.get("severity") for r in rows if r.get("severity")})
+    fc1, fc2, fc3 = st.columns([2, 2, 3])
+    with fc1:
+        type_filter = st.selectbox("Drift type", ["All"] + drift_types,
+                                  key="drift_type_filter",
+                                  label_visibility="collapsed")
+    with fc2:
+        sev_filter = st.selectbox("Severity", ["All"] + severity_opts,
+                                 key="drift_sev_filter",
+                                 label_visibility="collapsed")
+    with fc3:
+        trade_filter = st.text_input("Trade id", key="drift_trade_filter",
+                                     placeholder="(any)", label_visibility="collapsed")
+
+    filtered = rows
+    if type_filter != "All":
+        filtered = [r for r in filtered if r.get("drift_type") == type_filter]
+    if sev_filter != "All":
+        filtered = [r for r in filtered if r.get("severity") == sev_filter]
+    if trade_filter.strip():
+        try:
+            tid = int(trade_filter.strip())
+            filtered = [r for r in filtered if r.get("trade_id") == tid]
+        except ValueError:
+            pass
+
+    if not filtered:
+        st.info("No drift events match the current filters.")
+        return
+
+    sev_color = {"critical": LOSS, "warn": WARN, "info": MUTED}
+    items = []
+    for d in filtered[:200]:
+        sev = (d.get("severity") or "info").lower()
+        items.append({
+            "ts": d.get("ts") or "",
+            "trade": f"#{d.get('trade_id')}" if d.get("trade_id") else "—",
+            "type": d.get("drift_type") or "?",
+            "severity": sev,
+            "source": d.get("source") or "",
+            "detail": (d.get("detail") or "")[:160],
+            "_sev_color": sev_color.get(sev, MUTED),
+        })
+    for it in items:
+        _html(
+            f"<div class='card' style='border-left:3px solid {it['_sev_color']};"
+            f"margin:6px 0;'>"
+            f"<div style='display:flex;justify-content:space-between;'>"
+            f"<b>{_html_escape(it['type'])}</b>"
+            f"<span class='muted' style='font-size:0.78rem;'>"
+            f"{_html_escape(it['ts'])} · {it['trade']} · {it['source']}</span></div>"
+            f"<div style='font-size:0.85rem;color:#cbd5e1;'>"
+            f"{_html_escape(it['detail'])}</div>"
+            f"</div>"
+        )
 
 
 def render_health():
@@ -1931,7 +2236,7 @@ def render_health():
     elif b.get("token_valid_until"):
         st.caption(f"Upstox token valid until {_utc_to_ist_hm(b.get('token_valid_until'))} IST")
 
-    st.markdown("##### LLM (OpenRouter)")
+    st.markdown("##### LLM (MiniMax M3)")
     llm_status = (llm.get("status") or "unknown") if isinstance(llm, dict) else "unknown"
     if not llm.get("configured"):
         status_kind = "muted"
@@ -1972,6 +2277,31 @@ def render_health():
         st.markdown(f"{_badge('NO ERRORS', 'ok')}", unsafe_allow_html=True)
     else:
         st.markdown(_badge(f"{e['count']} error(s)", "err"), unsafe_allow_html=True)
+
+    # Drift audit summary — surfaces broker-vs-DB discrepancies in the
+    # last 24h. Reuses the API client; cheap (single SQL aggregate query).
+    st.markdown("##### Drift audit (24h)")
+    summary = api.get_drift_summary()
+    if summary.get("status") != "ok":
+        st.caption("Drift summary unavailable.")
+    else:
+        s = summary.get("data") or {}
+        by_type = s.get("by_type") or []
+        by_sev = s.get("by_severity") or []
+        crit = next((int(x.get("count") or 0) for x in by_sev
+                     if x.get("severity") == "critical"), 0)
+        warn = next((int(x.get("count") or 0) for x in by_sev
+                     if x.get("severity") == "warn"), 0)
+        info = next((int(x.get("count") or 0) for x in by_sev
+                     if x.get("severity") == "info"), 0)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Critical", crit)
+        c2.metric("Warn", warn)
+        c3.metric("Info", info)
+        if by_type:
+            rows = [{"drift_type": x.get("drift_type"),
+                     "count": int(x.get("count") or 0)} for x in by_type[:8]]
+            st.dataframe(rows, use_container_width=True, hide_index=True)
         src_filter = st.text_input("Filter errors", placeholder="Search by source or message…",
                                    label_visibility="collapsed", key="err_q").strip().lower()
         recent = e["recent"][:20]
@@ -2219,6 +2549,7 @@ def main():
         "Leads": render_leads,
         "Instruments": render_instruments,
         "History": render_history,
+        "Drifts": render_drifts,
         "Health": render_health,
         "Settings": render_settings,
     }

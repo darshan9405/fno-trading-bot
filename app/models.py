@@ -112,6 +112,11 @@ class Lead(Base):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     plan: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     components: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Free-form per-strategy metadata. For `llm_breakout` this carries the
+    # rationale string + the tool-call log (indicators, calc results, news,
+    # option chain) so the UI's lead-detail view can show *why* the model
+    # fired the signal.
+    lead_meta: Mapped[dict | None] = mapped_column("meta", JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -234,6 +239,38 @@ class OrderFill(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     order: Mapped["Order"] = relationship(back_populates="fills")
+
+
+class TradeDrift(Base):
+    """Audit log for any discrepancy between our DB state and broker truth.
+
+    Captured by the reconciler + trade tracker whenever the broker view of a
+    trade differs from ours:
+      - position missing at the broker (manual exit, exchange sqoff)
+      - SL order rejected/cancelled/missing
+      - quantity mismatch (we say X qty, broker says Y)
+      - price mismatch (current_sl differs from broker SL trigger)
+
+    Used by the post-trade monitoring UI to show the operator *why* a
+    trade closed differently from what we'd planned. Each row is append-
+    only; rows are kept for ~30 days via `app.services.lead_cleanup_service`.
+    """
+
+    __tablename__ = "trade_drifts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    trade_id: Mapped[int | None] = mapped_column(ForeignKey("trades.id"), index=True)
+    instrument_token: Mapped[str | None] = mapped_column(String(64), index=True)
+    drift_type: Mapped[str] = mapped_column(String(40), index=True)
+    # severity: info | warn | critical — UI uses this for colour-coding
+    severity: Mapped[str] = mapped_column(String(16), default="info")
+    # Free-form text describing the drift; capped to 500 chars at write time.
+    detail: Mapped[str] = mapped_column(Text)
+    # Optional JSON snapshot of the conflicting values (e.g. ours=10, broker=8).
+    expected: Mapped[str | None] = mapped_column(Text, nullable=True)
+    actual: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(String(32), default="reconciler")
+    ts: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, index=True)
 
 
 class OptionContract(Base):

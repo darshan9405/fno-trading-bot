@@ -326,7 +326,8 @@ def test_lead_cleanup_scheduler_alongside_other_jobs(env, monkeypatch):
     manager.init_scheduler()
 
     ids = {j["id"] for j in _Fake.instances[-1].jobs}
-    assert ids == {"lead_generator", "trade_tracker", "order_placer", "lead_cleanup", "reconciler"}
+    assert ids == {"lead_generator", "trade_tracker", "order_placer", "lead_cleanup",
+                   "reconciler", "drift_cleanup"}
     cleanup_job = next(j for j in _Fake.instances[-1].jobs if j["id"] == "lead_cleanup")
     assert cleanup_job["trigger"] == "interval"
     assert cleanup_job["seconds"] == manager.DEFAULT_LEAD_CLEANUP_SECONDS

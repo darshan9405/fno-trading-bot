@@ -241,6 +241,16 @@ class BrokerBase(ABC):
         """Option contracts (strikes/lot size/keys) for an underlying."""
 
     @abstractmethod
+    def get_instruments(self) -> list[InstrumentView]:
+        """Full instrument master for the broker (used for tick lookup).
+
+        Implementations should return the lightweight InstrumentView records
+        the rest of the codebase already consumes. Returning [] is allowed —
+        helpers that depend on this (e.g. `option_tick_for_instrument`) will
+        fall back to the default FNO_OPTION_TICK.
+        """
+
+    @abstractmethod
     def get_profile(self) -> ProfileView:
         """Logged-in user profile."""
 

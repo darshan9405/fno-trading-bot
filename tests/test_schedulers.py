@@ -116,6 +116,9 @@ class FakeBroker(BrokerBase):
     def get_option_contracts(self, underlying_key, expiry=None):
         return [c for c in self.contracts if c.underlying_key == underlying_key]
 
+    def get_instruments(self):
+        return list(self.contracts)
+
     def get_profile(self):
         return ProfileView(user_id="u1")
 
@@ -139,7 +142,7 @@ class TestBreakoutStrategy(Strategy):
         # `llm.max_calls_per_run` into every Strategy.begin_run invocation.
         _begin_run_calls.append(max_calls)
 
-    def generate(self, instrument, candles, now):
+    def generate(self, instrument, candles, now, **_kwargs):
         return [
             LeadCandidate(
                 instrument_id=instrument.id,

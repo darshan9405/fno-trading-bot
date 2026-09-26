@@ -30,7 +30,25 @@ def create_leads_from_candidates(session, instrument: Instrument, candidates, no
 
     rows = []
     for c in candidates:
-        components = (c.meta or {}).get("components") if getattr(c, "meta", None) else None
+        meta = getattr(c, "meta", None) or {}
+        components = meta.get("components") if meta else None
+        # Persist a slim meta for the UI lead-detail panel. We keep only the
+        # rationale + tool-call summary + top-line indicators — the raw candle
+        # data, order books, etc. live elsewhere (we'd balloon the row size
+        # otherwise). The full meta is still returned to the caller via the
+        # `LeadCandidate.meta` for downstream use.
+        persisted_meta = {}
+        if meta.get("llm_rationale"):
+            persisted_meta["llm_rationale"] = str(meta["llm_rationale"])[:400]
+        if meta.get("llm_tool_calls"):
+            persisted_meta["llm_tool_calls"] = list(meta["llm_tool_calls"])[-10:]
+        if meta.get("indicators"):
+            # Persist only the slim summary keys; full breakdown is too large.
+            slim_ind = {k: v for k, v in (meta["indicators"] or {}).items()
+                        if k in ("sma20", "sma50", "atr14", "rsi14", "adx14",
+                                 "last_close", "volume_avg")}
+            if slim_ind:
+                persisted_meta["indicators"] = slim_ind
         rows.append(Lead(
             instrument_id=c.instrument_id,
             underlying_key=c.underlying_key,
@@ -42,6 +60,7 @@ def create_leads_from_candidates(session, instrument: Instrument, candidates, no
             chart_interval=c.chart_interval,
             status="queued",
             components=components,
+            lead_meta=persisted_meta or None,
         ))
     session.add_all(rows)
     return rows

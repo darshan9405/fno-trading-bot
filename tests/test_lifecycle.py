@@ -570,9 +570,14 @@ def test_sync_order_status_updates_orders_row(env):
 # --- 4. square_off cancel-then-MARKET ------------------------------
 
 
-def test_square_off_cancels_sl_before_market_sell(env):
-    """square_off should cancel the open SL before placing the exit MARKET,
-    so we don't get a double fill (broker SL firing milliseconds after cancel)."""
+def test_square_off_cancels_sl_before_exit_sell(env):
+    """square_off should cancel the open SL before placing the exit order,
+    so we don't get a double fill (broker SL firing milliseconds after cancel).
+
+    Upstox rejects MARKET SELL orders via the API (UDAPI1028), so the exit
+    is now a Stop-Loss-Limit (SL) order with a proper limit price below the
+    trigger, not a MARKET. The cancel-then-exit ordering is unchanged.
+    """
     from app.services import trade_service
     broker = _BookBroker(ltp_map={"NSE_FO|84123": 110.0})
     trade_id = _seed_open_trade(broker, entry=100.0, sl=90.0)
@@ -590,8 +595,14 @@ def test_square_off_cancels_sl_before_market_sell(env):
         assert t.status == "closed"
         assert t.exit_reason == "killswitch"
         assert t.closure_cause == trade_service.CLOSURE_CAUSE_KILLSWITCH
-    # The SL was cancelled first, then a MARKET SELL placed.
+    # The SL was cancelled first, then an SL-LIMIT SELL placed (NOT MARKET).
     sl_views = [o for o in broker._book if o.order_id == sl_id]
-    market_sells = [o for o in broker.placed if o.order_type == "MARKET"]
+    sl_limit_sells = [
+        o for o in broker.placed
+        if o.order_type == "SL" and o.transaction_type == "SELL"
+    ]
     assert any(o.status == "cancelled" for o in sl_views)
-    assert any(m.transaction_type == "SELL" for m in market_sells)
+    assert any(m.transaction_type == "SELL" for m in sl_limit_sells)
+    # Defensive: no MARKET orders should have been placed at all.
+    market_sells = [o for o in broker.placed if o.order_type == "MARKET"]
+    assert not market_sells, f"square_off must not place MARKET orders: {market_sells}"

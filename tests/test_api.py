@@ -82,6 +82,9 @@ class FakeBroker(BrokerBase):
     def get_option_contracts(self, underlying_key, expiry=None):
         return []
 
+    def get_instruments(self):
+        return []
+
     def get_profile(self):
         return ProfileView(user_id="usr-1", broker="UPSTOX")
 

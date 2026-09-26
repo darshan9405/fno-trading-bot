@@ -1,14 +1,17 @@
 """OpenAI-compatible chat client for the LLM breakout detector.
 
-Talks to OpenRouter (or any OpenAI-compatible provider) over HTTPS. Uses
-`httpx` for the HTTP layer. Returns the parsed JSON response dict — never
-raises on transport errors; the caller (detector) translates transport
-failures into an empty signal list.
+We talk to the MiniMax M3 provider directly (not via OpenRouter) using its
+OpenAI-compatible `/v1/chat/completions` endpoint. The client is a thin
+wrapper around `httpx`: it posts the chat request with Bearer auth and
+returns the parsed JSON response. Never raises on transport errors — the
+caller (detector) translates transport failures into an empty signal list.
 
-OpenRouter-specific behaviour: app-attribution headers (`HTTP-Referer`,
-`X-Title`) are sent only when configured via env (`OPENROUTER_APP_URL`,
-`OPENROUTER_APP_NAME`); the rest of the request shape is identical to
-plain OpenAI. BASE_URL defaults to OpenRouter's root in `app.config.Config`.
+Two request shapes are supported:
+  * `chat_json`     — single-turn, JSON-mode response_format. Used when the
+                      caller doesn't need tool calls.
+  * `chat_with_tools` — multi-turn with tool definitions; returns the raw
+                      assistant message so the agent loop can branch on
+                      `tool_calls` vs final content.
 
 The client is injectable: tests substitute a stub via the `LLMClient`
 constructor argument on the strategy class so the rest of the pipeline can
@@ -35,7 +38,18 @@ class LLMClient(Protocol):
     """Minimal interface every LLM client (real or stub) must implement."""
 
     def chat_json(self, system: str, user: str) -> dict[str, Any]:
-        """Send the chat and return the parsed JSON body. Never raises."""
+        """Single-turn JSON chat. Never raises; returns `{_transport_error: True}` on failure."""
+        ...
+
+    def chat_with_tools(
+        self,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any] | None:
+        """Multi-turn chat that may return tool_calls. Returns the raw assistant
+        message dict (with `content`, optional `tool_calls`, optional `reasoning`)
+        or None on transport failure."""
         ...
 
 
@@ -47,7 +61,7 @@ class OpenAICompatClient:
         base_url: str,
         api_key: str,
         model: str,
-        timeout_s: float = 30.0,
+        timeout_s: float = 60.0,
         max_retries: int = 2,
         temperature: float = 0.2,
         reasoning_effort: str = "",
@@ -62,14 +76,21 @@ class OpenAICompatClient:
         self._temperature = float(temperature)
         self._reasoning_effort = str(reasoning_effort or "").strip()
         self._reasoning_max_tokens = max(0, int(reasoning_max_tokens))
-        # Provider-specific headers (OpenRouter app-attribution, etc.).
+        # Provider-specific headers (MiniMax app attribution, etc.).
         # Merged AFTER the auth/content-type headers so callers can't override
         # them by accident.
         self._extra_headers: dict[str, str] = {
             str(k): str(v) for k, v in (extra_headers or {}).items()
         }
 
+    # ---- public API ------------------------------------------------------
+
     def chat_json(self, system: str, user: str) -> dict[str, Any]:
+        """Single-turn chat with `response_format={"type":"json_object"}`.
+
+        Never raises; returns `{"_transport_error": True}` on failure so the
+        detector can short-circuit without try/except.
+        """
         url = f"{self._base_url}/chat/completions"
         headers = {
             "Authorization": f"Bearer {self._api_key}",
@@ -84,75 +105,23 @@ class OpenAICompatClient:
                 {"role": "user", "content": user},
             ],
         }
-        # Reasoning / chain-of-thought. OpenRouter auto-routes per model:
-        # OpenAI-style -> `reasoning_effort`, Anthropic-style ->
-        # `reasoning.max_tokens`. OpenRouter rejects requests that set BOTH
-        # ("Only one of reasoning.effort and reasoning.max_tokens can be
-        # specified"), so we send at most one. `reasoning_effort` wins if both
-        # are configured. Empty/0 values skip the field entirely so
-        # non-reasoning models don't reject the request.
-        if self._reasoning_effort:
-            payload["reasoning_effort"] = self._reasoning_effort
-        elif self._reasoning_max_tokens > 0:
-            payload["reasoning"] = {"max_tokens": self._reasoning_max_tokens}
-        log.debug("llm: POST %s model=%s temperature=%.2f reasoning=%s reasoning_effort=%s",
-                  url, self._model, self._temperature,
-                  payload.get("reasoning"), payload.get("reasoning_effort"))
-        return self._post_with_retry(url, headers, payload)
-
-    def _post_with_retry(self, url: str, headers: dict, payload: dict) -> dict[str, Any]:
-        attempts = self._max_retries + 1
+        self._apply_reasoning(payload)
         try:
-            for attempt in range(attempts):
-                try:
-                    return self._post_once(url, headers, payload)
-                except (httpx.HTTPStatusError, httpx.TransportError) as exc:
-                    if attempt == attempts - 1:
-                        raise LLMTransportError(str(exc)) from exc
-                    if isinstance(exc, httpx.HTTPStatusError):
-                        status = exc.response.status_code
-                        if status < 500 and status != 429:
-                            raise LLMTransportError(
-                                f"non-retryable HTTP {status}: {exc.response.text[:200]}"
-                            ) from exc
-                    wait = min(2 ** attempt, 8)
-                    log.warning(
-                        "llm: transient failure (attempt %d/%d): %s; retrying in %ds",
-                        attempt + 1,
-                        attempts,
-                        exc,
-                        wait,
-                    )
-                    time.sleep(wait)
+            body = self._post_with_retry(url, headers, payload)
         except LLMTransportError:
-            log.exception("llm: chat_json failed after retries")
             return {"_transport_error": True}
-        except Exception as exc:  # noqa: BLE001
-            log.exception("llm: unexpected chat_json failure: %s", exc)
-            return {"_transport_error": True}
-
-    def _post_once(self, url: str, headers: dict, payload: dict) -> dict[str, Any]:
-        # Merge: caller-supplied auth/content-type headers are authoritative;
-        # provider-specific extras (HTTP-Referer / X-Title) layer on top.
-        merged = {**headers, **self._extra_headers}
-        with httpx.Client(timeout=self._timeout_s) as client:
-            resp = client.post(url, headers=merged, json=payload)
-            resp.raise_for_status()
-            body = resp.json()
-        # Surface the full raw response (incl. any `reasoning_content` /
-        # `reasoning` field) at DEBUG so operators can inspect what the model
-        # actually said + thought, without polluting INFO logs.
-        log.debug("llm: raw response: %s", json.dumps(body, default=str))
         try:
             content = body["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise LLMTransportError(f"malformed response: missing choices[0].message.content: {exc}") from exc
+            log.warning("llm: malformed single-turn response: %s", exc)
+            return {"_transport_error": True}
         if not isinstance(content, str):
-            raise LLMTransportError("message content is not a string")
+            return {"_transport_error": True}
         try:
             parsed = json.loads(content)
         except json.JSONDecodeError as exc:
-            raise LLMTransportError(f"message content is not valid JSON: {exc}") from exc
+            log.warning("llm: content is not valid JSON: %s", exc)
+            return {"_transport_error": True}
         # Stash the model's reasoning (chain-of-thought) alongside the parsed
         # payload so callers / logs can surface it. Non-reasoning models simply
         # don't populate `reasoning_content`.
@@ -161,15 +130,100 @@ class OpenAICompatClient:
             parsed["_reasoning"] = msg.get("reasoning_content") or msg.get("reasoning")
         return parsed
 
+    def chat_with_tools(
+        self,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any] | None:
+        """Multi-turn chat that may return tool_calls.
+
+        Returns the raw assistant `message` dict with `role`, `content`,
+        optional `tool_calls`, and optional `reasoning_content` fields
+        extracted from the response. Returns None on transport failure.
+        """
+        url = f"{self._base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "temperature": self._temperature,
+            "messages": [{"role": "system", "content": system}] + list(messages),
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        self._apply_reasoning(payload)
+        try:
+            body = self._post_with_retry(url, headers, payload)
+        except LLMTransportError:
+            return None
+        try:
+            msg = body["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError) as exc:
+            log.warning("llm: malformed tool response: %s", exc)
+            return None
+        if not isinstance(msg, dict):
+            return None
+        return msg
+
+    # ---- internals -------------------------------------------------------
+
+    def _apply_reasoning(self, payload: dict[str, Any]) -> None:
+        """Inject the reasoning/thinking controls.
+
+        MiniMax M3 accepts `reasoning_effort` ("low"|"medium"|"high"). Empty
+        / 0 values skip the field entirely so non-reasoning models don't
+        reject the request.
+        """
+        if self._reasoning_effort:
+            payload["reasoning_effort"] = self._reasoning_effort
+        elif self._reasoning_max_tokens > 0:
+            payload["reasoning"] = {"max_tokens": self._reasoning_max_tokens}
+
+    def _post_with_retry(self, url: str, headers: dict, payload: dict) -> dict[str, Any]:
+        attempts = self._max_retries + 1
+        last_exc: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                return self._post_once(url, headers, payload)
+            except (httpx.HTTPStatusError, httpx.TransportError) as exc:
+                last_exc = exc
+                if attempt == attempts - 1:
+                    break
+                if isinstance(exc, httpx.HTTPStatusError):
+                    status = exc.response.status_code
+                    if status < 500 and status != 429:
+                        break
+                wait = min(2 ** attempt, 8)
+                log.warning(
+                    "llm: transient failure (attempt %d/%d): %s; retrying in %ds",
+                    attempt + 1,
+                    attempts,
+                    exc,
+                    wait,
+                )
+                time.sleep(wait)
+        raise LLMTransportError(str(last_exc) if last_exc else "unknown transport error")
+
+    def _post_once(self, url: str, headers: dict, payload: dict) -> dict[str, Any]:
+        merged = {**headers, **self._extra_headers}
+        log.debug("llm: POST %s model=%s temperature=%.2f tools=%d reasoning=%s",
+                  url, self._model, self._temperature,
+                  len(payload.get("tools") or []),
+                  payload.get("reasoning") or payload.get("reasoning_effort"))
+        with httpx.Client(timeout=self._timeout_s) as client:
+            resp = client.post(url, headers=merged, json=payload)
+            resp.raise_for_status()
+            body = resp.json()
+        log.debug("llm: raw response: %s", json.dumps(body, default=str)[:2000])
+        return body
+
 
 def build_default_client() -> LLMClient | None:
-    """Build a client from `Config` (env-driven). Returns None if not configured.
-
-    When the configured BASE_URL is OpenRouter (the default), the optional
-    `OPENROUTER_APP_URL` / `OPENROUTER_APP_NAME` env vars are forwarded as
-    `HTTP-Referer` / `X-Title` headers. Off by default — only set the headers
-    if the env vars are non-empty.
-    """
+    """Build a client from `Config` (env-driven). Returns None if not configured."""
     from app.config import Config
 
     cfg = Config()
@@ -177,10 +231,10 @@ def build_default_client() -> LLMClient | None:
         return None
 
     extra_headers: dict[str, str] = {}
-    if cfg.OPENROUTER_APP_URL:
-        extra_headers["HTTP-Referer"] = cfg.OPENROUTER_APP_URL
-    if cfg.OPENROUTER_APP_NAME:
-        extra_headers["X-Title"] = cfg.OPENROUTER_APP_NAME
+    if cfg.LLM_APP_URL:
+        extra_headers["HTTP-Referer"] = cfg.LLM_APP_URL
+    if cfg.LLM_APP_NAME:
+        extra_headers["X-Title"] = cfg.LLM_APP_NAME
 
     return OpenAICompatClient(
         base_url=cfg.LLM_BASE_URL,

@@ -76,7 +76,8 @@ def test_manager_reads_intervals_from_settings(_patched_scheduler):
 def test_manager_registers_all_six_jobs(_patched_scheduler):
     scheduler.init_scheduler()
     ids = {j["id"] for j in _FakeScheduler.instances[-1].jobs}
-    assert ids == {"lead_generator", "trade_tracker", "order_placer", "lead_cleanup", "reconciler"}
+    assert ids == {"lead_generator", "trade_tracker", "order_placer",
+                   "lead_cleanup", "reconciler", "drift_cleanup"}
     cleanup = next(j for j in _FakeScheduler.instances[-1].jobs if j["id"] == "lead_cleanup")
     assert cleanup["max_instances"] == 1
     assert cleanup["coalesce"] is True

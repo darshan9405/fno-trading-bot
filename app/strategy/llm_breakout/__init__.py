@@ -1,10 +1,12 @@
 """LLM-driven breakout strategy.
 
 Replaces the math-based detectors (`app.strategy.breakout.*`, now removed)
-with a single OpenAI-compatible chat call (default: OpenRouter) per
-instrument. The LLM decides which pattern (if any) is breaking out, the
-trigger price, the confidence, and whether the volume confirmation passes.
-The app handles format conversion, structural validation, and persistence.
+with a single OpenAI-compatible chat call (default: direct MiniMax M3
+endpoint) per instrument. The LLM is run in a TOOL-CALLING agent loop so
+it can pull recent symbol news, fetch option-chain OI/IV context, and run
+breakout-strength math (ATR, swing distance, R:R) before emitting its
+final verdict. The app handles format conversion, structural validation,
+and persistence.
 
 Public surface:
   - LLMBreakoutStrategy  — registered as "llm_breakout"
@@ -19,20 +21,15 @@ Settings (DB-backed, see `app.settings.DEFAULT_SETTINGS`):
   - llm.max_calls_per_run  hard cap so a slow LLM can't block the scheduler
 
 Env (config.py):
-  - LLM_API_KEY            OpenRouter key (default provider)
-  - LLM_BASE_URL           defaults to https://openrouter.ai/api/v1
-  - LLM_MODEL              OpenRouter slug, e.g. "minimax/minimax-m3"
+  - LLM_API_KEY            MiniMax M3 API key (direct call, no middleman)
+  - LLM_BASE_URL           defaults to https://api.minimax.io/v1
+  - LLM_MODEL              defaults to "MiniMax-M3"
   - LLM_TIMEOUT_S          request timeout (seconds)
   - LLM_MAX_RETRIES        transport retries on 429/5xx
-  - OPENROUTER_APP_URL     optional -> HTTP-Referer header
-  - OPENROUTER_APP_NAME    optional -> X-Title header
-
-Model slugs use the OpenRouter `provider/model` form, e.g.:
-  - minimax/minimax-m3           (default)
-  - anthropic/claude-3.5-sonnet
-  - openai/gpt-4o
-  - google/gemini-pro-1.5
-  - meta-llama/llama-3.1-70b-instruct
+  - LLM_AGENT_MAX_ITERATIONS  cap on tool-call loop iterations
+  - LLM_BING_API_KEY       optional, enables Bing News Search API
+  - LLM_APP_URL            optional -> HTTP-Referer header
+  - LLM_APP_NAME           optional -> X-Title header
 
 Failure mode: any LLM error or empty result -> `generate()` returns `[]`.
 No math fallback (the math detectors were removed). On any per-instrument
@@ -90,7 +87,8 @@ class LLMBreakoutStrategy(Strategy):
         from app.strategy.llm_breakout.client import build_default_client
         return build_default_client()
 
-    def generate(self, instrument, candles: pd.DataFrame, now) -> list[LeadCandidate]:
+    def generate(self, instrument, candles: pd.DataFrame, now, *,
+                 broker=None, today=None, lot_size: int | None = None) -> list[LeadCandidate]:
         from app.settings import get_setting
 
         if not bool(get_setting("llm.enabled", True)):
@@ -118,6 +116,8 @@ class LLMBreakoutStrategy(Strategy):
                 lookback_candles=lookback,
                 divergence_pct=divergence_pct,
                 min_confidence=min_conf,
+                broker=broker,
+                today=today,
             )
         except Exception as exc:  # noqa: BLE001 — never let an LLM error crash the tick
             log.exception("llm_breakout: detect_one raised for %s: %s",
@@ -133,6 +133,7 @@ class LLMBreakoutStrategy(Strategy):
                 "source": "llm",
                 "indicators": indicators_for_logging(candles),
                 "llm_rationale": str(sig.get("rationale", "")),
+                "llm_tool_calls": list(sig.get("_tool_calls", []) or []),
             }
             leads.append(
                 LeadCandidate(
@@ -158,13 +159,22 @@ class StubClient:  # noqa: D401  -- test helper, not part of the production API
     Used by tests + the dry-run script. Set `raise_on_call = N` to have the
     next N calls return `{"_transport_error": True}` instead of the
     queued responses (or raise if `errors` are also queued).
+
+    Supports BOTH the legacy `chat_json` interface AND the new
+    `chat_with_tools` interface (used by the agent loop). For backwards
+    compat with existing test fixtures, a queued response that has no
+    `tool_calls` field is emitted as a chat_json-style final answer when
+    `chat_with_tools` is called.
     """
 
     def __init__(self, responses=None, errors=None):
         from typing import Any
         self._responses = list(responses or [])
         self._errors = list(errors or [])
-        self.calls = []
+        # Keep `calls` shape compatible with the legacy interface: each
+        # entry is `(system, user)` for the single-turn path.
+        self.calls: list[Any] = []
+        self.tool_calls: list[Any] = []
         self.raise_on_call = 0
 
     def chat_json(self, system: str, user: str):  # noqa: D401
@@ -177,3 +187,29 @@ class StubClient:  # noqa: D401  -- test helper, not part of the production API
         if not self._responses:
             return {"signals": []}
         return self._responses.pop(0)
+
+    def chat_with_tools(self, system, messages, tools=None):
+        # Track the call for legacy tests — use the *user* message string so
+        # the existing `sys_msg, user_msg = client.calls[0]` unpacking still
+        # works.
+        user_msg = ""
+        for m in (messages or []):
+            if isinstance(m, dict) and m.get("role") == "user":
+                user_msg = str(m.get("content") or "")
+                break
+        self.calls.append((system, user_msg))
+        if self.raise_on_call > 0:
+            self.raise_on_call -= 1
+            return None
+        if self._errors:
+            raise self._errors.pop(0)
+        if not self._responses:
+            return {"role": "assistant", "content": "{\"signals\": []}"}
+        resp = self._responses.pop(0)
+        # Legacy chat_json-style response (dict with `signals` / no
+        # `tool_calls` / no `content`) — wrap as a final assistant message
+        # so the agent loop emits it without trying to call tools.
+        if isinstance(resp, dict) and "tool_calls" not in resp and "content" not in resp:
+            import json
+            return {"role": "assistant", "content": json.dumps(resp)}
+        return resp

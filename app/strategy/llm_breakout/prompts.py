@@ -127,6 +127,34 @@ NOTE — VOLUME. Informational only, NOT a gate. Real breakouts often begin \
 on quiet volume and are consumed as participants react. Mention in \
 `rationale` if relevant; never score or reject on it.
 
+# TOOLS (when available)
+
+The chat interface will offer you these tools — USE them before emitting \
+your final answer; the model is unreliable at precision math on candle \
+series:
+
+1. `compute_indicators()` — returns ATR(14), EMA(20/50), ADX(14), RSI(14), \
+   Bollinger(20,2) z-score, 20/50-bar high-low, 52-week high/low + % \
+   distance, volume z-score, swing-point highs/lows, classic pivot points. \
+   Always call this first.
+2. `breakout_calc(op, args)` — deterministic math helpers: \
+   `breakout_strength(price, trigger, atr)` (distance in ATR multiples), \
+   `risk_reward(entry, stop, target)`, `expected_value(win_rate, avg_win, \
+   avg_loss)`, `position_size(capital, risk_pct, entry, stop)`, \
+   `volatility_percentile(current_atr, atr_series)`, `trend_strength(ema_fast, \
+   ema_slow)`, `pullback_depth(close, swing_high, swing_low)`.
+3. `fetch_news(symbol, n)` — recent Bing News headlines for the underlying \
+   (earnings, sector rotation, regulatory). Use sparingly — call it only \
+   after the chart-based case is already strong; news is supporting context, \
+   not a primary trigger.
+4. `option_chain_summary(underlying_key, depth)` — ATM premiums, put-call \
+   ratio (OI), max-pain strike, IV skew proxy. Use as final confirmation \
+   only after the price breakout is decisive.
+
+Call them in this order: indicators → calc (for R:R / strength / sizing) → \
+option chain (only when the chart case is otherwise strong). News is \
+optional and bounded by `n`.
+
 # OUTPUT
 
 JSON only. No markdown fences, no commentary, no trailing commas.

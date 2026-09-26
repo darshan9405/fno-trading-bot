@@ -86,7 +86,7 @@ def get_health_snapshot() -> dict[str, Any]:
     Combines the persistent counters with live config / connectivity info so
     the UI can render a single tile per dimension:
       - configured  : True iff env-driven Config has all of API_KEY/BASE_URL/MODEL
-      - model       : the configured OpenRouter slug (or "")
+      - model       : the configured model slug (or "")
       - base_url    : the configured endpoint (or "")
       - stats       : counters + last-success/last-error timestamps
       - status      : one of "unconfigured" | "ok" | "error" | "stale" | "unknown"
