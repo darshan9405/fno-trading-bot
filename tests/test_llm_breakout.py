@@ -803,7 +803,12 @@ def test_openai_compat_client_sends_expected_payload():
     import httpx
 
     class _MockClient:
-        def __init__(self, timeout):
+        def __init__(self, timeout, **kwargs):
+            # Mirror the production ``httpx.Client`` kwargs (``limits=``,
+            # ``headers=``, ...) so the OpenAICompatClient constructor can
+            # build us without exploding. We only use ``timeout`` because
+            # the tests assert on the *outgoing* request, not connection
+            # pool settings.
             self._t = _MockTransport()
 
         def __enter__(self):
@@ -860,7 +865,12 @@ def test_openai_compat_client_merges_extra_headers(monkeypatch):
     import httpx
 
     class _MockClient:
-        def __init__(self, timeout):
+        def __init__(self, timeout, **kwargs):
+            # Mirror the production ``httpx.Client`` kwargs (``limits=``,
+            # ``headers=``, ...) so the OpenAICompatClient constructor can
+            # build us without exploding. We only use ``timeout`` because
+            # the tests assert on the *outgoing* request, not connection
+            # pool settings.
             self._t = _MockTransport()
 
         def __enter__(self):

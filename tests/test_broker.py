@@ -388,6 +388,9 @@ def test_throttle_enforces_min_interval_on_ltp():
     from app.broker.upstox_broker import _RateGate
     broker._gate_ltp = _RateGate(20.0)
     broker._apis["quote"] = _FakeLtpOk()
+    # Disable the read-side cache so the second call actually reaches the
+    # upstream stub (which is the only place the throttle fires).
+    broker._cache_ltp.set_ttl(0)
 
     t0 = time.monotonic()
     broker.get_ltp(["NSE_EQ|X"])

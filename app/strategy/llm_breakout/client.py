@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from typing import Any, Protocol
 
@@ -82,6 +83,21 @@ class OpenAICompatClient:
         self._extra_headers: dict[str, str] = {
             str(k): str(v) for k, v in (extra_headers or {}).items()
         }
+        # Persistent httpx connection pool. Reused across calls so we avoid
+        # the TLS handshake cost on every prompt. ``httpx.Client`` is NOT
+        # safe to share concurrently; ``_http_lock`` serialises the post
+        # itself which is fast relative to network I/O.
+        self._http_lock = threading.Lock()
+        limits = httpx.Limits(
+            max_connections=16,
+            max_keepalive_connections=8,
+            keepalive_expiry=30.0,
+        )
+        self._http = httpx.Client(
+            timeout=self._timeout_s,
+            limits=limits,
+            headers={"Content-Type": "application/json"},
+        )
 
     # ---- public API ------------------------------------------------------
 
@@ -214,12 +230,23 @@ class OpenAICompatClient:
                   url, self._model, self._temperature,
                   len(payload.get("tools") or []),
                   payload.get("reasoning") or payload.get("reasoning_effort"))
-        with httpx.Client(timeout=self._timeout_s) as client:
-            resp = client.post(url, headers=merged, json=payload)
+        # ``httpx.Client`` isn't safe to share concurrently across threads
+        # (mutable headers / connection state). The lock is held only for the
+        # duration of the POST; everything else (JSON serialisation, retries)
+        # runs outside the lock.
+        with self._http_lock:
+            resp = self._http.post(url, headers=merged, json=payload)
             resp.raise_for_status()
             body = resp.json()
         log.debug("llm: raw response: %s", json.dumps(body, default=str)[:2000])
         return body
+
+    def close(self) -> None:
+        """Close the underlying httpx connection pool. Idempotent."""
+        try:
+            self._http.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def build_default_client() -> LLMClient | None:

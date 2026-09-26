@@ -3,6 +3,15 @@
 Maps BrokerBase methods to the verified SDK surface (HistoryApi, MarketQuoteApi,
 PortfolioApi, UserApi, OrderApi, OrderApiV3, OptionsApi, InstrumentsApi).
 No mock — this is the real integration.
+
+Hot read endpoints (``get_ltp``, ``get_positions``, ``get_funds``,
+``get_order_book``, ``get_profile``) are wrapped in small TTL caches so the
+Streamlit dashboard's 5-second poll cadence doesn't translate into 12+ broker
+round-trips per minute. TTLs are configured via environment variables on
+:class:`app.config.Config`; setting any to ``0`` disables the cache for that
+field. Write endpoints invalidate the relevant caches synchronously after a
+successful mutation so post-trade views never read stale state for longer than
+the configured TTL.
 """
 
 import logging
@@ -30,6 +39,7 @@ from app.broker.base import (
     normalize_instrument_tick,
 )
 from app.config import Config
+from app.util.ttl_cache import TTLCache
 
 log = logging.getLogger(__name__)
 
@@ -192,6 +202,13 @@ class UpstoxBroker(BrokerBase):
         self._gate_history = _RateGate(self.config.UPSTOX_CANDLES_PER_SECOND)
         self._gate_ltp = _RateGate(self.config.UPSTOX_LTP_PER_SECOND)
         self._gate_contracts = _RateGate(self.config.UPSTOX_OPTION_CONTRACTS_PER_SECOND)
+        # Read-side caches. TTL 0 = pass-through (cache disabled).
+        # Process-local: matches the single-worker gunicorn + APScheduler model.
+        self._cache_ltp = TTLCache(self.config.CACHE_TTL_LTP_S)
+        self._cache_positions = TTLCache(self.config.CACHE_TTL_POSITIONS_S)
+        self._cache_funds = TTLCache(self.config.CACHE_TTL_FUNDS_S)
+        self._cache_order_book = TTLCache(self.config.CACHE_TTL_ORDER_BOOK_S)
+        self._cache_profile = TTLCache(self.config.CACHE_TTL_PROFILE_S)
         self._rebuild_client()
 
     def _rebuild_client(self) -> None:
@@ -215,6 +232,18 @@ class UpstoxBroker(BrokerBase):
         """Swap the bearer token (used by SSO / token refresh)."""
         self._token = token
         self._rebuild_client()
+        # Token swap = new account context. Drop every read cache so we can't
+        # leak the previous user's profile/positions/funds/LTP/order book.
+        self._invalidate_after_write()
+        self._cache_profile.clear()
+        self._cache_ltp.clear()
+        self._cache_funds.clear()
+
+    def _invalidate_after_write(self) -> None:
+        """Drop broker read caches that may be stale after a write op."""
+        self._cache_order_book.clear()
+        self._cache_positions.clear()
+        self._cache_ltp.clear()
 
     def _require_token(self) -> None:
         if not self._token:
@@ -257,41 +286,62 @@ class UpstoxBroker(BrokerBase):
         self._require_token()
         if not instrument_keys:
             return {}
-        self._throttle("ltp")
-        api = self._api(upstox_client.MarketQuoteApi, "quote")
-        try:
-            resp = api.ltp(",".join(instrument_keys), API_VERSION)
-        except ApiException as e:
-            raise self._to_broker_error("get_ltp", e)
-        data = getattr(resp, "data", None) or {}
-        out: dict[str, float] = {}
-        for key, quote in data.items():
-            if getattr(quote, "last_price", None) is None:
-                continue
-            out[getattr(quote, "instrument_token", None) or key] = float(quote.last_price)
-        return out
+        # Sort so callers asking for the same set in any order share a cache slot.
+        unique_sorted = sorted(set(instrument_keys))
+        cache_key = ",".join(unique_sorted)
+
+        def _fetch() -> dict[str, float]:
+            self._throttle("ltp")
+            api = self._api(upstox_client.MarketQuoteApi, "quote")
+            try:
+                resp = api.ltp(",".join(unique_sorted), API_VERSION)
+            except ApiException as e:
+                raise self._to_broker_error("get_ltp", e)
+            data = getattr(resp, "data", None) or {}
+            out: dict[str, float] = {}
+            for key, quote in data.items():
+                if getattr(quote, "last_price", None) is None:
+                    continue
+                out[getattr(quote, "instrument_token", None) or key] = float(quote.last_price)
+            return out
+
+        full = self._cache_ltp.get(cache_key, _fetch)
+        # Slice the cached dict down to whatever the caller asked for so
+        # a cache populated for {A,B,C} is also usable for {A} or {A,C}.
+        if len(full) != len(unique_sorted) or set(full) >= set(instrument_keys):
+            # Cheap path: caller asked for a subset of a cached super-set.
+            return {k: full[k] for k in instrument_keys if k in full}
+        return full
 
     # --- portfolio --------------------------------------------------------
 
     def get_positions(self) -> list[PositionView]:
         self._require_token()
-        api = self._api(upstox_client.PortfolioApi, "portfolio")
-        try:
-            resp = api.get_positions(API_VERSION)
-        except ApiException as e:
-            raise self._to_broker_error("get_positions", e)
-        return [to_position_view(p) for p in (getattr(resp, "data", None) or [])]
+
+        def _fetch() -> list[PositionView]:
+            api = self._api(upstox_client.PortfolioApi, "portfolio")
+            try:
+                resp = api.get_positions(API_VERSION)
+            except ApiException as e:
+                raise self._to_broker_error("get_positions", e)
+            return [to_position_view(p) for p in (getattr(resp, "data", None) or [])]
+
+        return self._cache_positions.get("__all__", _fetch)
 
     def get_funds(self) -> FundsView:
         self._require_token()
-        api = self._api(upstox_client.UserApi, "user")
-        try:
-            resp = api.get_user_fund_margin(API_VERSION)
-        except ApiException as e:
-            raise self._to_broker_error("get_funds", e)
-        data = getattr(resp, "data", None) or {}
-        equity = data.get("equity") or next(iter(data.values()), None)
-        return to_funds_view(equity) if equity is not None else FundsView()
+
+        def _fetch() -> FundsView:
+            api = self._api(upstox_client.UserApi, "user")
+            try:
+                resp = api.get_user_fund_margin(API_VERSION)
+            except ApiException as e:
+                raise self._to_broker_error("get_funds", e)
+            data = getattr(resp, "data", None) or {}
+            equity = data.get("equity") or next(iter(data.values()), None)
+            return to_funds_view(equity) if equity is not None else FundsView()
+
+        return self._cache_funds.get("__all__", _fetch)
 
     # --- orders -----------------------------------------------------------
 
@@ -320,6 +370,8 @@ class UpstoxBroker(BrokerBase):
         if not order_ids:
             raise BrokerError("place_order: no order_id in response")
         order_id = order_ids[0]
+        # Order-book, positions, and LTP can all change after an entry/exit.
+        self._invalidate_after_write()
         log.info("upstox_broker: placed order %s: %s %s x%s price=%s trigger=%s (tag=%s, type=%s)",
                  order_id, order.transaction_type, order.instrument_key, order.quantity,
                  order.price or "MARKET", order.trigger_price, order.tag, order.order_type)
@@ -342,6 +394,9 @@ class UpstoxBroker(BrokerBase):
             api.modify_order(body)
         except ApiException as e:
             raise self._to_broker_error("modify_order", e)
+        # Modifying an SL doesn't touch the broker positions, but it changes
+        # the order book view.
+        self._cache_order_book.clear()
         log.info("upstox_broker: modified order %s: qty=%s price=%s trigger=%s type=%s",
                  params.order_id, params.quantity, params.price, params.trigger_price, params.order_type)
 
@@ -352,6 +407,8 @@ class UpstoxBroker(BrokerBase):
             api.cancel_order(order_id)
         except ApiException as e:
             raise self._to_broker_error("cancel_order", e)
+        # Cancel does not change positions, but invalidates order-book cache.
+        self._cache_order_book.clear()
         log.info("upstox_broker: cancelled order %s", order_id)
 
     def exit_all(self, tag: str | None = None, segment: str | None = None) -> None:
@@ -366,16 +423,23 @@ class UpstoxBroker(BrokerBase):
             api.exit_positions(**kwargs)
         except ApiException as e:
             raise self._to_broker_error("exit_all", e)
+        # Exit-all writes many orders and closes positions simultaneously;
+        # invalidate the whole broker read set.
+        self._invalidate_after_write()
         log.info("upstox_broker: exited all positions tag=%s segment=%s", tag, segment)
 
     def get_order_book(self) -> list[OrderView]:
         self._require_token()
-        api = self._api(upstox_client.OrderApi, "order_v2")
-        try:
-            resp = api.get_order_book(API_VERSION)
-        except ApiException as e:
-            raise self._to_broker_error("get_order_book", e)
-        return [to_order_view(o) for o in (getattr(resp, "data", None) or [])]
+
+        def _fetch() -> list[OrderView]:
+            api = self._api(upstox_client.OrderApi, "order_v2")
+            try:
+                resp = api.get_order_book(API_VERSION)
+            except ApiException as e:
+                raise self._to_broker_error("get_order_book", e)
+            return [to_order_view(o) for o in (getattr(resp, "data", None) or [])]
+
+        return self._cache_order_book.get("__all__", _fetch)
 
     def get_trades_by_order(self, order_id: str) -> list[FillView]:
         self._require_token()
@@ -439,18 +503,22 @@ class UpstoxBroker(BrokerBase):
 
     def get_profile(self) -> ProfileView:
         self._require_token()
-        api = self._api(upstox_client.UserApi, "user")
-        try:
-            resp = api.get_profile(API_VERSION)
-        except ApiException as e:
-            raise self._to_broker_error("get_profile", e)
-        p = getattr(resp, "data", None)
-        return ProfileView(
-            user_id=getattr(p, "user_id", "") or "",
-            user_name=getattr(p, "user_name", "") or "",
-            email=getattr(p, "email", "") or "",
-            broker=getattr(p, "broker", "") or "",
-        )
+
+        def _fetch() -> ProfileView:
+            api = self._api(upstox_client.UserApi, "user")
+            try:
+                resp = api.get_profile(API_VERSION)
+            except ApiException as e:
+                raise self._to_broker_error("get_profile", e)
+            p = getattr(resp, "data", None)
+            return ProfileView(
+                user_id=getattr(p, "user_id", "") or "",
+                user_name=getattr(p, "user_name", "") or "",
+                email=getattr(p, "email", "") or "",
+                broker=getattr(p, "broker", "") or "",
+            )
+
+        return self._cache_profile.get("__all__", _fetch)
 
     def search_instruments(self, query: str) -> list[InstrumentView]:
         self._require_token()

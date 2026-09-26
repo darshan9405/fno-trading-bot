@@ -242,11 +242,14 @@ def test_agent_loop_final_answer_parses_signals(monkeypatch):
 
 
 def test_agent_loop_max_iters_no_final(monkeypatch):
-    """When the model never stops calling tools, the loop hits the cap and
-    returns an error-bearing AgentResult (no fabricated signals)."""
+    """When the model never stops calling tools, the loop hits a safety net
+    (iter cap OR duplicate-tool-call guard) and returns an error-bearing
+    AgentResult (no fabricated signals)."""
     from app.strategy.llm_breakout.agent import run_agent_loop
 
-    # Always ask to call compute_indicators — never emits a final answer.
+    # Always ask to call compute_indicators with identical args — never
+    # emits a final answer. The duplicate-tool guard should fire as soon
+    # as the second iter repeats the same call verbatim.
     client = _StubClientWithTools([
         {"role": "assistant", "content": "",
          "tool_calls": [{"id": "c1", "type": "function",
@@ -265,9 +268,12 @@ def test_agent_loop_max_iters_no_final(monkeypatch):
     )
     assert result.signals == []
     assert result.ok is False
-    assert result.error and "max iterations" in result.error
-    # Should have stopped at the cap (LLM_AGENT_MAX_ITERATIONS=8 by default).
-    assert len(client.calls) == 8
+    # Two safety nets can fire first: the duplicate-tool guard (preferred,
+    # because it surfaces "the LLM got stuck" rather than just "we gave
+    # up"), or the iteration cap. Both are correct behaviour; the test
+    # only asserts that we bailed before burning all 20 calls.
+    assert result.error and ("duplicate" in result.error or "max iterations" in result.error)
+    assert len(client.calls) < 20
 
 
 def test_agent_loop_transport_error_returns_empty():

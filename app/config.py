@@ -90,6 +90,17 @@ class Config:
     # cannot burn the whole context budget. The detector short-circuits as
     # soon as the model returns a final answer.
     LLM_AGENT_MAX_ITERATIONS = _as_int(os.getenv("LLM_AGENT_MAX_ITERATIONS"), 8)
+    # Hard wall-time cap (seconds) for one per-instrument detection. Belt
+    # AND braces alongside LLM_AGENT_MAX_ITERATIONS: even if the iteration
+    # cap is high or the LLM provider is degraded, no single instrument can
+    # spend more than this long inside the agent loop. Default 90s matches
+    # the historic median breakthrough analysis; bump it for slow providers.
+    LLM_AGENT_WALL_BUDGET_S = _as_float(os.getenv("LLM_AGENT_WALL_BUDGET_S"), 90.0)
+    # Tool-call safety net: short-circuit when the same tool is called with
+    # the same arguments across N consecutive iterations. Some models drift
+    # into "let me fetch the same data again" loops that don't converge;
+    # this cap forces a decision.
+    LLM_AGENT_MAX_DUPLICATE_TOOLS = _as_int(os.getenv("LLM_AGENT_MAX_DUPLICATE_TOOLS"), 1)
     # Bing news search for the `fetch_news` tool. If `LLM_BING_API_KEY` is
     # set we hit the Bing News Search API; otherwise we scrape the public
     # Bing News search HTML (no key required).
@@ -127,6 +138,15 @@ class Config:
     # Reconciliation pass must wait this long after the entry fill before it
     # trusts the broker positions endpoint (Upstox propagation lag).
     RECON_MIN_AGE_MINUTES = _as_int(os.getenv("RECON_MIN_AGE_MINUTES"), 2)
+
+    # --- Broker read-side cache TTLs (seconds) -----------------------------
+    # These dedupe upstream calls when the Streamlit dashboard polls every 5s.
+    # Set any of these to "0" to disable caching for that field entirely.
+    CACHE_TTL_LTP_S = _as_float(os.getenv("CACHE_TTL_LTP_S"), 2.0)
+    CACHE_TTL_POSITIONS_S = _as_float(os.getenv("CACHE_TTL_POSITIONS_S"), 5.0)
+    CACHE_TTL_FUNDS_S = _as_float(os.getenv("CACHE_TTL_FUNDS_S"), 5.0)
+    CACHE_TTL_ORDER_BOOK_S = _as_float(os.getenv("CACHE_TTL_ORDER_BOOK_S"), 2.0)
+    CACHE_TTL_PROFILE_S = _as_float(os.getenv("CACHE_TTL_PROFILE_S"), 60.0)
 
     @property
     def is_dev(self):

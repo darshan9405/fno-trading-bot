@@ -9,7 +9,6 @@ import gzip
 import json
 import logging
 import os
-import socket
 import time
 import urllib.request
 
@@ -24,14 +23,24 @@ log = logging.getLogger(__name__)
 INSTRUMENT_URL = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
 MASTER_PATH = "/tmp/upstox_nse.json.gz"
 MASTER_TTL_SECONDS = 86400  # re-download the (large) master at most once a day
+# Per-request network timeout. Kept local (NOT global) so the rest of the
+# process isn't slowed down if a downstream call forgets to set its own.
+_DOWNLOAD_TIMEOUT_S = 20
 
 
 def fetch_master() -> pd.DataFrame:
     """Download (with a 1-day local cache) and parse the NSE instrument master."""
-    socket.setdefaulttimeout(20)  # bound every HTTP request
     if not os.path.exists(MASTER_PATH) or os.path.getmtime(MASTER_PATH) < time.time() - MASTER_TTL_SECONDS:
         log.info("downloading instrument master from Upstox")
-        urllib.request.urlretrieve(INSTRUMENT_URL, MASTER_PATH)
+        # ``urlretrieve`` ignores socket-level defaults when given no context;
+        # use a per-request timeout to keep the global interpreter state clean.
+        with urllib.request.urlopen(INSTRUMENT_URL, timeout=_DOWNLOAD_TIMEOUT_S) as resp:
+            with open(MASTER_PATH, "wb") as out:
+                while True:
+                    chunk = resp.read(64 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
     with gzip.open(MASTER_PATH, "rt", encoding="utf-8") as f:
         return pd.DataFrame(json.load(f))
 

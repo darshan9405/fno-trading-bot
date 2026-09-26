@@ -170,6 +170,49 @@ def _max_iterations() -> int:
         return 8
 
 
+def _wall_budget_s() -> float:
+    """Hard wall-time cap (seconds) for one per-instrument detection.
+
+    Belt AND braces alongside ``LLM_AGENT_MAX_ITERATIONS``: when the LLM
+    provider is degraded or the agent drifts into a degenerate tool-call
+    loop, this guarantees the run never blocks the scheduler for more than
+    the configured budget per instrument. 0 disables the check (not
+    recommended for production).
+    """
+    try:
+        from app.config import Config
+        cfg = Config()
+        return float(cfg.LLM_AGENT_WALL_BUDGET_S or 0.0)
+    except Exception:
+        return 90.0
+
+
+def _max_duplicate_tools() -> int:
+    try:
+        from app.config import Config
+        cfg = Config()
+        return _safe_int(cfg.LLM_AGENT_MAX_DUPLICATE_TOOLS, 1)
+    except Exception:
+        return 1
+
+
+def _tool_call_key(name: str, raw_args: Any) -> str:
+    """Stable hash of (tool name, normalised arguments) for duplicate detection."""
+    try:
+        if isinstance(raw_args, str):
+            try:
+                norm = json.loads(raw_args)
+            except json.JSONDecodeError:
+                norm = {"_raw": raw_args}
+        elif isinstance(raw_args, dict):
+            norm = raw_args
+        else:
+            norm = {"_raw": str(raw_args)}
+        return f"{name}|{json.dumps(norm, sort_keys=True, default=str)}"
+    except Exception:
+        return f"{name}|{str(raw_args)}"
+
+
 def _build_toolbox(context: dict[str, Any]) -> list[LLMTool]:
     return [
         IndicatorsTool(context),
@@ -453,10 +496,16 @@ def run_agent_loop(
     tool_schemas = _tool_schemas(tools)
     messages: list[dict[str, Any]] = [{"role": "user", "content": user_prompt}]
     max_iters = _max_iterations()
+    wall_budget_s = _wall_budget_s()
+    max_dup = _max_duplicate_tools()
     tool_call_log: list[dict[str, Any]] = []
     start_ts = time.monotonic()
     final: dict[str, Any] | None = None
     last_content = ""
+    # Set of (tool_name, args) hashes called in the PREVIOUS iteration.
+    # We compare against this at the start of each iter; if the model
+    # re-calls the same tool with the same args, that's a degenerate loop.
+    prev_iter_keys: set[str] = set()
 
     def _bail(error: str, short_reason: str) -> AgentResult:
         """Build an error-bearing result for any failure path.
@@ -480,6 +529,18 @@ def run_agent_loop(
 
     for it in range(max_iters):
         log.debug("agent_loop: iter %d/%d", it + 1, max_iters)
+        # Wall-time guard: short-circuit when the per-instrument budget is
+        # exhausted. Done BEFORE the LLM call so a degraded provider can't
+        # keep us blocked inside the network read.
+        if wall_budget_s > 0 and (time.monotonic() - start_ts) >= wall_budget_s:
+            log.warning(
+                "agent_loop: wall-time budget %.1fs exceeded after %d iter(s)",
+                wall_budget_s, it,
+            )
+            return _bail(
+                f"agent loop exceeded wall-time budget ({wall_budget_s:.0f}s)",
+                "LLM analysis timed out",
+            )
         if not hasattr(client, "chat_with_tools"):
             # Stub or legacy client without tool support — fall back to single
             # shot chat_json so existing tests still work.
@@ -536,11 +597,59 @@ def run_agent_loop(
             "content": content,
             "tool_calls": tool_calls,
         })
+        # Reset the duplicate-streak at the top of EACH iteration. The
+        # guard below only fires when the model makes the EXACT same call
+        # (same name + same args) across iterations, not when it makes
+        # multiple distinct calls in a single iter.
+        curr_iter_keys: set[str] = set()
+        duplicate_bail = False
         for tc in tool_calls:
             fn = tc.get("function") or {}
             name = fn.get("name") or ""
             args = fn.get("arguments")
             tool_call_id = tc.get("id") or ""
+            # Duplicate tool-call guard: when the same single call appears
+            # in BOTH this iter AND the previous one, the model is stuck.
+            # Inject a one-line tool result and bail rather than letting
+            # the next LLM call run (which would just hit the same tool
+            # again).
+            key = _tool_call_key(name, args)
+            curr_iter_keys.add(key)
+            if (
+                max_dup >= 0
+                and it >= 1
+                and len(tool_calls) == 1
+                and len(prev_iter_keys) == 1
+                and key in prev_iter_keys
+            ):
+                log.warning(
+                    "agent_loop: duplicate tool call %s (%s) across iters — short-circuiting",
+                    name, str(args)[:120],
+                )
+                result = {
+                    "warning": (
+                        f"duplicate tool call: {name} was just executed with "
+                        "the same arguments in the previous iteration; "
+                        "please converge with the data you already have."
+                    ),
+                    "duplicate_short_circuit": True,
+                }
+                tool_call_log.append({
+                    "iter": it + 1,
+                    "name": name,
+                    "args": args,
+                    "result": result,
+                    "short_circuit": True,
+                })
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "name": name,
+                    "content": json.dumps(result, default=str),
+                })
+                # Force the next iter to bail with a "no_signal" final.
+                duplicate_bail = True
+                break
             result = _execute_tool(tools, name, args)
             tool_call_log.append({
                 "iter": it + 1,
@@ -573,6 +682,17 @@ def run_agent_loop(
                 except Exception as cb_err:  # noqa: BLE001
                     # A bad UI hook must never kill the agent loop.
                     log.debug("agent_loop: on_tool_call raised: %s", cb_err)
+        # Save this iter's keys for the next iter's duplicate guard.
+        prev_iter_keys = curr_iter_keys
+        # Duplicate tool-call short-circuit: don't keep calling the LLM
+        # with the same degenerate history — bail through the same _bail
+        # helper used by the other safety nets so the AgentResult shape
+        # (error string, ok=False) is consistent across bail reasons.
+        if duplicate_bail:
+            return _bail(
+                "agent loop aborted: duplicate tool call detected",
+                "LLM did not converge (duplicate tool call)",
+            )
         if it == max_iters - 1:
             log.warning("agent_loop: hit max iterations (%d) for symbol", max_iters)
 
