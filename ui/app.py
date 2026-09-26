@@ -1944,7 +1944,10 @@ def _lead_gen_status_fragment():
         )
         with st.expander("Response body"):
             st.code(err.get("body") or "(empty)", language=None)
-        if st.button("Drop job handle", type="secondary", key="drop_job_handle"):
+        col_a, col_b = st.columns(2)
+        if col_a.button("Retry now", type="secondary", key="retry_poll_now"):
+            st.rerun()
+        if col_b.button("Drop job handle", type="secondary", key="drop_job_handle"):
             st.session_state.pop("lead_job", None)
             st.rerun()
         return

@@ -76,6 +76,24 @@ class JobState:
             d["started_at"] = self.started_at.isoformat()
         if self.finished_at is not None:
             d["finished_at"] = self.finished_at.isoformat()
+        # Convert deques inside `progress` to plain lists — Flask's
+        # `jsonify` calls `json.dumps` which doesn't know how to
+        # serialise `deque`, so without this the polling endpoint
+        # raises 500 every poll and the UI sees no live progress.
+        # `asdict()` returns a SHALLOW copy of nested dicts, so the
+        # live deque on the dataclass is preserved untouched; we
+        # only coerce at the serialisation boundary.
+        progress = d.get("progress") or {}
+        if isinstance(progress, dict) and "recent" in progress:
+            r = progress["recent"]
+            if not isinstance(r, list):
+                progress["recent"] = list(r)
+        # Same treatment for the tool-call buffer we added so the UI's
+        # LLM-activity feed can stream during the agent loop.
+        if isinstance(progress, dict) and "current_tool_calls" in progress:
+            tc = progress["current_tool_calls"]
+            if not isinstance(tc, list):
+                progress["current_tool_calls"] = list(tc)
         return d
 
 

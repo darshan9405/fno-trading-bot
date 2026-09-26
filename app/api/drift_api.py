@@ -65,10 +65,19 @@ def list_drifts():
                 for r in rows
             ]
             session.expunge_all()
-        return jsonify({"drifts": payload, "count": len(payload)})
+        return jsonify({"status": "ok", "drifts": payload, "count": len(payload)})
     except Exception as e:  # noqa: BLE001
+        # Use the structured envelope (`status: error`) so the UI can show
+        # the actual exception class + message instead of just "HTTP 500".
         log.exception("drift_api: list_drifts failed: %s", e)
-        return jsonify({"drifts": [], "count": 0, "error": str(e)}), 500
+        return jsonify({
+            "status": "error",
+            "error": {
+                "code": "internal_error",
+                "message": f"{type(e).__name__}: {e}",
+                "exception_class": type(e).__name__,
+            },
+        }), 500
 
 
 @bp.get("/summary")

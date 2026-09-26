@@ -162,8 +162,68 @@ def create_app(config: Config | None = None) -> Flask:
 
     register_blueprints(app)
 
+    # Lightweight schema-drift check: the project has no Alembic
+    # migrations, so model additions land without a migration step.
+    # If a column the model expects is missing from the actual table
+    # (e.g. `leads.meta`, added when the LLM-tool-call surface was
+    # extended), every endpoint that SELECTs it blows up with
+    # `no such column`. This hook adds the missing column once at
+    # startup so old deployments self-heal on next boot.
+    _run_schema_drift_fixes(app)
+
     @app.get("/api/health/live")
     def health_live():
         return jsonify({"status": "ok", "service": "fno-trading-bot"})
 
     return app
+
+
+def _run_schema_drift_fixes(app: Flask) -> None:
+    """Add columns the ORM expects but the live DB is missing.
+
+    The repo has no migration framework; instead we diff the live SQLite
+    schema against the SQLAlchemy metadata for the small set of columns
+    that have been added since the original schema and `ALTER TABLE` them
+    in if they're missing. This is intentionally narrow — only nullable
+    columns are added, no defaults, no data backfill — so a partial
+    failure can't corrupt existing rows.
+
+    Add a new entry below whenever a model gains a column without a
+    corresponding migration step.
+    """
+    from sqlalchemy import inspect, text
+    from app.db import init_db
+
+    # Make sure the engine is constructed (lazy in `db.py`).
+    init_db()
+    from app.db import _engine  # noqa: WPS433 — module-private by design
+
+    if _engine is None:
+        return
+    inspector = inspect(_engine)
+    table_names = set(inspector.get_table_names())
+
+    # Map of (table, column_name) -> (DDL type, nullable)
+    expected: dict[tuple[str, str], tuple[str, bool]] = {
+        ("leads", "meta"): ("JSON", True),  # Lead.lead_meta mapped_column("meta", JSON)
+    }
+
+    fixes_applied: list[str] = []
+    for (table, column), (col_type, nullable) in expected.items():
+        if table not in table_names:
+            continue
+        existing = {c["name"] for c in inspector.get_columns(table)}
+        if column in existing:
+            continue
+        nullable_sql = "" if nullable else " NOT NULL"
+        sql = f'ALTER TABLE {table} ADD COLUMN "{column}" {col_type}{nullable_sql}'
+        try:
+            with _engine.begin() as conn:
+                conn.execute(text(sql))
+            fixes_applied.append(f"{table}.{column} ({col_type}{nullable_sql})")
+            app.logger.info("schema-drift: added %s.%s", table, column)
+        except Exception as e:  # noqa: BLE001
+            app.logger.warning("schema-drift: failed to add %s.%s: %s", table, column, e)
+
+    if fixes_applied:
+        app.logger.info("schema-drift: applied fixes: %s", ", ".join(fixes_applied))
