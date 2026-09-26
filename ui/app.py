@@ -316,121 +316,46 @@ def _css() -> str:
         padding: 8px 16px;
     }}
 
-    /* Adjust chart container for better mobile display */
+    /* Charts: full-width, comfortable margin */
     .stPlotlyChart, .stLineChart, .stAreaChart, .stBarChart {{
         margin: 16px 0;
         width: 100% !important;
     }}
 
-    /* Improve spacing in history page */
-    .history-section {{
-        padding: 0 12px;
+    /* History page: small bit of inner padding + section dividers */
+    .history-section {{ padding: 0 12px; }}
+    .history-divider {{
+        border: 0; border-top: 1px solid #243049; margin: 16px 0;
     }}
-
-    /* History page specific mobile improvements */
+    .history-mobile-header {{
+        font-size: 0.9rem; font-weight: 700; color: #e2e8f0;
+        text-transform: uppercase; letter-spacing: 0.06em;
+        margin: 12px 0 6px 0; padding-bottom: 4px;
+        border-bottom: 2px solid #6366f1;
+    }}
+    .history-section-label {{ display: none; }}
     @media (max-width: 768px) {{
-        /* Stat tiles: 2-column grid on mobile for better readability */
-        .history-section .row {{
-            flex-wrap: wrap;
-            gap: 10px;
-            justify-content: center;
-            padding: 4px 0;
-        }}
+        .history-section-label {{ display: block; }}
         .history-section .stat-tile {{
-            flex: 1 1 140px;
-            min-width: 130px;
-            max-width: 200px;
-            padding: 10px 12px;
+            flex: 1 1 140px; min-width: 130px; max-width: 200px;
         }}
-        .history-section .stat-value {{
-            font-size: 1.1rem;
-        }}
+        .history-section .stat-value {{ font-size: 1.1rem; }}
         .history-section .stat-label {{
-            font-size: 0.62rem;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
+            font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.04em;
         }}
-
-        /* Period filter: make it prominent and touch-friendly */
-        .history-period-row {{
-            display: flex;
-            gap: 8px;
-            align-items: stretch;
-            margin-bottom: 12px;
-            flex-wrap: wrap;
-        }}
-        .history-period-row [data-testid="stSelectbox"] {{
-            flex: 1;
-            min-width: 140px;
-        }}
-        .history-period-row label {{
-            font-weight: 600;
-            font-size: 0.85rem;
-            color: #e2e8f0;
-            margin-bottom: 4px;
-        }}
-
-        /* Chart container padding */
-        .history-section .stLineChart,
-        .history-section .stPlotlyChart {{
-            margin: 12px 0;
-            padding: 4px;
-        }}
-
-        /* Divider between sections */
-        .history-divider {{
-            border: 0;
-            border-top: 1px solid #243049;
-            margin: 16px 0;
-        }}
-
-        /* Section header for mobile */
-        .history-mobile-header {{
-            font-size: 0.9rem;
-            font-weight: 700;
-            color: #e2e8f0;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            margin: 12px 0 6px 0;
-            padding-bottom: 4px;
-            border-bottom: 2px solid #6366f1;
-        }}
-
-        /* Dataframe row height for touch */
+        /* Sticky table header + touch-friendly row height on history tables */
         div[data-testid="stDataFrame"] {{
-            overflow-x: auto;
-            -webkit-overflow-scrolling: touch;
-            margin: 8px 0;
-            border-radius: 8px;
-            border: 1px solid #243049;
+            overflow-x: auto; -webkit-overflow-scrolling: touch;
+            margin: 8px 0; border-radius: 8px; border: 1px solid #243049;
         }}
-        div[data-testid="stDataFrame"] table {{
-            min-width: 100%;
-            font-size: 0.8rem;
-        }}
+        div[data-testid="stDataFrame"] table {{ min-width: 100%; font-size: 0.8rem; }}
         div[data-testid="stDataFrame"] th,
         div[data-testid="stDataFrame"] td {{
-            padding: 10px 6px !important;
-            white-space: nowrap;
-            min-height: 36px;
+            padding: 10px 6px !important; white-space: nowrap; min-height: 36px;
         }}
         div[data-testid="stDataFrame"] thead th {{
-            position: sticky;
-            top: 0;
-            background: #131c2e;
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-        }}
-    }}
-
-    /* Always-visible section labels for better navigation */
-    .history-section-label {{
-        display: none;
-    }}
-    @media (max-width: 768px) {{
-        .history-section-label {{
-            display: block;
+            position: sticky; top: 0; background: #131c2e;
+            font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em;
         }}
     }}
 
@@ -1049,7 +974,14 @@ def render_dashboard():
     # Day-at-a-glance stats (combines open + today's closed)
     _render_day_stats()
 
-    st.markdown("#### Today's queued signals")
+    # Header row: section title on the left, Generate button on the right.
+    # The button is also available on the Leads tab — same session_state,
+    # same progress panel — so starting a run from here is equivalent.
+    hdr_l, hdr_r = st.columns([3, 2], vertical_alignment="center")
+    with hdr_l:
+        st.markdown("#### Today's queued signals")
+    with hdr_r:
+        _render_generate_lead_button("dashboard")
     # The leads API no longer accepts status/date params; fetch the current
     # set and filter for queued on the client. The cleanup scheduler keeps
     # this list small (only active queued signals survive).
@@ -1078,7 +1010,7 @@ def render_dashboard():
             )
             st.dataframe(df, use_container_width=True, hide_index=True, height=min(40 + 35 * len(df), 420))
         else:
-            st.info("No queued signals today. Check the **Leads** tab to generate them manually.")
+            st.info("No queued signals today. Tap **Generate now** above, or enable more underlyings in **Instruments**.")
 
 
 def _track_pnl_history(total: float):
@@ -1091,7 +1023,9 @@ def _track_pnl_history(total: float):
 
 
 def _render_day_stats():
-    """Compact stats: # trades today, wins, biggest winner/loser, avg hold (proxy)."""
+    """Compact at-a-glance stats for today. Trimmed to 5 tiles: drop
+    redundant "Closed" + "Wins/Losses" (both are encoded in the others) and
+    "Avg P&L" (rarely more useful than biggest win/loss)."""
     today = datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
     closed = api.get_closed_trades(date=today)
     open_trades = api.get_open_trades(date=today)
@@ -1101,22 +1035,16 @@ def _render_day_stats():
 
     pnls = [(r.get("realized_pnl") or 0) for r in closed_rows]
     wins = sum(1 for v in pnls if v > 0)
-    losses = sum(1 for v in pnls if v < 0)
     win_rate = (wins / len(pnls) * 100) if pnls else None
     biggest_win = max(pnls) if pnls else None
     biggest_loss = min(pnls) if pnls else None
-    avg = (sum(pnls) / len(pnls)) if pnls else None
 
     tiles = [
         _stat_tile("Trades today", str(len(pnls) + len(open_rows))),
-        _stat_tile("Closed", f"{len(pnls)}"),
-        _stat_tile("Wins / Losses", f"{wins} / {losses}"),
         _stat_tile("Win rate",
                    f"{win_rate:.0f}%" if win_rate is not None else "—",
                    color=PROFIT if (win_rate or 0) >= 50 else MUTED),
-        _stat_tile("Avg P&L",
-                   _money(avg) if avg is not None else "—",
-                   color=_pnl_color(avg) if avg is not None else "#e2e8f0"),
+        _stat_tile("Closed", f"{len(pnls)}"),
         _stat_tile("Biggest win",
                    _money(biggest_win) if biggest_win is not None else "—",
                    color=PROFIT if biggest_win else MUTED),
@@ -1251,21 +1179,6 @@ def render_leads():
     # - Queued leads age out at 24h
     # - Processed leads (skipped/placed/expired) retained for 7 days
 
-    # Recover an in-flight run after a page reload. Streamlit wipes
-    # `session_state` on every browser refresh, so without this the
-    # "Generate now" button silently re-enables mid-run.
-    if "lead_job" not in st.session_state:
-        active = api.get_active_lead_gen_job()
-        active_data = active.get("data") if active.get("status") == "ok" else None
-        if active_data and active_data.get("id"):
-            st.session_state["lead_job"] = {
-                "id": active_data["id"],
-                "submitted_at": active_data.get("submitted_at"),
-            }
-
-    job = st.session_state.get("lead_job")
-    is_running = _is_job_running(job)
-
     # Fetch the lead list once and reuse it for both the toolbar (to size
     # the destructive-action confirmation) and the section rendering.
     resp = api.get_leads()
@@ -1278,35 +1191,7 @@ def render_leads():
     # Action buttons in their own column so each stays full-width on mobile
     # (a side column would shrink to ~20% of the screen width).
     _html("<div class='lead-toolbar'>")
-    button_label = "Generating…" if is_running else "Generate now"
-    if st.button(
-        button_label,
-        type="primary",
-        use_container_width=True,
-        disabled=is_running,
-        help=(
-            "A lead-generation run is already in progress."
-            if is_running else
-            "Run the lead generator manually (works outside trading hours)."
-        ),
-    ):
-        gen_resp = api.generate_leads()
-        if gen_resp.get("status") == "ok":
-            st.session_state["lead_job"] = {
-                "id": gen_resp["data"]["id"],
-                "submitted_at": gen_resp["data"]["submitted_at"],
-            }
-            st.toast("Lead generation started.", icon=":material/hourglass_top:")
-        elif gen_resp.get("error", {}).get("code") == "lead_generation_in_progress":
-            existing = (gen_resp.get("data") or {}).get("id")
-            if existing:
-                st.session_state["lead_job"] = {
-                    "id": existing,
-                    "submitted_at": (gen_resp.get("data") or {}).get("submitted_at"),
-                }
-            st.toast("A generation run is already in progress.", icon=":material/hourglass_top:")
-        else:
-            st.error(gen_resp.get("error", {}).get("message", "Generation failed."))
+    _render_generate_lead_button("leads_tab")
     if st.button(
         "Delete all leads",
         type="secondary",
@@ -1605,6 +1490,72 @@ def _is_job_running(job: dict | None) -> bool:
     # "running" state just means the button stays disabled for one more
     # render after the job actually finishes, which is harmless.
     return job.get("status", "running") == "running"
+
+
+def _recover_in_flight_lead_job() -> None:
+    """Re-attach session_state to any lead-gen run the server already has.
+
+    Streamlit wipes session_state on every browser refresh, so without this
+    the Generate button silently re-enables mid-run. We poll the server
+    lazily — once per render, only when session_state is empty — so a normal
+    click path doesn't double-call the recovery endpoint.
+    """
+    if "lead_job" in st.session_state:
+        return
+    active = api.get_active_lead_gen_job()
+    active_data = active.get("data") if active.get("status") == "ok" else None
+    if active_data and active_data.get("id"):
+        st.session_state["lead_job"] = {
+            "id": active_data["id"],
+            "submitted_at": active_data.get("submitted_at"),
+        }
+
+
+def _render_generate_lead_button(key_suffix: str) -> bool:
+    """The "Generate now" primary action.
+
+    Used by both the Dashboard's queued-signals header and the Leads tab so a
+    run started on one tab is visible on the other. Returns True if a fresh
+    run was just dispatched (so callers can show follow-up toasts).
+    """
+    _recover_in_flight_lead_job()
+    job = st.session_state.get("lead_job")
+    is_running = _is_job_running(job)
+    button_label = "Generating…" if is_running else "Generate now"
+    clicked = st.button(
+        button_label,
+        key=f"gen_lead_btn_{key_suffix}",
+        type="primary",
+        use_container_width=True,
+        disabled=is_running,
+        help=(
+            "A lead-generation run is already in progress."
+            if is_running else
+            "Run the lead generator manually (works outside trading hours)."
+        ),
+    )
+    if not clicked:
+        return False
+    gen_resp = api.generate_leads()
+    if gen_resp.get("status") == "ok":
+        st.session_state["lead_job"] = {
+            "id": gen_resp["data"]["id"],
+            "submitted_at": gen_resp["data"]["submitted_at"],
+        }
+        st.toast("Lead generation started.", icon=":material/hourglass_top:")
+        return True
+    err_code = gen_resp.get("error", {}).get("code")
+    if err_code == "lead_generation_in_progress":
+        existing = (gen_resp.get("data") or {}).get("id")
+        if existing:
+            st.session_state["lead_job"] = {
+                "id": existing,
+                "submitted_at": (gen_resp.get("data") or {}).get("submitted_at"),
+            }
+        st.toast("A generation run is already in progress.", icon=":material/hourglass_top:")
+        return False
+    st.error(gen_resp.get("error", {}).get("message", "Generation failed."))
+    return False
 
 
 def _format_elapsed(started_at: str | None, submitted_at: str | None) -> str:
