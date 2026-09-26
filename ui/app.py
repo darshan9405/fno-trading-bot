@@ -642,16 +642,8 @@ def _css() -> str:
       user-select: none;
     }}
     .lg-tool-args-wrap > summary::-webkit-details-marker {{ display: none; }}
-    .lg-tool-args-wrap > summary::before {{
-      content: '▸';
-      display: inline-block; margin-right: 5px;
-      color: {MUTED}; font-size: 0.68rem;
-      transition: transform .12s ease;
-    }}
-    .lg-tool-args-wrap[open] > summary::before {{
-      transform: rotate(90deg); color: {PRIMARY};
-    }}
     .lg-tool-args-wrap > summary:hover {{ color: {TEXT}; }}
+    .lg-tool-args-wrap[open] > summary {{ color: {PRIMARY}; }}
     .lg-tool-args-full {{
       background: {BG_RAISED};
       border: 1px solid {BORDER}; border-radius: 6px;
@@ -1709,12 +1701,12 @@ def _render_outcome_table(outcomes: list[dict]) -> None:
 
     One row per underlying the lead generator analysed. Layout:
 
-        [ Symbol ]  [ Status pill ]  [ Full reason (wraps freely) ]  [ Details → ]
+        [ Symbol ]  [ Status pill ]  [ Full reason (wraps freely) ]  [ Details ]
 
     Every column is sized for readability: the symbol column is fixed
     width, the status pill is compact, and the reason column gets the
     rest of the row — the full LLM rejection_reason or generated-lead
-    rationale, NO truncation. The "Details →" button opens the
+    rationale, NO truncation. The "Details" button opens the
     scan-outcome modal which carries every tool call, the full LLM
     rationale, indicators and error context.
     """
@@ -1845,7 +1837,7 @@ def render_leads():
         the lead generator analysed — just the instrument and the
         full LLM-supplied reason for generating or not generating a
         lead. Nothing else.
-      * **Click a row → full detail modal** with the complete LLM
+      * **Click a row to open the full detail modal** with the complete LLM
         rationale, every tool call (with args + result), the indicator
         snapshot and any error — no character truncation anywhere.
       * **Delete-all leads** at the bottom (typed-confirmation gated).
@@ -1931,7 +1923,7 @@ def render_leads():
     )
 
     # The main table — one row per underlying. Just symbol + status +
-    # full reason (NO truncation). Each row carries a "Details →"
+    # full reason (NO truncation). Each row carries a "Details"
     # button that opens the scan-outcome modal with the full LLM
     # thinking, every tool call, etc.
     st.caption(
@@ -2278,7 +2270,7 @@ def _render_tool_calls_full(tool_calls: list[dict]) -> None:
         result_keys = list(result.keys())
         with st.expander(
             f"`{i}. {label}`"
-            + (f"  →  {', '.join(result_keys[:4])}" if result_keys else ""),
+            + (f": {', '.join(result_keys[:4])}" if result_keys else ""),
             expanded=False,
         ):
             ca, cb = st.columns(2)
@@ -2553,10 +2545,10 @@ def _render_lead_progress_panel(data: dict) -> None:
     # jump as items appear. Render newest-first; cap to whatever the server
     # already trimmed to (typically 5).
     status_glyph = {
-        "leads": ("✓", PROFIT),
-        "empty": ("·", MUTED),
-        "cap":   ("·", WARN),
-        "error": ("✗", LOSS),
+        "leads": ("", PROFIT),
+        "empty": ("", MUTED),
+        "cap":   ("", WARN),
+        "error": ("", LOSS),
     }
 
     def _short_status(item: dict) -> str:
@@ -2911,7 +2903,7 @@ def _scan_outcome_modal(outcome_id: int) -> None:
             with st.expander(
                 f"`{i}. {name}`"
                 + (f"  ·  iter {iter_n}" if iter_n else "")
-                + (f"  →  {', '.join(list(result.keys())[:4])}" if result else ""),
+                + (f": {', '.join(list(result.keys())[:4])}" if result else ""),
                 expanded=False,
             ):
                 ca, cb = st.columns(2)
@@ -3002,7 +2994,7 @@ def render_instruments():
             if orig.get(sym) != bool(row["active"]):
                 meta = next(r for r in filtered if r["symbol"] == sym)
                 api.set_instrument_enabled(meta["id"], bool(row["active"]))
-                _html(f"<div class='muted'>{sym} → {'enabled' if row['active'] else 'disabled'}</div>")
+                _html(f"<div class='muted'>{sym}: {'enabled' if row['active'] else 'disabled'}</div>")
 
 
 def render_history():
@@ -3022,7 +3014,7 @@ def render_history():
     # Create mobile-friendly period selector with visible label
     col1, col2 = st.columns([1, 2])
     with col1:
-        st.markdown("<div class='history-section-label'>📅 Period</div>", unsafe_allow_html=True)
+        st.markdown("<div class='history-section-label'>Period</div>", unsafe_allow_html=True)
     with col2:
         period = st.selectbox("Period", periods, label_visibility="collapsed", key="hist_period")
     now = datetime.now(ZoneInfo("Asia/Kolkata"))
@@ -3076,7 +3068,7 @@ def render_history():
     st.markdown("<div class='history-section'>", unsafe_allow_html=True)
     
     # Mobile section header for stats
-    st.markdown("<div class='history-mobile-header'>📊 Performance Summary</div>", unsafe_allow_html=True)
+    st.markdown("<div class='history-mobile-header'>Performance Summary</div>", unsafe_allow_html=True)
     
     tiles = [
         _stat_tile("Trades", str(len(pnls))),
@@ -3097,7 +3089,7 @@ def render_history():
 
     # Equity curve from running P&L
     if len(cum) >= 2:
-        st.markdown("<div class='history-mobile-header'>📈 Equity Curve</div>", unsafe_allow_html=True)
+        st.markdown("<div class='history-mobile-header'>Equity Curve</div>", unsafe_allow_html=True)
         eq = pd.DataFrame({"Equity": cum})
         eq.index = pd.RangeIndex(1, len(eq) + 1, name="trade #")
         st.line_chart(eq, height=160, use_container_width=True)
@@ -3107,7 +3099,7 @@ def render_history():
     _html("<div class='history-divider'></div>")
 
     # Mobile section header for table
-    st.markdown("<div class='history-mobile-header'>📋 Trade History</div>", unsafe_allow_html=True)
+    st.markdown("<div class='history-mobile-header'>Trade History</div>", unsafe_allow_html=True)
     
     df = _trades_df(
         filtered,
@@ -3135,7 +3127,7 @@ def _render_post_trade_monitoring(filtered_rows: list[dict]) -> None:
       - Per-trade expander inside a selectbox — opens /closed/<id> and shows
         any drift events recorded for that trade.
     """
-    st.markdown("<div class='history-mobile-header'>🛰️ Post-trade monitoring</div>",
+    st.markdown("<div class='history-mobile-header'>Post-trade monitoring</div>",
                 unsafe_allow_html=True)
     _html("<div class='history-divider'></div>")
 
@@ -3544,7 +3536,7 @@ def render_settings():
         activate = st.number_input("Trail activate % (past initial SL)", min_value=0.0, max_value=50.0,
                                    value=float(cfg.get("trail_activate_pct", 20.0)),
                                    help="Trailing starts once LTP moves this far PAST the initial SL in the profitable direction. "
-                                        "Example: initial SL 90 + 20% → trailing begins at ltp ≥ 108.")
+                                        "Example: initial SL 90 + 20% then trailing begins at ltp ≥ 108.")
         gap = st.number_input("Trail gap % from current LTP", min_value=1.0, max_value=30.0,
                               value=float(cfg.get("trail_gap_pct", 10.0)),
                               help="After activation, SL = ltp ± this % (ratcheted — never moves against you).")
