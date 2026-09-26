@@ -465,6 +465,7 @@ def _scan_outcome_dict(row: LeadScanOutcome, *, include_tool_calls: bool = False
         "decision": row.decision,
         "lead_id": row.lead_id,
         "leads_created": row.leads_created,
+        "short_reason": row.short_reason,
         "rejection_reason": row.rejection_reason,
         "rationale": row.rationale,
         "strategy": row.strategy,

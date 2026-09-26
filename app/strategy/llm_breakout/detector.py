@@ -188,14 +188,35 @@ def detect_one(
     # The legacy path doesn't go through the agent loop, so there's no
     # tool-call log to surface. Rejection_reason comes from the model's
     # payload when present (newer prompts include it). Cap at 32 KB so
-    # the UI can render the full LLM explanation verbatim.
+    # the UI can render the full LLM explanation verbatim. Short_reason
+    # is the single-sentence UI summary (≤ 200 chars) the Leads table
+    # shows verbatim.
     rejection_reason = response.get("rejection_reason")
     if not rejection_reason and not raw_signals:
         reasoning_s = (reasoning or "").strip()
         if reasoning_s:
             rejection_reason = reasoning_s[:32_000]
+    short_reason = response.get("short_reason")
+    if not short_reason and not raw_signals:
+        snippet = (rejection_reason or reasoning or "").strip().replace("\n", " ")
+        if snippet:
+            short_reason = snippet[:200]
+    if not short_reason and raw_signals:
+        try:
+            first = raw_signals[0] if isinstance(raw_signals, list) else None
+            if isinstance(first, dict):
+                d = str(first.get("direction") or "").strip()
+                p = str(first.get("pattern_type") or "").strip().replace("_", " ")
+                r = str(first.get("rationale") or "").strip().replace("\n", " ")
+                if d and p and r:
+                    short_reason = f"{d} {p}: {r}"[:200]
+                elif d and p:
+                    short_reason = f"{d} {p} breakout"[:200]
+        except Exception:
+            pass
     return AgentResult(
         signals=valid,
+        short_reason=str(short_reason)[:200] if short_reason else None,
         rejection_reason=str(rejection_reason)[:32_000] if rejection_reason else None,
         tool_calls=[],
         agent_iters=0,

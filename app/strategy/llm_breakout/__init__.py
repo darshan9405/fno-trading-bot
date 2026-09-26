@@ -152,6 +152,7 @@ class LLMBreakoutStrategy(Strategy):
                         "generated" if agent_result.signals
                         else ("error" if agent_result.error else "no_signal")
                     ),
+                    "short_reason": agent_result.short_reason,
                     "rejection_reason": agent_result.rejection_reason,
                     "rationale": agent_result.rationale,
                     "tool_calls": list(agent_result.tool_calls),

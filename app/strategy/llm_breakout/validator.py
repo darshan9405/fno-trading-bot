@@ -48,6 +48,23 @@ def _finite_float(value: Any) -> float | None:
     return None
 
 
+def _safe_short_reason(value: Any) -> str:
+    """Normalise the LLM-supplied short_reason.
+
+    Drops non-strings, strips whitespace, and hard-caps at 200 chars so a
+    verbose model can't blow up the Leads table row. The cap matches the
+    system prompt's contract.
+    """
+    if not isinstance(value, str):
+        return ""
+    s = value.strip()
+    if not s:
+        return ""
+    if len(s) > 200:
+        s = s[:200].rstrip()
+    return s
+
+
 def validate_signals(
     signals: Any,
     today_close: float,

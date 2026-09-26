@@ -172,6 +172,11 @@ class LeadScanOutcome(Base):
     # the model declined to fire we still ask it to explain; this string is
     # what the user sees on the "Scanned stocks" panel.
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Single-sentence UI summary (≤ 200 chars) the Leads table shows
+    # verbatim. LLM-supplied when present; for transport / parse failures
+    # the lead generator fills in a stable fallback so the row never
+    # looks blank.
+    short_reason: Mapped[str | None] = mapped_column(String(220), nullable=True)
     # Last LLM rationale string (the agent loop's final assistant message)
     # so the UI modal can show the full reasoning verbatim. Truncated at
     # 4 KB on insert to keep the row small.

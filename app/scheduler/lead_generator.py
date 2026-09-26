@@ -127,6 +127,7 @@ def _process_one(
         if candles is None or candles.empty:
             return (inst, [], None, {
                 "decision": "no_signal",
+                "short_reason": "No candle history available",
                 "rejection_reason": "no candle history available for lookback",
                 "tool_calls": [],
                 "agent_iters": 0,
@@ -154,6 +155,7 @@ def _process_one(
             (str(e), traceback.format_exc()),
             {
                 "decision": "error",
+                "short_reason": "Lead generator error — see details",
                 "rejection_reason": None,
                 "tool_calls": [],
                 "agent_iters": 0,
@@ -286,7 +288,8 @@ def _persist_scan_outcome(
     # verbatim from the UI (no truncation anywhere on the user side).
     # Rationale / rejection_reason can run to several KB for a verbose
     # model; 64 KB each is plenty for an audit string and still well
-    # within SQLite/PostgreSQL TEXT limits.
+    # within SQLite/PostgreSQL TEXT limits. `short_reason` is hard-capped
+    # at 200 chars by the validator (single-sentence UI summary).
     rationale = scan_outcome.get("rationale") if scan_outcome else None
     if rationale and len(rationale) > 64_000:
         rationale = rationale[:64_000]
@@ -295,6 +298,15 @@ def _persist_scan_outcome(
     )
     if rejection_reason and len(rejection_reason) > 64_000:
         rejection_reason = rejection_reason[:64_000]
+    short_reason = scan_outcome.get("short_reason") if scan_outcome else None
+    if short_reason is not None:
+        short_reason = str(short_reason)
+        if len(short_reason) > 200:
+            short_reason = short_reason[:200].rstrip()
+        # Treat empty strings as no reason so the modal falls back to the
+        # rejection_reason block instead of rendering an empty box.
+        if not short_reason.strip():
+            short_reason = None
     error_text = scan_outcome.get("error") if scan_outcome else None
     if error_text and len(error_text) > 16_000:
         error_text = error_text[:16_000]
@@ -308,6 +320,7 @@ def _persist_scan_outcome(
         lead_id=primary_lead.id if primary_lead is not None else None,
         leads_created=len(leads_created),
         rejection_reason=rejection_reason,
+        short_reason=short_reason,
         rationale=rationale,
         tool_calls=scan_outcome.get("tool_calls") if scan_outcome else None,
         strategy=scan_outcome.get("strategy") if scan_outcome else None
@@ -730,34 +743,41 @@ def _append_scan_outcome(
     The deque is rendered into the UI's "Scanned stocks" panel via the
     2-second polling cycle, so each entry is shaped to match what the UI
     expects: symbol, decision (generated/no_signal/error), the LLM's
-    rejection_reason (truncated to a UI-friendly 200 chars), and a short
-    rationale snippet. Full tool-call detail is fetched from the
-    `LeadScanOutcome` row when the user expands a row.
+    `short_reason` (≤200 chars — single-sentence UI summary, shown
+    verbatim on the row), the verbose `rejection_reason` (full text, no
+    truncation; rendered in the modal), and the rationale / error strings.
+    Full tool-call detail is fetched from the `LeadScanOutcome` row when
+    the user clicks the row to open the detail modal.
     """
     decision = scan_outcome.get("decision") or (
         "generated" if created else "no_signal"
     )
+    short_reason = scan_outcome.get("short_reason")
+    if short_reason is not None:
+        short_reason = str(short_reason)
+        if len(short_reason) > 200:
+            short_reason = short_reason[:200].rstrip()
+        if not short_reason.strip():
+            short_reason = None
     rejection_reason = scan_outcome.get("rejection_reason")
-    if rejection_reason:
+    if rejection_reason is not None:
         rejection_reason = str(rejection_reason)
-        if len(rejection_reason) > 200:
-            rejection_reason = rejection_reason[:200] + "…"
+        # Persisted verbatim (capped at 64 KB by `_persist_scan_outcome`).
+        # The row preview keeps the FULL text so the operator can audit
+        # the LLM's reasoning at a glance — no UI-side truncation.
     rationale = scan_outcome.get("rationale")
-    if rationale:
+    if rationale is not None:
         rationale = str(rationale)
-        if len(rationale) > 200:
-            rationale = rationale[:200] + "…"
     error_text = scan_outcome.get("error")
-    if error_text:
+    if error_text is not None:
         error_text = str(error_text)
-        if len(error_text) > 200:
-            error_text = error_text[:200] + "…"
     scan_outcomes.appendleft({
         "symbol": getattr(inst, "symbol", "?") or "?",
         "underlying_key": getattr(inst, "spot_instrument_key", "") or "",
         "instrument_id": getattr(inst, "id", None),
         "decision": decision,
         "leads_created": len(created),
+        "short_reason": short_reason,
         "rejection_reason": rejection_reason,
         "rationale": rationale,
         "agent_iters": int(scan_outcome.get("agent_iters") or 0),

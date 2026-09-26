@@ -168,10 +168,12 @@ JSON only. No markdown fences, no commentary, no trailing commas.
       "confidence":    <float in [0, 1]>,
       "rationale":     "<one short sentence: what you saw>"
     }}
-  ]
+  ],
+  "short_reason":     "<ONE sentence (≤ 200 chars) shown verbatim on the operator dashboard>",
+  "rejection_reason": "<technical explanation; only required when signals is empty>"
 }}
 
-Empty: `{{"signals": []}}`.
+Empty: `{{"signals": [], "short_reason": "<one sentence>", "rejection_reason": "<technical detail>"}}`.
 
 # WORKED EXAMPLES
 

@@ -53,7 +53,12 @@ _MIGRATIONS = [
     ("trades", "sl_source", "VARCHAR(8)"),
     ("trades", "last_broker_check_at", "DATETIME"),
     ("trades", "closure_cause", "VARCHAR(32)"),
-]   
+    # Single-sentence (≤ 200 char) UI summary the Leads table shows
+    # verbatim. Populated by the LLM when it succeeds; filled with a
+    # stable fallback ("LLM unavailable — transport error", etc.) by
+    # the agent loop on bail paths so the table never looks blank.
+    ("lead_scan_outcomes", "short_reason", "VARCHAR(220)"),
+]
 
 def _run_sqlite_migrations(engine):
     if engine is None or not engine.url.drivername.startswith("sqlite"):

@@ -292,6 +292,81 @@ def test_agent_loop_transport_error_returns_empty():
     assert result.signals == []
     assert result.ok is False
     assert result.error is not None
+    # Transport error must surface a user-friendly single-sentence
+    # short_reason so the Leads table isn't blank for this row.
+    assert result.short_reason
+    assert len(result.short_reason) <= 200
+    assert "transport" in result.short_reason.lower() or "unavailable" in result.short_reason.lower()
+
+
+def test_agent_loop_short_reason_from_payload():
+    """The LLM's `short_reason` (≤200 chars) flows through AgentResult
+    verbatim so the Leads table can show it without truncation."""
+    from app.strategy.llm_breakout.agent import run_agent_loop
+
+    client = _StubClientWithTools([
+        {"role": "assistant",
+         "content": '{"signals": [], "short_reason": "Awaiting breakout confirmation", "rejection_reason": "longer explanation"}'},
+    ])
+    df = _df(260)
+    context = {"candles": df, "broker": None, "today": date.today(), "lot_size": 1}
+    result = run_agent_loop(
+        client,
+        system_prompt="sys", user_prompt="user",
+        context=context,
+        today_close=float(df["close"].iloc[-1]),
+        divergence_pct=0.5, min_confidence=0.7,
+    )
+    assert result.ok is True
+    assert result.short_reason == "Awaiting breakout confirmation"
+    assert result.rejection_reason == "longer explanation"
+
+
+def test_agent_loop_short_reason_truncated_at_200():
+    """A verbose short_reason is hard-capped at 200 chars so a row
+    never blows up the table layout."""
+    from app.strategy.llm_breakout.agent import run_agent_loop
+
+    long_reason = "x" * 500
+    client = _StubClientWithTools([
+        {"role": "assistant",
+         "content": f'{{"signals": [], "short_reason": "{long_reason}"}}'},
+    ])
+    df = _df(260)
+    context = {"candles": df, "broker": None, "today": date.today(), "lot_size": 1}
+    result = run_agent_loop(
+        client,
+        system_prompt="sys", user_prompt="user",
+        context=context,
+        today_close=float(df["close"].iloc[-1]),
+        divergence_pct=0.5, min_confidence=0.7,
+    )
+    assert result.short_reason is not None
+    assert len(result.short_reason) <= 200
+
+
+def test_agent_loop_short_reason_synthesised_when_missing():
+    """When the LLM forgets to populate short_reason but supplies a
+    rejection_reason, the agent loop derives one so the row stays
+    readable."""
+    from app.strategy.llm_breakout.agent import run_agent_loop
+
+    client = _StubClientWithTools([
+        {"role": "assistant",
+         "content": '{"signals": [], "rejection_reason": "range too tight; no volume expansion"}'},
+    ])
+    df = _df(260)
+    context = {"candles": df, "broker": None, "today": date.today(), "lot_size": 1}
+    result = run_agent_loop(
+        client,
+        system_prompt="sys", user_prompt="user",
+        context=context,
+        today_close=float(df["close"].iloc[-1]),
+        divergence_pct=0.5, min_confidence=0.7,
+    )
+    assert result.ok is True
+    assert result.short_reason
+    assert "range too tight" in result.short_reason.lower()
 
 
 def test_agent_loop_captures_rejection_reason():

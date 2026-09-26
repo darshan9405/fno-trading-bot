@@ -1726,7 +1726,6 @@ def _render_outcome_table(outcomes: list[dict]) -> None:
         "<div class='lead-table-h lead-table-h-sym'>Symbol</div>"
         "<div class='lead-table-h lead-table-h-status'>Status</div>"
         "<div class='lead-table-h lead-table-h-reason'>Reason</div>"
-        "<div class='lead-table-h lead-table-h-action'></div>"
         "</div>"
     )
 
@@ -1735,32 +1734,50 @@ def _render_outcome_table(outcomes: list[dict]) -> None:
 
 
 def _render_outcome_row(o: dict) -> None:
-    """Single row of the Leads table — symbol + status + full reason + details button."""
+    """Single row of the Leads table — symbol + status + short reason.
+
+    The row preview shows ONLY the LLM-supplied single-sentence
+    ``short_reason`` (≤200 chars) so the operator can scan the run at a
+    glance without opening the detail modal. The WHOLE row is clickable
+    once the row is persisted (DB id present) — clicking opens the
+    scan-outcome modal which renders the FULL LLM rationale, every
+    tool call (args + result), indicators and error context with NO
+    truncation.
+
+    Streaming rows (no DB id yet — the scan is still being processed
+    in the background worker thread) render a spinner-style placeholder
+    instead of a muted truncated caption.
+    """
     symbol = o.get("symbol") or "?"
     decision = (o.get("decision") or "no_signal").lower()
     status_label, status_color = _outcome_status_label(decision)
 
-    # The reason: prefer the LLM's rejection_reason for "no_signal", the
-    # full rationale for "generated", and the error string for "error".
-    # Fallback chain is identical to the modal so the row previews the
-    # same text the user will see when they click in.
-    reason = (
-        o.get("rejection_reason")
-        or o.get("rationale")
-        or o.get("error")
-        or "(no detail recorded)"
-    )
-    reason_str = str(reason)
+    # Row preview = short_reason only (≤200 chars, LLM-supplied). For
+    # an error row that didn't get a short_reason, fall back to the
+    # error string so the row never looks empty.
+    short_reason = o.get("short_reason")
+    if not short_reason:
+        # No short_reason — derive one so the row stays readable.
+        if decision == "error":
+            short_reason = o.get("error") or "Error — see details"
+        else:
+            short_reason = "(no detail recorded)"
+    short_reason_str = str(short_reason).strip()[:200] or "(no detail recorded)"
+
+    # Streaming rows (no DB id yet) can't open the modal — the row
+    # endpoint doesn't exist server-side. We render an inline spinner
+    # so it's clear the scan is still in flight.
+    is_streaming = o.get("id") is None
 
     # Row id for the Streamlit button key — for streaming rows the
     # server hasn't yet returned a stable id, so we synthesise one.
     row_key = (
         f"scan_view_{o.get('id')}"
-        if o.get("id") is not None
+        if not is_streaming
         else f"scan_view_stream::{o.get('symbol')}::{o.get('scanned_at')}"
     )
 
-    cols = st.columns([1.4, 1.0, 6.0, 1.2], gap="small")
+    cols = st.columns([1.4, 1.0, 7.2], gap="small")
     with cols[0]:
         _html(
             f"<div class='lead-table-cell lead-table-sym'>"
@@ -1773,30 +1790,29 @@ def _render_outcome_row(o: dict) -> None:
             f"{_html_escape(status_label)}</span></div>"
         )
     with cols[2]:
-        # Full reason — rendered as plain text so the user can copy
-        # it directly, no character limit, preserves line breaks.
-        _html(
-            f"<div class='lead-table-cell lead-table-reason'>"
-            f"{_html_escape(reason_str)}</div>"
-        )
-    with cols[3]:
-        # Streaming rows (no DB id yet) don't have a detail endpoint,
-        # so render a muted caption instead of a button that would 404.
-        if o.get("id") is not None:
+        if is_streaming:
+            # Inline spinner + status label — no truncated caption.
+            _html(
+                "<div class='lead-table-cell lead-table-reason' "
+                "style='color:#94a3b8;font-style:italic;display:flex;"
+                "align-items:center;gap:8px;'>"
+                "<span class='lg-spinner' style='width:12px;height:12px;'>"
+                "</span>Analyzing…</div>"
+            )
+        else:
+            # The whole cell is the click target — opens the detail
+            # modal with full LLM thinking, tool calls, indicators and
+            # any error context, no character truncation.
             if st.button(
-                "Details →",
+                short_reason_str,
                 key=row_key,
-                type="secondary",
+                type="tertiary",
                 use_container_width=True,
-                help="Open the full LLM thinking, tool calls, and indicators for this scan.",
+                help="Click to open the full LLM thinking, tool calls, "
+                     "indicators and error context for this scan.",
             ):
                 st.session_state["open_scan_outcome"] = int(o["id"])
                 st.rerun()
-        else:
-            _html(
-                "<div class='lead-table-cell lead-table-action muted' "
-                "style='font-size:0.72rem;text-align:center;'>scanning…</div>"
-            )
 
     _html("<hr class='lead-table-row-sep'/>")
 
@@ -2598,13 +2614,11 @@ def _render_lead_progress_panel(data: dict) -> None:
         if current else ""
     )
 
-    # Live LLM tool-call activity. `current_tool_calls` is appended by
-    # `lead_jobs._on_tool_call` every time the agent loop finishes a tool
-    # execution. Render the last 6, newest-first, with a tiny status pill
-    # so the user can see what the model is reasoning about in real time.
-    tool_calls = progress.get("current_tool_calls") or []
-    tool_html = _render_llm_tool_calls(tool_calls)
-    timeline_html = _render_llm_tool_calls_timeline(tool_calls)
+    # NOTE: the live LLM agent-loop tool-call activity (per-symbol
+    # timeline + 8-row preview feed) was removed — the operator only
+    # needs the symbol + status + short reason to monitor a run. Full
+    # tool-call detail is available inside the scan-outcome detail
+    # modal (open by clicking a row in the table below).
 
     _html(
         f"""
@@ -2625,8 +2639,6 @@ def _render_lead_progress_panel(data: dict) -> None:
             {f"<span style='color:{LOSS};'><b>{errors}</b> errors</span>" if errors else ""}
           </div>
           {current_html}
-          {tool_html}
-          {timeline_html}
           <div class='lg-recent'>{rows_html}</div>
         </div>
         """
@@ -2634,233 +2646,20 @@ def _render_lead_progress_panel(data: dict) -> None:
 
 
 def _render_llm_tool_calls_timeline(tool_calls: list[dict]) -> str:
-    """Per-symbol timeline of tool calls during the agent loop.
-
-    Groups `tool_calls` by `symbol` (newest symbol last) and shows a
-    compact step list per symbol:
-
-        RELIANCE
-          → indicators      iter 1
-          → breakout calc   iter 2
-          → option chain    iter 3
-
-    Mobile-first: only the latest 4 symbols are shown inline. The full
-    list lives inside a `<details>` so it doesn't blow up the
-    viewport on phones.
+    """Removed: live LLM tool-call activity was dropped from the live
+    progress panel (operator only needs symbol + status + short reason
+    to monitor a run). Function kept as a stub so any leftover import
+    keeps working; returns an empty string.
     """
-    if not tool_calls:
-        return ""
-
-    # Preserve insertion order so symbols appear in the order the agent
-    # first touched them.
-    grouped: dict[str, list[dict]] = {}
-    for tc in tool_calls:
-        s = tc.get("symbol") or "?"
-        grouped.setdefault(s, []).append(tc)
-
-    tool_labels = {
-        "compute_indicators": "indicators",
-        "breakout_calc":      "breakout calc",
-        "fetch_news":         "news",
-        "option_chain_summary": "option chain",
-    }
-
-    def _sym_block(sym: str, calls: list[dict]) -> str:
-        steps = "".join(
-            f"<span class='lg-tl-step'>"
-            f"<span class='muted'>→</span> "
-            f"<b>{_html_escape(tool_labels.get(c.get('name') or '?', c.get('name') or '?'))}</b>"
-            f" <span class='muted'>iter {c.get('iter') or '?'}</span>"
-            f"</span>"
-            for c in calls
-        )
-        return (
-            f"<div class='lg-tl-sym'>"
-            f"<span class='lg-tl-name'>{_html_escape(sym)}</span>"
-            f"<span class='lg-tl-count'>{len(calls)} step{'s' if len(calls) != 1 else ''}</span>"
-            f"</div>"
-            f"<div class='lg-tl-steps'>{steps}</div>"
-        )
-
-    sym_list = list(grouped.items())  # [(sym, [calls...]), ...]
-    PREVIEW_SYMS = 4
-    preview_syms = sym_list[-PREVIEW_SYMS:]  # most recent N
-    full_syms = sym_list
-    total = len(sym_list)
-
-    rows_preview = "".join(_sym_block(s, c) for s, c in preview_syms)
-    rows_full = "".join(_sym_block(s, c) for s, c in full_syms)
-
-    if total > PREVIEW_SYMS:
-        rows_block = (
-            f"<div class='lg-tl-list'>{rows_preview}</div>"
-            f"<details class='lg-tl-more'>"
-            f"<summary>+ {total - PREVIEW_SYMS} earlier symbol{'s' if (total - PREVIEW_SYMS) != 1 else ''}</summary>"
-            f"<div class='lg-tl-list' style='margin-top:6px;'>{rows_full}</div>"
-            f"</details>"
-        )
-    else:
-        rows_block = f"<div class='lg-tl-list'>{rows_preview}</div>"
-
-    return (
-        f"<div class='lg-tl-wrap'>"
-        f"<div class='lg-tl-head'>"
-        f"<span class='muted'>Per-symbol timeline</span>"
-        f"<span class='muted' style='font-weight:600;'>{total} symbol{'s' if total != 1 else ''}</span>"
-        f"</div>"
-        f"{rows_block}"
-        f"</div>"
-    )
+    return ""
 
 
 def _render_llm_tool_calls(tool_calls: list[dict]) -> str:
-    """Render the live LLM agent-loop activity feed.
-
-    Each entry is the compact payload emitted by
-    `agent.run_agent_loop` via `on_tool_call`. Layout per row:
-        [HH:MM:SS]  [tool-name]  [args (truncated)]  [symbol]  iter N
-    plus a small badge showing the result-keys the tool returned, so the
-    user can see at a glance *what data the model just got back*.
-
-    Newest event at the top with a faint orange tint; older events are
-    flat. Capped at 8 rows — the server already keeps a 12-entry ring
-    buffer, but past that becomes visual noise.
+    """Removed: live LLM tool-call activity feed was dropped from the
+    live progress panel. Function kept as a stub so any leftover import
+    keeps working; returns an empty string.
     """
-    if not tool_calls:
-        return ""
-    # Friendlier labels for the registered tools. Anything not in the map
-    # falls back to its raw name so future tools don't go missing silently.
-    tool_labels = {
-        "compute_indicators": "indicators",
-        "breakout_calc":      "breakout calc",
-        "fetch_news":         "news",
-        "option_chain_summary": "option chain",
-    }
-
-    def _short_ts(ts_iso: str | None) -> str:
-        # Server stamps `YYYY-MM-DDTHH:MM:SS.ffffff`; render HH:MM:SS only.
-        if not ts_iso:
-            return ""
-        # `T` separator → split, then HH:MM:SS
-        try:
-            t = ts_iso.split("T", 1)[1][:8]
-            return t
-        except Exception:
-            return ""
-
-    def _row(tc: dict, idx: int) -> str:
-        name = tc.get("name") or "?"
-        label = tool_labels.get(name, name)
-        sym = tc.get("symbol") or ""
-        args = tc.get("args") or ""
-        iter_n = tc.get("iter")
-        ts = _short_ts(tc.get("ts"))
-        result_keys = tc.get("result_keys") or []
-
-        # Args rendering: a tool's args payload can be a long JSON
-        # (e.g. `breakout_calc` with an `atr_series` array of 200
-        # candles). Showing the first 60 chars inline gets cut off
-        # mid-key; showing the full string blows the layout out.
-        # Compromise: render the args inside a `<details>` element so
-        # the user sees a one-line preview and can click to expand the
-        # full JSON in a monospace block.
-        args_str = str(args) if args else ""
-        if args_str.strip() in ("{}", ""):
-            args_block = "<span class='muted lg-tool-args-empty'>(no args)</span>"
-        else:
-            preview = args_str[:80].rstrip()
-            if len(args_str) > 80:
-                preview += "…"
-            full = _html_escape(args_str)
-            args_block = (
-                f"<details class='lg-tool-args-wrap'>"
-                f"<summary class='lg-tool-args-preview'>{_html_escape(preview)}</summary>"
-                f"<pre class='lg-tool-args-full'>{full}</pre>"
-                f"</details>"
-            )
-
-        result_keys_html = ""
-        if result_keys:
-            chips = "".join(
-                f"<span class='lg-tool-key'>{_html_escape(k)}</span>"
-                for k in result_keys[:4]
-            )
-            if len(result_keys) > 4:
-                chips += f"<span class='lg-tool-key muted'>+{len(result_keys) - 4}</span>"
-            result_keys_html = f"<span class='lg-tool-keys'>{chips}</span>"
-
-        is_latest = idx == 0
-        bg = "rgba(255,111,0,.10)" if is_latest else "transparent"
-        border = BORDER_STRONG if is_latest else BORDER
-        sym_html = (
-            f"<span class='lg-tool-sym'>{_html_escape(sym)}</span>" if sym else ""
-        )
-        iter_html = (
-            f"<span class='muted' style='font-size:0.68rem;'>iter {iter_n}</span>"
-            if iter_n is not None else ""
-        )
-        ts_html = (
-            f"<span class='muted lg-tool-ts'>{ts}</span>" if ts else ""
-        )
-
-        return (
-            f"<div class='lg-tool-row' style='background:{bg};border-color:{border};'>"
-            f"<span class='lg-tool-pill'>{_html_escape(label)}</span>"
-            f"{args_block}"
-            f"{result_keys_html}"
-            f"<span class='lg-tool-meta'>{sym_html}{iter_html}{ts_html}</span>"
-            f"</div>"
-        )
-
-    # Mobile-first: show only the LATEST 3 tool call rows by default
-    # (the rest is usually the same `indicators` call repeated per
-    # symbol — fills the viewport without telling the user anything
-    # new). The full log is still rendered below in a `<details>`
-    # block so a click reveals every call.
-    PREVIEW_ROWS = 3
-    preview_rows_html = "".join(_row(tc, i) for i, tc in enumerate(tool_calls[:PREVIEW_ROWS]))
-    full_rows_html = "".join(_row(tc, i) for i, tc in enumerate(tool_calls))
-
-    # Group count by tool name + symbol for the summary line.
-    by_tool: dict[str, int] = {}
-    by_symbol: dict[str, int] = {}
-    for tc in tool_calls:
-        n = tc.get("name") or "?"
-        s = tc.get("symbol") or "?"
-        by_tool[n] = by_tool.get(n, 0) + 1
-        by_symbol[s] = by_symbol.get(s, 0) + 1
-    top_tools = sorted(by_tool.items(), key=lambda kv: -kv[1])[:3]
-    tool_summary = " · ".join(
-        f"{tool_labels.get(n, n)} ×{c}" for n, c in top_tools
-    )
-    symbols_touched = len(by_symbol)
-
-    # Build the rows block. Preview is inline; full list lives inside
-    # a `<details>` so the panel stays compact on mobile.
-    total = len(tool_calls)
-    if total > PREVIEW_ROWS:
-        rows_block = (
-            f"<div class='lg-tool-list'>{preview_rows_html}</div>"
-            f"<details class='lg-tool-more'>"
-            f"<summary>+ {total - PREVIEW_ROWS} more call{'s' if (total - PREVIEW_ROWS) != 1 else ''}</summary>"
-            f"<div class='lg-tool-list' style='margin-top:6px;'>{full_rows_html}</div>"
-            f"</details>"
-        )
-    else:
-        rows_block = f"<div class='lg-tool-list'>{preview_rows_html}</div>"
-
-    return (
-        f"<div class='lg-tool-wrap'>"
-        f"<div class='lg-tool-head'>"
-        f"<span class='muted'>LLM agent loop</span>"
-        f"<span class='muted' style='font-weight:600;'>{len(tool_calls)} call{'s' if len(tool_calls) != 1 else ''}"
-        f" · {tool_summary or '—'}"
-        f" · {symbols_touched} symbol{'s' if symbols_touched != 1 else ''}"
-        f"</span>"
-        f"</div>"
-        f"{rows_block}"
-        f"</div>"
-    )
+    return ""
 
 
 def _html_escape(s: str) -> str:
@@ -3044,6 +2843,12 @@ def _scan_outcome_modal(outcome_id: int) -> None:
     label, _ = _outcome_status_label(decision)
     scanned_at = o.get("scanned_at_ist_label") or "—"
 
+    # The headline summary the operator saw in the row. When the LLM
+    # supplied one, we render it as the prominent takeaway so the modal
+    # opens with the same one-liner they clicked on, then expand into
+    # the full reasoning below.
+    short_reason = (o.get("short_reason") or "").strip()
+
     st.markdown(
         f"### {sym}  \n"
         f"<span style='color:#94a3b8;font-size:0.9rem;'>"
@@ -3055,6 +2860,28 @@ def _scan_outcome_modal(outcome_id: int) -> None:
         f"</span>",
         unsafe_allow_html=True,
     )
+
+    if short_reason:
+        # Render the LLM-supplied single-sentence summary as the
+        # headline. This is the same text the row preview showed, but
+        # here it's the entry point into the full detail below.
+        decision_color = {
+            "generated": PROFIT,
+            "error":     LOSS,
+            "no_signal": MUTED,
+        }.get(decision, MUTED)
+        st.markdown(
+            f"<div style='margin:10px 0 6px 0;padding:10px 12px;"
+            f"border-left:3px solid {decision_color};"
+            f"background:rgba(148,163,184,0.08);border-radius:6px;'>"
+            f"<div style='font-size:0.72rem;text-transform:uppercase;"
+            f"letter-spacing:0.06em;color:{decision_color};font-weight:600;'>"
+            f"Summary</div>"
+            f"<div style='font-size:0.95rem;color:#e2e8f0;margin-top:2px;'>"
+            f"{_html_escape(short_reason)}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
 
     if o.get("rejection_reason"):
         st.markdown("**Rejection reason (LLM)**")

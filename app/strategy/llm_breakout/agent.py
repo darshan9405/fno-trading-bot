@@ -56,12 +56,22 @@ class AgentResult:
                           rejects the setup). This is what the legacy
                           `detect_one()` return value used to be — the rest
                           of the dataclass is new.
+      short_reason:       A single-sentence (≤200 char) UI-friendly summary
+                          of the decision — the LLM populates this for both
+                          a generated lead AND a no-signal outcome. The
+                          Leads table shows this verbatim, so the operator
+                          can scan the run at a glance without opening the
+                          detail modal. The bail paths (transport error,
+                          parse failure, max iters) supply a stable
+                          human-readable fallback so the table is never
+                          empty even when the LLM never replied.
       rejection_reason:   The LLM-supplied natural-language explanation for
                           an empty signals list. The system prompt asks the
                           model to populate this field whenever it returns
                           `{"signals": []}` so the operator can audit the
                           decision; falls back to the last assistant
                           message if the field is absent / unparseable.
+                          Rendered in full inside the detail modal.
       tool_calls:         full log of every tool call the agent loop made,
                           in order, with args + result payload. The UI
                           modal shows this verbatim.
@@ -75,10 +85,12 @@ class AgentResult:
                           when `rejection_reason` is empty.
       error:              short string if the loop bailed (transport failure,
                           parse failure, validator rejection, max iters).
-                          Empty on success.
+                          Empty on success. Full technical detail; the UI
+                          shows it inside the detail modal.
     """
 
     signals: list[dict[str, Any]] = field(default_factory=list)
+    short_reason: str | None = None
     rejection_reason: str | None = None
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     agent_iters: int = 0
@@ -94,6 +106,7 @@ class AgentResult:
     def to_dict(self) -> dict[str, Any]:
         return {
             "signals": list(self.signals),
+            "short_reason": self.short_reason,
             "rejection_reason": self.rejection_reason,
             "tool_calls": list(self.tool_calls),
             "agent_iters": self.agent_iters,
@@ -111,12 +124,15 @@ FINAL_SYSTEM_SUFFIX = (
     "custom), `trigger_price` (float, within 0.5% of last close), "
     "`confidence` (float in [0,1]), `rationale` (≤ 200 chars). Do NOT wrap "
     "your JSON in markdown fences. If there is no breakout, return "
-    "`{\"signals\": []}` — never fabricate a signal. When signals is "
-    "empty you MUST also include a `rejection_reason` string explaining "
-    "*why* the setup was rejected (e.g. \"no volume expansion\", \"range "
-    "too tight\", \"awaiting breakout confirmation\", \"news risk too "
-    "high\"). This reason is shown verbatim on the operator dashboard so "
-    "they can audit why the bot passed on a symbol. Keep it under 400 chars."
+    "`{\"signals\": []}` — never fabricate a signal. You MUST also include "
+    "a top-level `short_reason` string (≤ 200 chars, ONE sentence) that "
+    "the operator dashboard shows verbatim on a row: for a generated lead, "
+    "say which pattern broke and where (e.g. \"CALL horizontal_range at "
+    "1010; resistance cluster cleared\"); for a no-signal outcome, say why "
+    "(e.g. \"awaiting breakout confirmation\", \"range too tight\", \"no "
+    "volume expansion\", \"news risk too high\"). When signals is empty "
+    "ALSO include `rejection_reason` with the longer technical explanation "
+    "(up to 400 chars); the short reason stays short."
 )
 
 
@@ -442,11 +458,19 @@ def run_agent_loop(
     final: dict[str, Any] | None = None
     last_content = ""
 
-    def _bail(error: str) -> AgentResult:
-        """Build an error-bearing result for any failure path."""
+    def _bail(error: str, short_reason: str) -> AgentResult:
+        """Build an error-bearing result for any failure path.
+
+        `error` is the full technical detail (shown in the modal's Error
+        block). `short_reason` is a single-sentence UI summary that lets
+        the Leads table stay readable even when the LLM never replied —
+        it must be ≤200 chars so it fits cleanly in a row without
+        truncation.
+        """
         llm_health.record_error(error)
         return AgentResult(
             signals=[],
+            short_reason=short_reason[:200],
             tool_calls=list(tool_call_log),
             agent_iters=len(tool_call_log),
             agent_duration_s=round(time.monotonic() - start_ts, 3),
@@ -465,7 +489,7 @@ def run_agent_loop(
                 last_content = json.dumps(response)
                 final = response
             else:
-                return _bail("non-dict fallback response")
+                return _bail("non-dict fallback response", "LLM returned an unexpected response")
             break
         try:
             msg = client.chat_with_tools(
@@ -475,9 +499,19 @@ def run_agent_loop(
             )
         except Exception as e:  # noqa: BLE001
             log.warning("agent_loop: chat_with_tools raised: %s", e)
-            return _bail(f"chat_with_tools raised: {e}")
+            return _bail(
+                f"chat_with_tools raised: {e}",
+                "LLM unavailable — request failed",
+            )
         if msg is None:
-            return _bail("transport error in agent loop")
+            # The OpenAI-compat client returns None after exhausting retries
+            # on transport / 5xx errors. Surface a friendly one-liner so the
+            # operator sees "LLM unavailable" in the table instead of the
+            # raw internal tag; full detail still lives in `error`.
+            return _bail(
+                "transport error in agent loop",
+                "LLM unavailable — transport error",
+            )
         content = msg.get("content") or ""
         tool_calls = msg.get("tool_calls") or []
         if content:
@@ -488,7 +522,10 @@ def run_agent_loop(
             if final is None:
                 log.warning("agent_loop: final content not parseable as JSON (truncated): %s",
                             (content or "")[:300])
-                return _bail("final content not parseable JSON")
+                return _bail(
+                    "final content not parseable JSON",
+                    "LLM response unparseable",
+                )
             break
 
         # Tool-call turn: append the assistant message verbatim (so the LLM
@@ -543,23 +580,50 @@ def run_agent_loop(
     if final is None:
         # Cap hit; try to salvage a last parse from the latest content.
         log.warning("agent_loop: max iters reached; final_content=[:300] %s", last_content[:300])
-        return _bail("agent loop max iterations reached")
+        return _bail(
+            "agent loop max iterations reached",
+            "LLM didn't reach a decision (max iterations)",
+        )
 
     raw_signals = final.get("signals", [])
     if not isinstance(raw_signals, list):
-        return _bail("malformed signals payload")
+        return _bail(
+            "malformed signals payload",
+            "LLM returned malformed signals payload",
+        )
 
-    # Pull the model-supplied reason for an empty signals list. If the model
-    # didn't populate it (older prompts, degenerate output) fall back to the
-    # last assistant message so the UI never gets a NULL reason for a
-    # non-empty "no_signal" outcome. Cap both at 32 KB — the LLM's
-    # explanation can run to several KB for a thorough rejection, and the
-    # UI renders the full text verbatim (no character truncation).
+    # Pull the model-supplied reasons. `short_reason` is the single-sentence
+    # UI summary the table shows verbatim (≤200 chars). `rejection_reason`
+    # is the verbose natural-language explanation the modal renders in full.
+    # Both fall back gracefully so the UI never sees NULL for a
+    # non-empty "no_signal" outcome.
+    short_reason = final.get("short_reason")
     rejection_reason = final.get("rejection_reason")
     if not rejection_reason and not raw_signals:
         fallback = (last_content or "").strip()
         if fallback:
             rejection_reason = fallback[:32_000]
+    if not short_reason and not raw_signals:
+        # No explicit short_reason from the LLM — derive one from the
+        # available context so the table always has something to show.
+        snippet = (rejection_reason or rationale or "").strip().replace("\n", " ")
+        if snippet:
+            short_reason = snippet[:200]
+    if not short_reason and raw_signals:
+        # Generated signals — synthesise a one-line summary from the first
+        # valid signal's `rationale` field (always populated by validate_signals).
+        try:
+            first = raw_signals[0] if isinstance(raw_signals, list) else None
+            if isinstance(first, dict):
+                d = str(first.get("direction") or "").strip()
+                p = str(first.get("pattern_type") or "").strip().replace("_", " ")
+                r = str(first.get("rationale") or "").strip().replace("\n", " ")
+                if d and p and r:
+                    short_reason = f"{d} {p}: {r}"[:200]
+                elif d and p:
+                    short_reason = f"{d} {p} breakout"[:200]
+        except Exception:
+            pass
 
     valid = validate_signals(
         raw_signals,
@@ -569,12 +633,19 @@ def run_agent_loop(
     )
     if not valid and raw_signals:
         log.info("agent_loop: validator rejected all %d signals for symbol", len(raw_signals))
+        # All signals got filtered out by the structural validator — the
+        # table should still show *why*, not blank. Use the LLM's own
+        # short_reason / rejection_reason if present; otherwise fall back
+        # to a generic one-liner so the row stays readable.
+        if not short_reason:
+            short_reason = "All signals failed structural validation"[:200]
 
     # Successful transport + parse path — count as a success regardless of
     # how many signals survived.
     llm_health.record_success()
     return AgentResult(
         signals=valid,
+        short_reason=str(short_reason)[:200] if short_reason else None,
         rejection_reason=str(rejection_reason)[:32_000] if rejection_reason else None,
         tool_calls=list(tool_call_log),
         agent_iters=len(tool_call_log),
