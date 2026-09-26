@@ -27,9 +27,12 @@ Env (config.py):
   - LLM_TIMEOUT_S          request timeout (seconds)
   - LLM_MAX_RETRIES        transport retries on 429/5xx
   - LLM_AGENT_MAX_ITERATIONS  cap on tool-call loop iterations
-  - LLM_BING_API_KEY       optional, enables Bing News Search API
   - LLM_APP_URL            optional -> HTTP-Referer header
   - LLM_APP_NAME           optional -> X-Title header
+
+The `fetch_news` tool hits Google's public News RSS (no API key). The old
+`LLM_BING_API_KEY` env var was retired along with the Bing News Search API
+on 2025-08-11 and has been removed from config.
 
 Failure mode: any LLM error or empty result -> `generate()` returns `[]`.
 No math fallback (the math detectors were removed). On any per-instrument

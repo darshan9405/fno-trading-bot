@@ -14,8 +14,8 @@ Every tool the LLM can call exposes:
 
 Tools are pure functions of their arguments plus injected context. Context
 (dict) is passed to every tool at construction time so the LLM can stay
-agnostic of broker wiring (e.g. news tool needs the user's Bing API key;
-indicator tool needs the per-instrument candles).
+agnostic of broker wiring (e.g. indicator tool needs the per-instrument
+candles, option chain tool needs the broker + today).
 """
 
 from __future__ import annotations

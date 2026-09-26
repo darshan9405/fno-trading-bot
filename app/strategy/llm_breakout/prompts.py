@@ -143,7 +143,7 @@ series:
    avg_loss)`, `position_size(capital, risk_pct, entry, stop)`, \
    `volatility_percentile(current_atr, atr_series)`, `trend_strength(ema_fast, \
    ema_slow)`, `pullback_depth(close, swing_high, swing_low)`.
-3. `fetch_news(symbol, n)` — recent Bing News headlines for the underlying \
+3. `fetch_news(symbol, n)` — recent Google News headlines for the underlying \
    (earnings, sector rotation, regulatory). Use sparingly — call it only \
    after the chart-based case is already strong; news is supporting context, \
    not a primary trigger.

@@ -101,10 +101,10 @@ class Config:
     # into "let me fetch the same data again" loops that don't converge;
     # this cap forces a decision.
     LLM_AGENT_MAX_DUPLICATE_TOOLS = _as_int(os.getenv("LLM_AGENT_MAX_DUPLICATE_TOOLS"), 1)
-    # Bing news search for the `fetch_news` tool. If `LLM_BING_API_KEY` is
-    # set we hit the Bing News Search API; otherwise we scrape the public
-    # Bing News search HTML (no key required).
-    LLM_BING_API_KEY = os.getenv("LLM_BING_API_KEY", "")
+    # `fetch_news` tool uses Google News' public RSS endpoint — no API key
+    # required and no quota, so there is no env var to configure. (Microsoft
+    # retired the Bing News Search API on 2025-08-11 and Bing's HTML scrape
+    # is no longer reliable, hence the move.)
     # Optional LLM provider app-attribution headers (some providers use them
     # for analytics and rate-limit bumps). Off by default.
     LLM_APP_URL = os.getenv("LLM_APP_URL", "")

@@ -166,6 +166,165 @@ def test_fetch_news_requires_symbol():
     assert out.get("items") == []
 
 
+# A trimmed real-world Google News RSS payload for "RELIANCE" — modelled on
+# the live format so the parser is exercised against the actual shape (title
+# with ` - Publisher` suffix, Google redirect `<link>`, `<source url=...>`,
+# RFC-822 `<pubDate>`, HTML-embedded `<description>`).
+_GOOGLE_NEWS_SAMPLE = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>RELIANCE - Google News</title>
+    <item>
+      <title>Reliance Q3 results: profit jumps 12% YoY - The Economic Times</title>
+      <link>https://news.google.com/rss/articles/CBMi_TEST_ARTICLE_1</link>
+      <pubDate>Fri, 26 Sep 2026 09:30:00 GMT</pubDate>
+      <description>&lt;a href=&quot;...&quot;&gt;Reliance Q3 results&lt;/a&gt;&amp;nbsp;&lt;font&gt;The Economic Times&lt;/font&gt;</description>
+      <source url="https://m.economictimes.com">The Economic Times</source>
+    </item>
+    <item>
+      <title>Jio IPO: Reliance arm files DRHP with SEBI - Livemint</title>
+      <link>https://news.google.com/rss/articles/CBMi_TEST_ARTICLE_3</link>
+      <pubDate>Wed, 24 Sep 2026 07:15:00 GMT</pubDate>
+      <description>&lt;a href=&quot;...&quot;&gt;Jio IPO: Reliance arm files DRHP&lt;/a&gt;</description>
+      <source url="https://www.livemint.com">Livemint</source>
+    </item>
+    <item>
+      <title>Reliance Jio wins regulatory nod for IPO - CNBC - CNBC</title>
+      <link>https://news.google.com/rss/articles/CBMi_TEST_ARTICLE_4</link>
+      <pubDate>Sun, 30 Aug 2026 07:00:00 GMT</pubDate>
+      <description>&lt;a href=&quot;...&quot;&gt;Reliance Jio wins regulatory nod&lt;/a&gt;</description>
+      <source url="https://www.cnbc.com">CNBC</source>
+    </item>
+  </channel>
+</rss>"""
+
+# Tiny feed used to exercise the dedup path: same headline syndicated by two
+# different publishers should collapse to a single row.
+_GOOGLE_NEWS_DUP_SAMPLE = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>Reliance Q3 results: profit jumps 12% YoY - The Economic Times</title>
+      <link>https://news.google.com/rss/articles/DUP_A</link>
+      <pubDate>Fri, 26 Sep 2026 09:30:00 GMT</pubDate>
+      <source url="https://m.economictimes.com">The Economic Times</source>
+    </item>
+    <item>
+      <title>Reliance Q3 results: profit jumps 12% YoY - Business Standard</title>
+      <link>https://news.google.com/rss/articles/DUP_B</link>
+      <pubDate>Fri, 26 Sep 2026 08:00:00 GMT</pubDate>
+      <source url="https://www.business-standard.com">Business Standard</source>
+    </item>
+  </channel>
+</rss>"""
+
+
+class _FakeHTTPResponse:
+    def __init__(self, content: bytes, status_code: int = 200) -> None:
+        self.content = content
+        self.status_code = status_code
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class _FakeHTTPClientOK:
+    def __init__(self, content: bytes) -> None:
+        self._content = content
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get(self, url, headers=None):
+        return _FakeHTTPResponse(self._content, 200)
+
+
+class _FakeHTTPClientFail:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get(self, url, headers=None):
+        raise RuntimeError("network down")
+
+
+def test_fetch_news_parses_google_rss(monkeypatch):
+    from app.strategy import llm_breakout
+    from app.strategy.llm_breakout.tools import news
+
+    monkeypatch.setattr(news.httpx, "Client", lambda *a, **kw: _FakeHTTPClientOK(_GOOGLE_NEWS_SAMPLE))
+
+    out = llm_breakout.tools.news.FetchNewsTool({}).run({"symbol": "RELIANCE", "n": 5})
+
+    assert "items" in out and len(out["items"]) == 3
+    # Title suffix ` - Publisher` is stripped (we already surface it via `source`).
+    assert out["items"][0]["title"] == "Reliance Q3 results: profit jumps 12% YoY"
+    assert out["items"][1]["title"] == "Jio IPO: Reliance arm files DRHP with SEBI"
+    # Source = publisher display name from <source> element.
+    assert out["items"][0]["source"] == "The Economic Times"
+    assert out["items"][1]["source"] == "Livemint"
+    # URL is the Google redirect (clickable to the real article in a browser).
+    assert out["items"][0]["url"].startswith("https://news.google.com/rss/articles/")
+    # pubDate converted to ISO-8601 UTC.
+    assert out["items"][0]["published"] == "2026-09-26T09:30:00Z"
+    # age is a relative string and not None when published is known.
+    assert out["items"][0]["age"] is not None
+    # Snippet has HTML stripped.
+    assert "<" not in out["items"][0]["snippet"]
+    assert out["count"] == 3
+
+
+def test_fetch_news_dedupes_syndications(monkeypatch):
+    """Same headline published by multiple outlets should collapse to one row."""
+    from app.strategy.llm_breakout.tools.news import FetchNewsTool
+
+    monkeypatch.setattr(
+        "app.strategy.llm_breakout.tools.news.httpx.Client",
+        lambda *a, **kw: _FakeHTTPClientOK(_GOOGLE_NEWS_DUP_SAMPLE),
+    )
+
+    out = FetchNewsTool({}).run({"symbol": "RELIANCE", "n": 5})
+    titles = [it["title"] for it in out["items"]]
+    # Two items share a headline (syndication) — only one survives.
+    assert len(titles) == 1
+    assert titles[0] == "Reliance Q3 results: profit jumps 12% YoY"
+
+
+def test_fetch_news_handles_network_failure(monkeypatch):
+    from app.strategy.llm_breakout.tools.news import FetchNewsTool
+
+    monkeypatch.setattr(
+        "app.strategy.llm_breakout.tools.news.httpx.Client",
+        lambda *a, **kw: _FakeHTTPClientFail(),
+    )
+
+    out = FetchNewsTool({}).run({"symbol": "RELIANCE", "n": 5})
+    # Network failure → empty list with the standard "no news returned" note.
+    assert out["items"] == []
+    assert "note" in out
+
+
+def test_fetch_news_handles_empty_feed(monkeypatch):
+    from app.strategy.llm_breakout.tools.news import FetchNewsTool
+
+    empty = b"""<?xml version="1.0" encoding="UTF-8"?>
+    <rss version="2.0"><channel><title>empty</title></channel></rss>"""
+    monkeypatch.setattr(
+        "app.strategy.llm_breakout.tools.news.httpx.Client",
+        lambda *a, **kw: _FakeHTTPClientOK(empty),
+    )
+
+    out = FetchNewsTool({}).run({"symbol": "ILLIQUID", "n": 5})
+    assert out["items"] == []
+    assert "note" in out
+
+
 # --- OptionChainSummaryTool ----------------------------------------------
 
 

@@ -111,16 +111,9 @@ def detect_one(
         "today": today or date.today(),
         "lot_size": 1,
     }
-    # Pass Bing key from config so news tool can choose API vs HTML scrape.
-    try:
-        from app.config import Config
-        cfg = Config()
-        context["bing_api_key"] = cfg.LLM_BING_API_KEY
-        # Most underlyings use a known lot size hint from the Instrument row
-        # (the lead generator passes it through `_run_for_instrument`). When
-        # the detector is called without that hint (legacy tests), default to 1.
-    except Exception:
-        context["bing_api_key"] = ""
+    # Most underlyings use a known lot size hint from the Instrument row
+    # (the lead generator passes it through `_run_for_instrument`). When
+    # the detector is called without that hint (legacy tests), default to 1.
 
     # If the client supports tool calling, drive the agent loop. Otherwise
     # fall back to a single chat_json call (preserves the original pipeline
