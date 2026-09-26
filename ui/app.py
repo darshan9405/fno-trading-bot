@@ -24,44 +24,60 @@ import streamlit as st
 
 import api_client as api
 
-st.set_page_config(page_title="TradePilot", page_icon=":material/show_chart:", layout="centered")
+st.set_page_config(
+    page_title="TradePilot",
+    page_icon=":material/show_chart:",
+    layout="centered",
+    initial_sidebar_state="expanded",
+    menu_items=None,
+)
 
-# Palette — Kite/Groww-inspired dark trading-terminal theme.
-# Pure black backgrounds, single orange accent (Kite-style), semantic
-# green/red for P&L. Sharp 4px corners, dense data, tabular numerals.
-PRIMARY = "#ff6f00"    # Kite orange — single accent for actions / focus
-SECONDARY = "#94a3b8"  # informational, not a decoration
-PROFIT = "#00b386"     # Kite-style green for positive P&L
-LOSS = "#e74c3c"       # Kite-style red for negative P&L
-WARN = "#f5a623"       # amber for warnings / killswitch
-MUTED = "#8a8a8a"      # secondary text
-TEXT = "#e6e6e6"       # primary text (slightly off-white, less harsh than #fff)
-TEXT_DIM = "#5a5a5a"   # tertiary text / dividers
-BG = "#0e0e0e"         # near-black app background (Kite-style)
-CARD = "#1a1a1a"       # raised surfaces
-CARD_HOVER = "#222222" # hover state
-BORDER = "#2a2a2a"     # default 1px border
-BORDER_STRONG = "#3a3a3a"  # hover/active border
+# Palette — Groww-inspired dark trading-terminal theme.
+# Pure-black canvas (Groww dark mode), single teal accent for primary actions
+# (Groww brand #04B488), subtle elevated cards, semantic green/red for P&L.
+# Generous 6-8px radii (Groww uses rounded surfaces), tight typography, and
+# crisp tabular numerals for a fintech look.
+PRIMARY = "#04b488"        # Groww brand teal — single accent for actions / focus
+PRIMARY_HOVER = "#1ed09a"  # brighter teal on hover (Groww "Grow" state)
+PRIMARY_DIM = "#0a3d2f"    # subtle teal tint for active backgrounds
+SECONDARY = "#a0a0a0"      # informational, not a decoration
+ACCENT_PURPLE = "#617bff"  # Groww "prime" purple — used sparingly
+PROFIT = "#00b887"         # Groww green for positive P&L
+LOSS = "#ea5455"           # Groww red for negative P&L
+WARN = "#f5a623"           # amber for warnings / killswitch
+MUTED = "#8b8b8b"          # secondary text
+TEXT = "#ffffff"           # primary text (Groww white-on-black)
+TEXT_DIM = "#6a6a6a"       # tertiary text / dividers
+BG = "#000000"             # pure black — Groww dark mode canvas
+BG_RAISED = "#0a0a0a"      # panels that float above BG slightly
+CARD = "#121212"           # raised surfaces (Groww surface primary)
+CARD_HOVER = "#1a1a1a"     # hover state
+CARD_ACTIVE = "#202020"    # pressed/active state
+BORDER = "#222222"         # default 1px border
+BORDER_STRONG = "#333333"  # hover/active border
+SIDEBAR_BG = "#0a0a0a"     # sidebar background (Groww-style layered)
 
 REFRESH_SECS = 5       # dashboard + open trades auto-refresh cadence
 
 
 def _css() -> str:
-    """Kite/Groww-style dark trading-terminal design.
+    """Groww-inspired dark trading-terminal design.
 
-    Pure black background, orange action accent, sharp 4px corners, dense
-    tabular data. Semantic green/red for P&L — colour means something.
+    Pure black canvas, Groww teal as the single accent, generously rounded
+    cards (6-8px), subtle elevated surfaces, semantic green/red for P&L.
+    Clean tabular typography for fintech feel.
     """
     return f"""
     <style>
     /* ---------- Typography ---------- */
     html, body, [class*="css"], .stApp, .stMarkdown {{
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui,
-                   'Helvetica Neue', Arial, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter',
+                   system-ui, 'Helvetica Neue', Arial, sans-serif;
       -webkit-font-smoothing: antialiased;
       -moz-osx-font-smoothing: grayscale;
+      letter-spacing: -0.005em;
     }}
-    /* Tabular nums everywhere — Kite-style aligned numeric columns */
+    /* Tabular nums everywhere — fintech-aligned numeric columns */
     .stApp, [data-testid="stMetricValue"], [data-testid="stMetricDelta"],
     .stat-value, .big-num, [data-testid="stDataFrame"] {{
       font-variant-numeric: tabular-nums;
@@ -73,113 +89,130 @@ def _css() -> str:
 
     /* ---------- App shell ---------- */
     .stApp {{
-      max-width: 1000px; margin: auto;
+      max-width: 1080px; margin: auto;
       background: {BG}; color: {TEXT};
     }}
     [data-testid="stHeader"] {{ background: transparent; height: 0; }}
     footer {{ visibility: hidden; }}
     #MainMenu {{ visibility: hidden; }}
 
-    /* ---------- Sidebar — Kite-style compact nav ---------- */
+    /* ---------- Global: kill any default anchor link styling ----------
+       Belt-and-braces: even though the login/logout buttons are real
+       Streamlit `<button>` widgets (no anchor tag in the DOM), any stray
+       link embedded elsewhere in the page must never look like the
+       browser-default underlined hyperlink. */
+    a, a:link, a:visited, a:hover, a:active, a:focus {{
+      color: inherit !important;
+      text-decoration: none !important;
+      outline: none !important;
+    }}
+    a, a * {{ cursor: pointer; }}
+
+    /* ---------- Sidebar — Groww-style layered nav ---------- */
     [data-testid="stSidebar"] {{
-      background: #050505;
+      background: {SIDEBAR_BG};
       border-right: 1px solid {BORDER};
-      padding: 14px 10px;
-      min-width: 200px;
+      padding: 16px 12px;
+      min-width: 220px;
     }}
     [data-testid="stSidebar"] h3 {{
-      color: {MUTED}; font-size: 0.65rem; text-transform: uppercase;
-      letter-spacing: .14em; margin: 16px 8px 6px 8px; font-weight: 700;
+      color: {MUTED}; font-size: 0.66rem; text-transform: uppercase;
+      letter-spacing: .14em; margin: 18px 10px 8px 10px; font-weight: 700;
     }}
     .sidebar-brand {{
-      margin: 2px 8px 2px; color: {TEXT};
-      font-size: 1.0rem; font-weight: 700; letter-spacing: -.005em;
-      display: flex; align-items: center; gap: 8px;
+      margin: 4px 10px 4px; color: {TEXT};
+      font-size: 1.05rem; font-weight: 700; letter-spacing: -.01em;
+      display: flex; align-items: center; gap: 10px;
     }}
     .sidebar-brand .brand-mark {{
-      width: 20px; height: 20px; border-radius: 4px;
-      background: {PRIMARY};
+      width: 24px; height: 24px; border-radius: 6px;
+      background: linear-gradient(135deg, {PRIMARY}, {PRIMARY_HOVER});
       display: inline-flex; align-items: center; justify-content: center;
-      color: #fff; font-weight: 800; font-size: 11px; font-family: -apple-system, sans-serif;
+      color: #000; font-weight: 800; font-size: 12px;
+      box-shadow: 0 1px 6px rgba(4,180,136,.35);
     }}
     .sidebar-subtitle {{
-      margin: 0 8px 14px; color: {MUTED}; font-size: .72rem;
+      margin: 0 10px 16px; color: {MUTED}; font-size: .74rem;
     }}
     .sidebar-divider {{
-      border: 0; border-top: 1px solid {BORDER}; margin: 12px 6px;
+      border: 0; border-top: 1px solid {BORDER}; margin: 14px 8px;
     }}
-    /* Compact radio nav: 32px row height, no inner padding bloat */
+    /* Compact radio nav (Groww uses pill-shaped nav rows) */
     [data-testid="stSidebar"] [data-testid="stRadio"] label {{
-      font-size: 0.86rem; padding: 6px 10px;
-      border-radius: 3px; min-height: 30px;
+      font-size: 0.88rem; padding: 8px 12px;
+      border-radius: 6px; min-height: 34px;
       font-weight: 500;
     }}
-    [data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] {{ gap: 1px; }}
+    [data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] {{ gap: 2px; }}
     [data-testid="stRadio"] label {{
       transition: background .12s ease, color .12s ease;
     }}
     [data-testid="stRadio"] label:hover {{
-      background: #1a1a1a; color: {TEXT};
+      background: {CARD_HOVER}; color: {TEXT};
     }}
     [data-testid="stRadio"] label:has(input:checked) {{
-      background: #1a1a1a; color: {PRIMARY};
+      background: {PRIMARY_DIM}; color: {PRIMARY_HOVER};
       font-weight: 600;
       box-shadow: inset 2px 0 0 {PRIMARY};
     }}
     .sidebar-card {{
       background: {CARD}; border: 1px solid {BORDER};
-      border-radius: 4px; padding: 8px 10px; margin: 4px 4px;
+      border-radius: 8px; padding: 10px 12px; margin: 6px 4px;
     }}
     .sidebar-card-title {{
-      color: {MUTED}; font-size: .65rem; font-weight: 700;
-      letter-spacing: .1em; text-transform: uppercase; margin-bottom: 6px;
+      color: {MUTED}; font-size: .66rem; font-weight: 700;
+      letter-spacing: .12em; text-transform: uppercase; margin-bottom: 8px;
     }}
     .status-row {{
-      display: flex; align-items: center; gap: 7px;
-      min-height: 18px; font-size: .76rem; color: {TEXT};
+      display: flex; align-items: center; gap: 8px;
+      min-height: 20px; font-size: .78rem; color: {TEXT};
     }}
-    .status-label {{ flex: 1; color: {MUTED}; font-size: .74rem; }}
-    .status-value {{ font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; font-size: .76rem; }}
+    .status-label {{ flex: 1; color: {MUTED}; font-size: .76rem; }}
+    .status-value {{ font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; font-size: .78rem; }}
     .status-dot {{
-      width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: {MUTED};
+      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: {MUTED};
     }}
     .status-dot.ok {{ background: {PROFIT}; }}
     .status-dot.warn {{ background: {WARN}; }}
     .status-dot.err {{ background: {LOSS}; }}
 
-    /* ---------- Stat tiles — dense ---------- */
-    .stat-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }}
+    /* ---------- Stat tiles — denser, smoother ---------- */
+    .stat-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }}
     .stat-tile {{
       background: {CARD}; border: 1px solid {BORDER};
-      border-radius: 4px; padding: 8px 10px;
-      transition: border-color .12s ease, background .12s ease;
+      border-radius: 8px; padding: 10px 12px;
+      transition: border-color .12s ease, background .12s ease, transform .12s ease;
     }}
-    .stat-tile:hover {{ border-color: {BORDER_STRONG}; background: {CARD_HOVER}; }}
+    .stat-tile:hover {{
+      border-color: {BORDER_STRONG}; background: {CARD_HOVER};
+      transform: translateY(-1px);
+    }}
     .stat-label {{
-      color: {MUTED}; font-size: .65rem; text-transform: uppercase;
-      letter-spacing: .08em; font-weight: 700;
+      color: {MUTED}; font-size: .66rem; text-transform: uppercase;
+      letter-spacing: .1em; font-weight: 700;
     }}
     .stat-value {{
-      color: {TEXT}; font-size: 1.1rem; font-weight: 700;
-      margin-top: 2px; font-variant-numeric: tabular-nums;
+      color: {TEXT}; font-size: 1.15rem; font-weight: 700;
+      margin-top: 4px; font-variant-numeric: tabular-nums;
     }}
 
     /* ---------- Badges + chips ---------- */
     .badge {{
-      display: inline-block; border-radius: 2px; padding: 2px 7px;
+      display: inline-block; border-radius: 4px; padding: 3px 8px;
       font-size: 0.7rem; font-weight: 600; letter-spacing: .02em;
       font-variant-numeric: tabular-nums;
     }}
     .chip {{
-      display: inline-block; border-radius: 3px; padding: 2px 8px;
+      display: inline-block; border-radius: 6px; padding: 3px 10px;
       font-size: 0.7rem; font-weight: 600;
       background: {CARD}; color: {MUTED};
       margin-right: 4px; border: 1px solid {BORDER};
       font-variant-numeric: tabular-nums;
+      transition: background .12s ease, color .12s ease, border-color .12s ease;
     }}
     .chip-active {{
-      background: rgba(255,111,0,.10); color: {PRIMARY};
-      border-color: rgba(255,111,0,.4);
+      background: {PRIMARY_DIM}; color: {PRIMARY_HOVER};
+      border-color: rgba(4,180,136,.4);
     }}
     .dot {{ width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }}
     @keyframes ks-pulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.35; }} }}
@@ -188,154 +221,165 @@ def _css() -> str:
       display: inline-block; animation: ks-pulse 1.5s infinite;
     }}
     .ks-banner {{
-      border-radius: 4px; padding: 10px 14px; margin: 6px 0;
-      border: 1px solid {BORDER}; border-left: 2px solid {LOSS};
+      border-radius: 8px; padding: 12px 16px; margin: 8px 0;
+      border: 1px solid {BORDER}; border-left: 3px solid {LOSS};
       font-weight: 600; background: {CARD};
     }}
 
     /* ---------- Position cards (open trades) ---------- */
     .row {{ display: flex; gap: 8px; align-items: center; }}
-    .conf-bar {{ height: 4px; background: {BORDER}; overflow: hidden; }}
-    .conf-fill {{ height: 4px; transition: width .3s ease; }}
+    .conf-bar {{ height: 4px; background: {BORDER}; overflow: hidden; border-radius: 4px; }}
+    .conf-fill {{ height: 4px; transition: width .3s ease; border-radius: 4px; }}
     .sec-title {{
-      color: {MUTED}; font-size: 0.72rem; text-transform: uppercase;
-      letter-spacing: .12em; margin: 16px 0 6px 0; font-weight: 700;
+      color: {MUTED}; font-size: 0.74rem; text-transform: uppercase;
+      letter-spacing: .14em; margin: 18px 0 8px 0; font-weight: 700;
     }}
-    .big-num {{ font-size: 1.4rem; font-weight: 700; font-variant-numeric: tabular-nums; }}
-    .muted {{ color: {MUTED}; font-size: 0.82rem; }}
+    .big-num {{ font-size: 1.5rem; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }}
+    .muted {{ color: {MUTED}; font-size: 0.84rem; }}
     .pos-card {{
       background: {CARD}; border: 1px solid {BORDER};
-      border-radius: 4px; padding: 12px 14px; margin: 6px 0;
-      transition: border-color .12s ease;
+      border-radius: 8px; padding: 14px 16px; margin: 8px 0;
+      transition: border-color .12s ease, background .12s ease;
     }}
-    .pos-card:hover {{ border-color: {BORDER_STRONG}; }}
-    .pos-card.up {{ border-left: 2px solid {PROFIT}; }}
-    .pos-card.down {{ border-left: 2px solid {LOSS}; }}
-    .pos-card.flat {{ border-left: 2px solid {TEXT_DIM}; }}
+    .pos-card:hover {{ border-color: {BORDER_STRONG}; background: {CARD_HOVER}; }}
+    .pos-card.up {{ border-left: 3px solid {PROFIT}; }}
+    .pos-card.down {{ border-left: 3px solid {LOSS}; }}
+    .pos-card.flat {{ border-left: 3px solid {TEXT_DIM}; }}
 
-    /* ---------- Buttons — flat, sharp ---------- */
+    /* ---------- Buttons — rounded, smooth ---------- */
     [data-testid="stButton"] button {{
-      border-radius: 3px; font-weight: 600;
-      transition: background .12s ease, border-color .12s ease;
+      border-radius: 6px; font-weight: 600;
+      transition: background .12s ease, border-color .12s ease, transform .06s ease;
     }}
     [data-testid="stButton"] button[kind="primary"] {{
       background: {PRIMARY}; border-color: {PRIMARY}; color: #000;
     }}
     [data-testid="stButton"] button[kind="primary"]:hover {{
-      background: #ff8a1a; border-color: #ff8a1a; color: #000;
+      background: {PRIMARY_HOVER}; border-color: {PRIMARY_HOVER}; color: #000;
+      box-shadow: 0 2px 12px rgba(4,180,136,.30);
     }}
-    [data-testid="stButton"] button[kind="primary"]:active {{ background: #e66600; }}
+    [data-testid="stButton"] button[kind="primary"]:active {{
+      background: {PRIMARY}; transform: translateY(1px);
+    }}
     [data-testid="stButton"] button[kind="secondary"] {{
       background: {CARD}; border: 1px solid {BORDER}; color: {TEXT};
     }}
     [data-testid="stButton"] button[kind="secondary"]:hover {{
       background: {CARD_HOVER}; border-color: {BORDER_STRONG};
     }}
-    /* Generate button — same primary orange, slightly taller */
+    /* Generate button — same primary teal, slightly taller */
     .lead-toolbar .stButton > button[kind="primary"] {{
-      min-height: 42px; font-size: 0.95rem;
+      min-height: 44px; font-size: 0.96rem; border-radius: 8px;
     }}
 
-    /* SSO login button — same flat orange */
+    /* SSO login button — full-width teal CTA (anchor under the hood) */
     .sso-login-btn {{
-      display: inline-flex; align-items: center; justify-content: center;
-      gap: 8px; cursor: pointer; user-select: none;
-      background: {PRIMARY}; color: #000;
-      padding: 0.75rem 1rem; border-radius: 3px;
-      font-weight: 700; font-size: 0.95rem; line-height: 1.2;
-      text-decoration: none; margin: 6px 0; width: 100%;
+      display: inline-flex !important; align-items: center; justify-content: center;
+      gap: 10px; cursor: pointer; user-select: none;
+      background: {PRIMARY}; color: #000 !important;
+      padding: 0.85rem 1.1rem !important; border-radius: 8px;
+      font-weight: 700; font-size: 1.0rem; line-height: 1.2;
+      text-decoration: none !important; margin: 8px 0; width: 100%;
       border: 1px solid {PRIMARY};
-      transition: background .12s ease, border-color .12s ease;
+      transition: background .12s ease, border-color .12s ease, box-shadow .12s ease;
+      box-shadow: 0 2px 12px rgba(4,180,136,.18);
     }}
     .sso-login-btn:hover {{
-      background: #ff8a1a; border-color: #ff8a1a; color: #000;
+      background: {PRIMARY_HOVER}; border-color: {PRIMARY_HOVER}; color: #000 !important;
+      box-shadow: 0 4px 18px rgba(4,180,136,.35);
     }}
-    .sso-login-btn:active {{ background: #e66600; }}
-    .sso-login-btn:focus-visible {{ outline: 2px solid {PRIMARY}; outline-offset: 2px; }}
+    .sso-login-btn:active {{ background: {PRIMARY}; }}
+    .sso-login-btn:focus-visible {{
+      outline: 2px solid {PRIMARY}; outline-offset: 2px;
+      color: #000 !important;
+    }}
 
     /* Sidebar logout — neutral, hover reveals danger */
     .sidebar-logout-btn {{
-      display: flex; align-items: center; justify-content: center;
+      display: flex !important; align-items: center; justify-content: center;
       gap: 8px; cursor: pointer; user-select: none;
-      background: {CARD}; color: {TEXT};
-      border: 1px solid {BORDER}; border-radius: 3px;
-      padding: 0 1rem; margin: 4px 0 6px 0; height: 34px;
-      font-size: 0.86rem; font-weight: 600; line-height: 1.2;
-      text-decoration: none; box-sizing: border-box;
+      background: {CARD}; color: {TEXT} !important;
+      border: 1px solid {BORDER}; border-radius: 6px;
+      padding: 0 1rem; margin: 4px 0 6px 0; height: 38px;
+      font-size: 0.88rem; font-weight: 600; line-height: 1.2;
+      text-decoration: none !important; box-sizing: border-box;
       transition: background .12s ease, border-color .12s ease, color .12s ease;
     }}
     .sidebar-logout-btn:hover {{
-      background: {CARD_HOVER}; border-color: {BORDER_STRONG}; color: {LOSS};
+      background: {CARD_HOVER}; border-color: rgba(234,84,85,.4);
+      color: {LOSS} !important;
     }}
-    .sidebar-logout-btn:focus-visible {{ outline: 2px solid {PRIMARY}; outline-offset: 2px; }}
+    .sidebar-logout-btn:focus-visible {{
+      outline: 2px solid {PRIMARY}; outline-offset: 2px; color: {TEXT} !important;
+    }}
 
-    /* Sidebar controls — Kite-compact */
+    /* Sidebar controls — Groww-compact */
     [data-testid="stSidebar"] [data-testid="stButton"] button {{
-      height: 34px; font-size: 0.86rem; border-radius: 3px; font-weight: 600;
+      height: 38px; font-size: 0.88rem; border-radius: 6px; font-weight: 600;
     }}
-    [data-testid="stSidebar"] [data-testid="stExpander"] details {{ border-radius: 3px; }}
+    [data-testid="stSidebar"] [data-testid="stExpander"] details {{ border-radius: 8px; }}
 
     /* Form labels — small caps for density */
     [data-testid="stNumberInput"] label, [data-testid="stSlider"] label,
     [data-testid="stCheckbox"] label, [data-testid="stTextInput"] label,
     [data-testid="stTimeInput"] label, [data-testid="stSelectbox"] label,
     [data-testid="stMultiSelect"] label {{
-      font-weight: 500; font-size: 0.78rem; color: {MUTED};
-      text-transform: uppercase; letter-spacing: .04em;
+      font-weight: 500; font-size: 0.8rem; color: {MUTED};
+      text-transform: uppercase; letter-spacing: .06em;
     }}
 
-    /* ---------- Tables — dense Kite look ---------- */
+    /* ---------- Tables — clean Groww look ---------- */
     div[data-testid="stDataFrame"] {{
       background: {CARD}; border: 1px solid {BORDER};
-      border-radius: 4px; overflow: hidden;
+      border-radius: 8px; overflow: hidden;
       font-variant-numeric: tabular-nums;
     }}
-    div[data-testid="stDataFrame"] table {{ font-size: 0.82rem; }}
+    div[data-testid="stDataFrame"] table {{ font-size: 0.84rem; }}
     div[data-testid="stDataFrame"] th {{
-      background: #050505 !important;
+      background: {BG_RAISED} !important;
       color: {MUTED} !important; font-weight: 700;
-      text-transform: uppercase; font-size: 0.66rem; letter-spacing: .08em;
-      padding: 8px 10px !important;
+      text-transform: uppercase; font-size: 0.68rem; letter-spacing: .1em;
+      padding: 10px 12px !important;
       border-bottom: 1px solid {BORDER} !important;
     }}
     div[data-testid="stDataFrame"] td {{
-      padding: 7px 10px !important;
-      border-bottom: 1px solid #1f1f1f !important;
+      padding: 9px 12px !important;
+      border-bottom: 1px solid rgba(255,255,255,0.04) !important;
       color: {TEXT};
     }}
 
     /* Touch-friendly select + buttons + charts */
-    div[data-baseweb="select"] > div {{ min-height: 32px; }}
-    div[data-baseweb="select"] [role="option"] {{ min-height: 30px; }}
-    button[kind="primary"], button[kind="secondary"] {{ min-height: 36px; padding: 6px 14px; }}
+    div[data-baseweb="select"] > div {{ min-height: 34px; border-radius: 6px; }}
+    div[data-baseweb="select"] [role="option"] {{ min-height: 32px; }}
+    button[kind="primary"], button[kind="secondary"] {{ min-height: 38px; padding: 6px 14px; }}
     .stPlotlyChart, .stLineChart, .stAreaChart, .stBarChart {{
-      margin: 12px 0; width: 100% !important;
+      margin: 14px 0; width: 100% !important;
     }}
 
     /* Streamlit's built-in metric (Dashboard P&L row) */
     [data-testid="stMetric"] {{
       background: {CARD}; border: 1px solid {BORDER};
-      border-radius: 4px; padding: 10px 12px;
+      border-radius: 8px; padding: 12px 14px;
     }}
     [data-testid="stMetricLabel"] {{
-      color: {MUTED}; font-size: 0.66rem;
-      text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700;
+      color: {MUTED}; font-size: 0.68rem;
+      text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700;
     }}
     [data-testid="stMetricValue"] {{
-      color: {TEXT}; font-size: 1.25rem; font-weight: 700;
-      font-variant-numeric: tabular-nums; padding-top: 1px;
+      color: {TEXT}; font-size: 1.3rem; font-weight: 700;
+      font-variant-numeric: tabular-nums; padding-top: 2px; letter-spacing: -.01em;
     }}
     [data-testid="stMetricDelta"] {{
-      font-size: 0.74rem; font-variant-numeric: tabular-nums;
+      font-size: 0.78rem; font-variant-numeric: tabular-nums;
     }}
 
     /* ---------- History page ---------- */
     .history-section {{ padding: 0 4px; }}
-    .history-divider {{ border: 0; border-top: 1px solid {BORDER}; margin: 14px 0; }}
+    .history-divider {{ border: 0; border-top: 1px solid {BORDER}; margin: 16px 0; }}
     .history-mobile-header {{
-      font-size: 0.78rem; font-weight: 700; color: {TEXT};
-      text-transform: uppercase; letter-spacing: 0.1em;
-      margin: 12px 0 6px 0; padding-bottom: 4px;
+      font-size: 0.8rem; font-weight: 700; color: {TEXT};
+      text-transform: uppercase; letter-spacing: 0.12em;
+      margin: 14px 0 8px 0; padding-bottom: 6px;
       border-bottom: 1px solid {PRIMARY};
     }}
 
@@ -355,18 +399,20 @@ def _css() -> str:
     }}
     .lead-summary-cell {{
       background: {CARD}; border: 1px solid {BORDER};
-      border-radius: 6px; padding: 8px 10px;
+      border-radius: 8px; padding: 12px 10px;
       text-align: center;
+      transition: border-color .12s ease;
     }}
+    .lead-summary-cell:hover {{ border-color: {BORDER_STRONG}; }}
     .lead-summary-num {{
-      font-size: 1.4rem; font-weight: 800;
+      font-size: 1.5rem; font-weight: 800;
       color: {TEXT}; line-height: 1.1;
-      font-variant-numeric: tabular-nums;
+      font-variant-numeric: tabular-nums; letter-spacing: -.01em;
     }}
     .lead-summary-lbl {{
-      font-size: 0.65rem; text-transform: uppercase;
-      letter-spacing: .08em; color: {MUTED};
-      font-weight: 700; margin-top: 2px;
+      font-size: 0.66rem; text-transform: uppercase;
+      letter-spacing: .1em; color: {MUTED};
+      font-weight: 700; margin-top: 4px;
     }}
     @media (max-width: 540px) {{
       .lead-summary {{ grid-template-columns: repeat(2, 1fr); }}
@@ -374,16 +420,16 @@ def _css() -> str:
 
     .lead-section-header {{
       display: flex; align-items: center; justify-content: space-between;
-      gap: 10px; margin: 14px 0 6px 0;
-      padding-bottom: 4px; border-bottom: 1px solid {BORDER};
+      gap: 10px; margin: 16px 0 8px 0;
+      padding-bottom: 6px; border-bottom: 1px solid {BORDER};
     }}
     .lead-section-title {{
-      font-size: 0.92rem; font-weight: 700; color: {TEXT}; letter-spacing: -.005em;
+      font-size: 0.94rem; font-weight: 700; color: {TEXT}; letter-spacing: -.01em;
     }}
     .lead-section-count {{
       background: {CARD}; color: {TEXT};
-      border: 1px solid {BORDER}; border-radius: 2px;
-      padding: 1px 7px; font-size: 0.7rem; font-weight: 600;
+      border: 1px solid {BORDER}; border-radius: 4px;
+      padding: 2px 8px; font-size: 0.7rem; font-weight: 600;
       font-variant-numeric: tabular-nums;
     }}
     .lead-section-count.warn {{
@@ -392,152 +438,136 @@ def _css() -> str:
     }}
     .lead-card {{
       background: {CARD}; border: 1px solid {BORDER};
-      border-radius: 4px; padding: 12px 14px; margin: 6px 0;
-      transition: border-color .12s ease;
+      border-radius: 8px; padding: 14px 16px; margin: 8px 0;
+      transition: border-color .12s ease, background .12s ease;
     }}
-    .lead-card:hover {{ border-color: {BORDER_STRONG}; }}
-    .lead-card.queued {{ border-left: 2px solid {PRIMARY}; }}
-    .lead-card.skipped {{ border-left: 2px solid {MUTED}; }}
-    .lead-head {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }}
+    .lead-card:hover {{ border-color: {BORDER_STRONG}; background: {CARD_HOVER}; }}
+    .lead-card.queued {{ border-left: 3px solid {PRIMARY}; }}
+    .lead-card.skipped {{ border-left: 3px solid {MUTED}; }}
+    .lead-head {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; min-width: 0; }}
     .lead-head-left {{ flex: 1; min-width: 0; }}
-    .lead-symbol {{ font-size: 0.98rem; font-weight: 700; color: {TEXT}; word-break: break-word; }}
-    .lead-time {{ color: {MUTED}; font-size: 0.74rem; white-space: nowrap; flex-shrink: 0; font-variant-numeric: tabular-nums; }}
-    .lead-chips {{ margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }}
+    .lead-head-right {{
+      display: flex; flex-direction: column; align-items: flex-end;
+      gap: 4px; flex-shrink: 0; max-width: 45%;
+    }}
+    .lead-symbol {{ font-size: 1.0rem; font-weight: 700; color: {TEXT}; word-break: break-word; letter-spacing: -.005em; }}
+    .lead-time {{ color: {MUTED}; font-size: 0.76rem; white-space: nowrap; flex-shrink: 0; font-variant-numeric: tabular-nums; }}
+    .lead-chips {{ margin-top: 2px; display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }}
     .lead-instrument {{
-      margin-top: 8px; background: #050505;
-      border: 1px solid {BORDER}; border-radius: 3px;
-      padding: 6px 10px; font-size: 0.82rem; color: {TEXT}; word-break: break-word;
+      margin-top: 6px; background: {BG_RAISED};
+      border: 1px solid {BORDER}; border-radius: 6px;
+      padding: 6px 10px; font-size: 0.8rem; color: {TEXT};
+      word-break: break-word; overflow-wrap: anywhere;
     }}
     .lead-instrument .lbl {{ color: {MUTED}; font-weight: 600; }}
-    .lead-plan {{
-      display: flex; flex-wrap: wrap; gap: 8px 14px;
-      margin-top: 8px; padding-top: 8px;
-      border-top: 1px dashed {BORDER};
-    }}
-    .lead-plan > div {{ font-size: 0.82rem; font-variant-numeric: tabular-nums; }}
-    .lead-plan .lbl {{ color: {MUTED}; font-weight: 600; margin-right: 3px; }}
-    .lead-plan .val {{ color: {TEXT}; font-weight: 600; }}
-    .lead-score-row {{
-      display: flex; align-items: center; gap: 10px;
-      margin-top: 8px; padding-top: 8px;
-      border-top: 1px dashed {BORDER};
-    }}
-    .lead-score-bar {{ flex: 1; }}
-    .lead-score-meta {{ color: {MUTED}; font-size: 0.7rem; margin-top: 3px; display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; }}
 
     /* Inline reason strip — the most important piece of info on the
        card. Thin accent left-border with a label and the explanation
        in plain English so users don't need to open a modal to see
        WHY this lead was generated/skipped. */
     .lead-reason {{
-      margin-top: 10px; padding: 7px 11px;
-      background: #050505; border: 1px solid {BORDER};
+      margin-top: 12px; padding: 10px 12px;
+      background: {BG_RAISED}; border: 1px solid {BORDER};
       border-left: 3px solid {PRIMARY};
-      border-radius: 3px;
-      display: flex; align-items: flex-start; gap: 6px;
-      flex-wrap: wrap;
+      border-radius: 6px;
+      display: flex; align-items: flex-start; gap: 8px;
+      flex-wrap: wrap; min-width: 0;
     }}
     .lead-reason-label {{
-      font-size: 0.7rem; text-transform: uppercase;
-      letter-spacing: .06em; font-weight: 700;
+      font-size: 0.72rem; text-transform: uppercase;
+      letter-spacing: .08em; font-weight: 700;
       flex-shrink: 0; padding-top: 1px;
     }}
     .lead-reason-body {{
-      color: {TEXT}; font-size: 0.86rem; line-height: 1.45;
+      color: {TEXT}; font-size: 0.88rem; line-height: 1.5;
       flex: 1; min-width: 0;
+      overflow-wrap: anywhere;
     }}
 
-    /* Top-3 score components as compact chips */
-    .lead-sb-row {{
-      display: flex; align-items: center; gap: 8px;
-      margin-top: 6px; flex-wrap: wrap;
-    }}
-    .lead-sb-chip {{
-      background: #050505; color: {TEXT};
-      border: 1px solid {BORDER}; border-radius: 2px;
-      padding: 2px 7px; font-size: 0.72rem; font-weight: 600;
-      font-variant-numeric: tabular-nums;
-    }}
-    .lead-sb-chip b {{ color: {PRIMARY}; margin-left: 2px; }}
-
-    /* Tool-call count strip — tells the user there's more inside the modal */
-    .lead-tc-strip {{
-      margin-top: 6px; font-size: 0.74rem;
+    /* Compact meta hint under the reason ("3 tool calls · 78% conf").
+       Tells the user there's a richer story without showing it. */
+    .lead-meta-hint {{
+      margin-top: 8px; font-size: 0.74rem;
       color: {MUTED}; line-height: 1.4;
+      overflow-wrap: anywhere;
     }}
-    .lead-tc-strip b {{ color: {PRIMARY}; font-weight: 700; }}
 
-    .lead-note {{
-      margin-top: 8px; padding: 6px 10px;
-      background: #050505; border: 1px solid {BORDER};
-      border-left: 2px solid {LOSS};
-      border-radius: 3px; color: {MUTED}; font-size: 0.8rem; word-break: break-word;
-    }}
+    /* ---- Legacy classes kept only so any leftover selectors
+           don't 404 — the card no longer renders score bars, plan
+           details or score chips inline. */
+    .lead-plan {{ display: none; }}
+    .lead-score-row {{ display: none; }}
+    .lead-score-bar {{ display: none; }}
+    .lead-score-meta {{ display: none; }}
+    .lead-sb-row {{ display: none; }}
+    .lead-sb-chip {{ display: none; }}
+    .lead-tc-strip {{ display: none; }}
+    .lead-note {{ display: none; }}
 
     /* Lead-gen live progress panel */
     .lg-panel {{
       background: {CARD};
-      border: 1px solid {BORDER}; border-radius: 4px;
-      padding: 12px 14px; margin: 4px 0 12px 0;
+      border: 1px solid {BORDER}; border-radius: 8px;
+      padding: 14px 16px; margin: 6px 0 14px 0;
     }}
-    .lg-head {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }}
-    .lg-phase {{ display: flex; align-items: center; gap: 8px; color: {TEXT}; font-size: 0.86rem; }}
-    .lg-elapsed {{ font-variant-numeric: tabular-nums; font-size: 0.82rem; color: {MUTED}; }}
+    .lg-head {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }}
+    .lg-phase {{ display: flex; align-items: center; gap: 8px; color: {TEXT}; font-size: 0.88rem; }}
+    .lg-elapsed {{ font-variant-numeric: tabular-nums; font-size: 0.84rem; color: {MUTED}; }}
     .lg-spinner {{
-      display: inline-block; width: 12px; height: 12px; border-radius: 50%;
+      display: inline-block; width: 14px; height: 14px; border-radius: 50%;
       border: 2px solid {BORDER}; border-top-color: {PRIMARY};
       animation: lg-spin 0.9s linear infinite;
     }}
     @keyframes lg-spin {{ to {{ transform: rotate(360deg); }} }}
-    .lg-bar {{ height: 4px; background: #050505; overflow: hidden; margin-bottom: 8px; }}
-    .lg-fill {{ height: 4px; transition: width 0.4s ease; }}
-    .lg-meta {{ display: flex; gap: 14px; flex-wrap: wrap; font-size: 0.76rem; margin-bottom: 8px; color: {MUTED}; font-variant-numeric: tabular-nums; }}
-    .lg-current {{ font-size: 0.82rem; margin: 4px 0 8px 0; color: {TEXT}; font-variant-numeric: tabular-nums; }}
-    .lg-recent {{ display: flex; flex-direction: column; gap: 2px; border-top: 1px solid {BORDER}; padding-top: 6px; }}
-    .lg-recent-row {{ display: flex; align-items: center; gap: 8px; font-size: 0.8rem; padding: 1px 0; font-variant-numeric: tabular-nums; }}
+    .lg-bar {{ height: 4px; background: {BG_RAISED}; overflow: hidden; margin-bottom: 10px; border-radius: 4px; }}
+    .lg-fill {{ height: 4px; transition: width 0.4s ease; border-radius: 4px; }}
+    .lg-meta {{ display: flex; gap: 14px; flex-wrap: wrap; font-size: 0.78rem; margin-bottom: 10px; color: {MUTED}; font-variant-numeric: tabular-nums; }}
+    .lg-current {{ font-size: 0.84rem; margin: 6px 0 10px 0; color: {TEXT}; font-variant-numeric: tabular-nums; }}
+    .lg-recent {{ display: flex; flex-direction: column; gap: 2px; border-top: 1px solid {BORDER}; padding-top: 8px; }}
+    .lg-recent-row {{ display: flex; align-items: center; gap: 8px; font-size: 0.82rem; padding: 2px 0; font-variant-numeric: tabular-nums; }}
 
     /* LLM activity feed (live tool-call stream during agent loop) */
     .lg-tool-wrap {{
-      margin: 8px 0 4px 0; padding-top: 6px;
+      margin: 10px 0 6px 0; padding-top: 8px;
       border-top: 1px dashed {BORDER};
     }}
     .lg-tool-head {{
       display: flex; align-items: center; justify-content: space-between;
-      font-size: 0.66rem; text-transform: uppercase; letter-spacing: .1em;
-      margin-bottom: 5px;
+      font-size: 0.68rem; text-transform: uppercase; letter-spacing: .12em;
+      margin-bottom: 6px;
     }}
-    .lg-tool-list {{ display: flex; flex-direction: column; gap: 3px; }}
+    .lg-tool-list {{ display: flex; flex-direction: column; gap: 4px; }}
     .lg-tool-row {{
       display: flex; align-items: center; gap: 8px;
-      padding: 5px 8px; border: 1px solid; border-radius: 3px;
-      font-size: 0.76rem; line-height: 1.3;
+      padding: 6px 10px; border: 1px solid; border-radius: 6px;
+      font-size: 0.78rem; line-height: 1.3;
       font-variant-numeric: tabular-nums;
     }}
     .lg-tool-pill {{
-      background: #050505; color: {TEXT};
-      border: 1px solid {BORDER}; border-radius: 2px;
-      padding: 1px 6px; font-size: 0.7rem; font-weight: 600;
+      background: {BG_RAISED}; color: {TEXT};
+      border: 1px solid {BORDER}; border-radius: 4px;
+      padding: 1px 7px; font-size: 0.72rem; font-weight: 600;
       white-space: nowrap; flex-shrink: 0;
     }}
     .lg-tool-args {{
       flex: 1; min-width: 0;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       color: {MUTED}; font-family: 'JetBrains Mono', 'SF Mono', monospace;
-      font-size: 0.72rem;
+      font-size: 0.74rem;
     }}
     .lg-tool-sym {{
-      background: #050505; color: {TEXT};
-      border: 1px solid {BORDER}; border-radius: 2px;
-      padding: 1px 6px; font-size: 0.7rem; font-weight: 600;
+      background: {BG_RAISED}; color: {TEXT};
+      border: 1px solid {BORDER}; border-radius: 4px;
+      padding: 1px 7px; font-size: 0.72rem; font-weight: 600;
       flex-shrink: 0;
     }}
     .lg-tool-keys {{
       display: inline-flex; gap: 2px; flex-shrink: 0;
     }}
     .lg-tool-key {{
-      background: rgba(0,179,134,.10); color: {PROFIT};
-      border: 1px solid rgba(0,179,134,.30); border-radius: 2px;
-      padding: 1px 5px; font-size: 0.66rem; font-weight: 600;
+      background: rgba(0,184,135,.10); color: {PROFIT};
+      border: 1px solid rgba(0,184,135,.30); border-radius: 4px;
+      padding: 1px 6px; font-size: 0.68rem; font-weight: 600;
       font-family: 'JetBrains Mono', 'SF Mono', monospace;
     }}
     .lg-tool-key.muted {{
@@ -545,7 +575,7 @@ def _css() -> str:
     }}
     .lg-tool-ts {{
       font-family: 'JetBrains Mono', 'SF Mono', monospace;
-      font-size: 0.66rem; flex-shrink: 0;
+      font-size: 0.68rem; flex-shrink: 0;
       font-variant-numeric: tabular-nums;
     }}
 
@@ -565,7 +595,7 @@ def _css() -> str:
       list-style: none;
       cursor: pointer;
       color: {MUTED}; font-family: 'JetBrains Mono', 'SF Mono', monospace;
-      font-size: 0.72rem;
+      font-size: 0.74rem;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       padding: 1px 0;
       user-select: none;
@@ -574,7 +604,7 @@ def _css() -> str:
     .lg-tool-args-wrap > summary::before {{
       content: '▸';
       display: inline-block; margin-right: 5px;
-      color: {MUTED}; font-size: 0.66rem;
+      color: {MUTED}; font-size: 0.68rem;
       transition: transform .12s ease;
     }}
     .lg-tool-args-wrap[open] > summary::before {{
@@ -582,56 +612,56 @@ def _css() -> str:
     }}
     .lg-tool-args-wrap > summary:hover {{ color: {TEXT}; }}
     .lg-tool-args-full {{
-      background: #050505;
-      border: 1px solid {BORDER}; border-radius: 3px;
-      padding: 6px 9px; margin: 4px 0 0 14px;
+      background: {BG_RAISED};
+      border: 1px solid {BORDER}; border-radius: 6px;
+      padding: 8px 10px; margin: 4px 0 0 14px;
       font-family: 'JetBrains Mono', 'SF Mono', monospace;
-      font-size: 0.7rem; color: {TEXT};
+      font-size: 0.72rem; color: {TEXT};
       max-height: 240px; overflow: auto;
       white-space: pre-wrap; word-break: break-all;
     }}
     .lg-tool-args-empty {{
-      color: {MUTED}; font-size: 0.72rem;
+      color: {MUTED}; font-size: 0.74rem;
     }}
 
     /* Per-symbol timeline (groups tool calls by underlying) */
     .lg-tl-wrap {{
-      margin: 8px 0 4px 0; padding-top: 6px;
+      margin: 10px 0 4px 0; padding-top: 8px;
       border-top: 1px dashed {BORDER};
     }}
     .lg-tl-head {{
       display: flex; align-items: center; justify-content: space-between;
-      font-size: 0.66rem; text-transform: uppercase; letter-spacing: .1em;
-      margin-bottom: 5px;
+      font-size: 0.68rem; text-transform: uppercase; letter-spacing: .12em;
+      margin-bottom: 6px;
     }}
-    .lg-tl-list {{ display: flex; flex-direction: column; gap: 6px; }}
+    .lg-tl-list {{ display: flex; flex-direction: column; gap: 8px; }}
     .lg-tl-sym {{
       display: flex; align-items: center; gap: 8px;
-      padding: 4px 8px;
-      background: #050505; border: 1px solid {BORDER};
-      border-radius: 3px;
+      padding: 6px 10px;
+      background: {BG_RAISED}; border: 1px solid {BORDER};
+      border-radius: 6px;
     }}
     .lg-tl-name {{
-      color: {TEXT}; font-weight: 700; font-size: 0.78rem;
+      color: {TEXT}; font-weight: 700; font-size: 0.8rem;
       flex-shrink: 0;
     }}
     .lg-tl-count {{
-      color: {MUTED}; font-size: 0.68rem; margin-left: auto;
+      color: {MUTED}; font-size: 0.7rem; margin-left: auto;
       font-variant-numeric: tabular-nums;
     }}
     .lg-tl-steps {{
       display: flex; flex-wrap: wrap; gap: 6px 10px;
-      padding: 4px 8px 0 14px;
+      padding: 6px 10px 0 16px;
     }}
     .lg-tl-step {{
-      font-size: 0.74rem;
+      font-size: 0.76rem;
     }}
 
     /* Direction pill in the recent-results list (CALL / PUT) */
     .lg-recent-dir {{
-      background: rgba(0,179,134,.05);
-      border: 1px solid; border-radius: 2px;
-      padding: 0 6px; font-size: 0.66rem; font-weight: 700;
+      background: rgba(0,184,135,.05);
+      border: 1px solid; border-radius: 4px;
+      padding: 0 7px; font-size: 0.68rem; font-weight: 700;
       letter-spacing: .04em;
     }}
 
@@ -645,61 +675,71 @@ def _css() -> str:
     ::-webkit-scrollbar {{ width: 8px; height: 8px; }}
     ::-webkit-scrollbar-track {{ background: transparent; }}
     ::-webkit-scrollbar-thumb {{
-      background: #2a2a2a; border-radius: 0;
+      background: #2a2a2a; border-radius: 4px;
     }}
     ::-webkit-scrollbar-thumb:hover {{ background: {PRIMARY}; }}
 
     /* ---------- Responsive ---------- */
     @media (max-width: 768px) {{
       .stApp {{ max-width: 100%; padding: 0 4px; }}
-      .stat-tile {{ padding: 8px 10px; }}
-      .stat-value {{ font-size: 1.0rem; }}
+      .stat-tile {{ padding: 10px 12px; }}
+      .stat-value {{ font-size: 1.05rem; }}
 
       /* Lead cards: tighter padding, smaller symbols, full-width
          chips so they wrap cleanly on narrow screens. */
-      .lead-card {{ padding: 10px 12px; }}
-      .lead-symbol {{ font-size: 0.92rem; }}
+      .lead-card {{ padding: 12px 14px; }}
+      .lead-symbol {{ font-size: 0.94rem; }}
       .lead-chips {{ gap: 4px; }}
-      .lead-chips .badge {{ font-size: 0.68rem; padding: 2px 6px; }}
-      .lead-plan {{ gap: 6px 12px; }}
-      .lead-plan > div {{ font-size: 0.78rem; }}
-      .lead-time {{ font-size: 0.7rem; }}
+      .lead-chips .badge {{ font-size: 0.7rem; padding: 2px 7px; }}
+      .lead-time {{ font-size: 0.72rem; }}
 
       /* Reason strip: keep readable but allow wrap */
-      .lead-reason {{ padding: 6px 9px; }}
-      .lead-reason-body {{ font-size: 0.82rem; }}
-
-      /* Score chips: smaller, still readable */
-      .lead-sb-chip {{ font-size: 0.68rem; padding: 1px 6px; }}
+      .lead-reason {{ padding: 8px 10px; }}
+      .lead-reason-body {{ font-size: 0.84rem; }}
 
       /* Inline generate button — already use_container_width, but
          ensure min 44px touch target */
       .lead-toolbar .stButton > button[kind="primary"] {{
-        min-height: 44px; font-size: 0.92rem;
+        min-height: 46px; font-size: 0.94rem;
+      }}
+
+      /* "Why this lead?" detail button on mobile — same touch-target
+         rule. */
+      .stButton > button[kind="primary"] {{
+        min-height: 44px;
       }}
 
       /* Summary strip on mobile already collapses to 2-col above */
-      .lead-summary-num {{ font-size: 1.2rem; }}
+      .lead-summary-num {{ font-size: 1.25rem; }}
 
       .row {{ flex-wrap: wrap; gap: 10px; justify-content: flex-start; }}
 
       /* "Look up by ID" expander: stack the input + button vertically */
       [data-testid="stExpander"] {{
-        border-radius: 4px;
+        border-radius: 8px;
       }}
     }}
 
-    /* Extra-tight mobile breakpoint for small phones */
+    /* Extra-tight mobile breakpoint for small phones (≤480px). The
+       lead card stacks its header so the instrument name + reason
+       get full width and never push below the fold. */
     @media (max-width: 480px) {{
       /* Summary becomes a single tight row */
-      .lead-summary {{ grid-template-columns: repeat(2, 1fr); gap: 6px; }}
-      .lead-summary-cell {{ padding: 6px 8px; }}
-      .lead-summary-num {{ font-size: 1.1rem; }}
-      .lead-summary-lbl {{ font-size: 0.6rem; }}
+      .lead-summary {{ grid-template-columns: repeat(2, 1fr); gap: 8px; }}
+      .lead-summary-cell {{ padding: 8px 10px; }}
+      .lead-summary-num {{ font-size: 1.15rem; }}
+      .lead-summary-lbl {{ font-size: 0.62rem; }}
 
-      /* Lead card header: symbol on its own line, chips below */
-      .lead-head {{ flex-direction: column; align-items: flex-start; gap: 6px; }}
-      .lead-time {{ align-self: flex-end; }}
+      /* Lead card header: symbol + instrument stacked, then a single
+         row of status chips + time below. Prevents long F&O contract
+         strings from forcing horizontal scroll on narrow phones. */
+      .lead-head {{ flex-direction: column; align-items: flex-start; gap: 8px; }}
+      .lead-head-right {{
+        flex-direction: row; align-items: center;
+        justify-content: space-between;
+        width: 100%; max-width: 100%;
+      }}
+      .lead-time {{ align-self: auto; }}
     }}
 
     /* Lead-detail dialog: full-width on phones, larger viewport on
@@ -720,7 +760,7 @@ def _css() -> str:
       [data-testid="stDialog"] section {{
         max-width: 100vw;
         width: 100vw;
-        padding: 12px 14px !important;
+        padding: 14px 16px !important;
       }}
     }}
     /* Tighter content padding inside the dialog on mobile so the
@@ -728,7 +768,7 @@ def _css() -> str:
     @media (max-width: 768px) {{
       [data-testid="stDialog"] .stMarkdown {{ margin-bottom: 6px; }}
       [data-testid="stDialog"] [data-testid="stExpander"] summary {{
-        font-size: 0.84rem;
+        font-size: 0.86rem;
       }}
     }}
     </style>
@@ -885,16 +925,51 @@ def _llm_status_color(llm: dict) -> str:
 
 # --- auth ----------------------------------------------------------------
 
+def _login_top_navigation_js(url: str) -> str:
+    """A <script> that navigates the top frame after a button click.
+
+    Streamlit's sandboxed iframe does NOT allow JS-triggered top navigation
+    without a user gesture — and the cross-origin SSO callback must land on
+    the same top-frame instance (not a new tab). The combination of a real
+    user click on a `<button>` (which counts as a user gesture) plus
+    `window.top.location.href = url` is the working pattern.
+    """
+    return (
+        "<script>(function(){"
+        "var url = " + repr(url) + ";"
+        "function go(){ try{ window.top.location.href = url; }catch(e){ window.location.href = url; } }"
+        "if(document.readyState==='complete') go(); else window.addEventListener('load', go);"
+        "})();</script>"
+    )
+
+
+def _top_nav_button(label: str, url: str, *, key: str, type: str = "primary",
+                    use_container_width: bool = True, help: str | None = None,
+                    icon: str | None = None):
+    """Streamlit button that navigates the top frame (breaks out of the iframe).
+
+    Streamlit renders a normal `<button>`, which cannot carry an `href`. We
+    rely on a small JS post-render hook to set `window.top.location.href` on
+    the first click (which is a user gesture — required by the sandboxed
+    iframe's CSP to allow top-frame navigation).
+    """
+    if st.button(label, key=key, type=type, use_container_width=use_container_width,
+                 help=help):
+        st.markdown(_login_top_navigation_js(url), unsafe_allow_html=True)
+
+
 def render_login():
     """Modern fintech landing page shown when no SSO session is present.
 
     Streamlit's stApp container is reused; the login surface is a centred
-    card with sharp corners and thin borders (no gradients, no glow).
+    card with Groww-style rounded corners and a teal CTA. The CTA is a real
+    `st.button` (not an anchor) — see `_top_nav_button` for how the
+    top-frame navigation works around the iframe sandbox.
+
+    The card chrome and the Streamlit-rendered button are siblings in the
+    page flow; both are constrained to the same width via Streamlit
+    columns so they read as a single unified surface.
     """
-    # Two `st.markdown(..., unsafe_allow_html=True)` calls in a single render
-    # sometimes confuse Streamlit's markdown renderer (the second one renders
-    # the HTML as escaped text). We use a single `st.html()` call carrying
-    # both the CSS and the card markup so there's nothing to fall through.
 
     auth_error = st.query_params.get("auth_error")
     error_html = ""
@@ -907,11 +982,22 @@ def render_login():
         )
         st.query_params.clear()
 
-    # Real <a target="_top"> — a user click on a real link is the only
-    # top-frame navigation pattern that works inside Streamlit's sandboxed
-    # iframe. JS-clicking a hidden top-doc anchor is silently dropped by
-    # modern browsers (no allow-top-navigation).
-    st.html(_login_css() + _login_card_html(api.login_url(), error_html))
+    # Constrain everything to a centred column matching the card's width.
+    _spacer_l, mid, _spacer_r = st.columns([1, 4, 1])
+    with mid:
+        # Card chrome (brand, tagline, error, footer). The CTA slot is
+        # empty — the Streamlit button below fills that visual space.
+        st.html(_login_css() + _login_card_chrome_html(error_html))
+        _top_nav_button(
+            "Continue with Upstox SSO",
+            api.login_url(),
+            key="sso_login",
+            type="primary",
+            use_container_width=True,
+            help="Redirects to Upstox to authorise this dashboard. You'll be returned here after sign-in.",
+        )
+        # Tiny spacer that mimics the original card's bottom padding.
+        _html("<div style='height:8px'></div>")
 
 
 def _login_css() -> str:
@@ -919,7 +1005,8 @@ def _login_css() -> str:
 
     Kept separate from the main `_css()` so the dashboard styling doesn't
     bleed in. The login card uses the same design tokens (PRIMARY, SECONDARY,
-    CARD, BORDER) so the two surfaces feel like the same product.
+    CARD, BORDER) so the two surfaces feel like the same product — pure-black
+    canvas, rounded Groww-style card, single teal CTA.
     """
     return f"""
     <style>
@@ -929,77 +1016,116 @@ def _login_css() -> str:
     }}
     [data-testid="stHeader"], footer, #MainMenu {{ display: none !important; }}
 
+    /* Subtle radial teal glow behind the card, like a fintech login screen */
+    .stApp::before {{
+      content: '';
+      position: fixed;
+      top: -10%; left: 50%;
+      width: 80vw; height: 80vh;
+      transform: translateX(-50%);
+      background: radial-gradient(circle, rgba(4,180,136,0.06) 0%, rgba(4,180,136,0) 60%);
+      pointer-events: none;
+      z-index: 0;
+    }}
+
     .login-shell {{
       display: flex; align-items: center; justify-content: center;
-      min-height: calc(100vh - 80px); padding: 24px 16px;
+      padding: 28px 16px 16px 16px;
+      position: relative; z-index: 1;
     }}
     .login-card {{
-      width: 100%; max-width: 420px;
+      width: 100%; max-width: 440px;
       background: {CARD};
       border: 1px solid {BORDER};
+      border-radius: 12px;
+      padding: 32px 30px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    }}
+    /* Slot that visually holds the Streamlit-rendered CTA below.
+       Hides its own border (Streamlit widgets carry their own) and
+       gives the CTA a matching surface feel. */
+    .login-cta-slot {{
+      margin: 8px 0 4px 0;
+      min-height: 1px;
+    }}
+    /* Push the Streamlit CTA into the card's vertical slot. The login
+       page is restricted to the card width by the column layout — we
+       just need to ensure primary CTA styling is consistent. */
+    .stButton > button[kind="primary"] {{
+      width: 100%;
+      min-height: 48px;
+      font-size: 1.0rem;
       border-radius: 8px;
-      padding: 28px 26px;
     }}
     .login-brand {{
-      display: flex; align-items: center; gap: 12px; margin-bottom: 16px;
+      display: flex; align-items: center; gap: 12px; margin-bottom: 18px;
     }}
     .login-mark {{
-      width: 28px; height: 28px; border-radius: 6px;
-      background: {PRIMARY};
+      width: 32px; height: 32px; border-radius: 8px;
+      background: linear-gradient(135deg, {PRIMARY}, {PRIMARY_HOVER});
+      box-shadow: 0 2px 12px rgba(4,180,136,.35);
+      display: inline-flex; align-items: center; justify-content: center;
     }}
     .login-mark::after {{
-      content: 'T'; position: relative; display: block;
-      line-height: 28px; text-align: center;
-      color: #fff; font-weight: 800; font-size: 14px;
+      content: 'T';
+      color: #000; font-weight: 800; font-size: 16px;
       font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+      line-height: 1;
     }}
     .login-name {{
-      font-size: 1.4rem; font-weight: 700; letter-spacing: -.01em;
+      font-size: 1.5rem; font-weight: 700; letter-spacing: -.015em;
       color: {TEXT};
     }}
     .login-tagline {{
-      color: {MUTED}; font-size: 0.98rem; line-height: 1.5;
-      margin-bottom: 22px; font-weight: 400;
+      color: {MUTED}; font-size: 1.0rem; line-height: 1.55;
+      margin-bottom: 24px; font-weight: 400;
     }}
     .login-grad {{
-      color: {PRIMARY}; font-weight: 600;
+      color: {PRIMARY_HOVER}; font-weight: 600;
     }}
     .login-cta {{
-      margin: 6px 0 0 0 !important;
-      padding: 0.85rem 1.1rem !important;
-      font-size: 1.02rem !important;
+      margin: 8px 0 0 0 !important;
+      padding: 0.9rem 1.15rem !important;
+      font-size: 1.04rem !important;
       display: inline-flex !important;
       align-items: center; justify-content: center;
       gap: 10px;
     }}
     .login-error {{
-      display: flex; align-items: center; gap: 8px;
-      padding: 10px 12px; margin: 4px 0 14px 0;
-      background: rgba(244,63,94,.10);
-      border: 1px solid rgba(244,63,94,.4); border-radius: 10px;
-      color: #fecdd3; font-size: 0.86rem;
+      display: flex; align-items: center; gap: 10px;
+      padding: 12px 14px; margin: 4px 0 16px 0;
+      background: rgba(234,84,85,.10);
+      border: 1px solid rgba(234,84,85,.4); border-radius: 10px;
+      color: #fda4af; font-size: 0.88rem;
     }}
     .login-error-dot {{
       width: 8px; height: 8px; border-radius: 50%;
       background: {LOSS}; flex-shrink: 0;
     }}
     .login-foot {{
-      margin-top: 18px; text-align: center;
-      color: {MUTED}; font-size: 0.78rem; line-height: 1.5;
+      margin-top: 22px; text-align: center;
+      color: {MUTED}; font-size: 0.8rem; line-height: 1.55;
     }}
     @media (max-width: 540px) {{
-      .login-card {{ padding: 22px 18px; border-radius: 6px; }}
-      .login-name {{ font-size: 1.35rem; }}
-      .login-tagline {{ font-size: 0.95rem; }}
+      .login-card {{ padding: 24px 20px; border-radius: 10px; }}
+      .login-name {{ font-size: 1.4rem; }}
+      .login-tagline {{ font-size: 0.96rem; }}
     }}
     </style>
     """
 
 
-def _login_card_html(login_url: str, error_html: str) -> str:
-    """HTML body of the login card. Concatenated with `_login_css()` so the
-    whole surface lands in a single `st.html()` call (avoids the two-`unsafe_allow_html`
-    bug where the second block renders as escaped text)."""
+def _login_card_chrome_html(error_html: str = "") -> str:
+    """HTML body of the login card WITH the login button (no longer an anchor).
+
+    The CTA sits inside the card chrome — it's a real Streamlit `<button>`
+    rendered directly below this HTML, but the chrome reserves visual
+    padding + a matching surface so the two read as one unified card.
+
+    Concatenated with `_login_css()` so the whole surface lands in a single
+    `st.html()` call (avoids the two-`unsafe_allow_html` bug where the
+    second block renders as escaped text).
+    """
     return f"""
     <div class='login-shell'>
       <div class='login-card'>
@@ -1012,16 +1138,7 @@ def _login_card_html(login_url: str, error_html: str) -> str:
           <span class='login-grad'>powered by LLMs.</span>
         </div>
         {error_html}
-        <a href='{_html_escape(login_url)}' target='_top' class='sso-login-btn login-cta'>
-          <svg width='18' height='18' viewBox='0 0 24 24' fill='none'
-               xmlns='http://www.w3.org/2000/svg' aria-hidden='true'>
-            <path d='M12 2L3 7v6c0 5 3.8 9.4 9 11 5.2-1.6 9-6 9-11V7l-9-5z'
-                  stroke='currentColor' stroke-width='2' stroke-linejoin='round'/>
-            <path d='M9 12l2 2 4-4' stroke='currentColor' stroke-width='2'
-                  stroke-linecap='round' stroke-linejoin='round'/>
-          </svg>
-          Continue with Upstox SSO
-        </a>
+        <div class='login-cta-slot'></div>
         <div class='login-foot'>
           You'll be redirected to Upstox, then back here.
           Your tokens never touch this dashboard's storage.
@@ -1152,13 +1269,19 @@ def render_sidebar() -> str:
         st.markdown("### Controls")
         if st.button("Refresh now", use_container_width=True, help="Force-refresh the current view."):
             st.rerun()
-        # Real <a target="_top"> — a user click on a real link is the only
-        # top-frame navigation pattern that works inside Streamlit's sandboxed
-        # iframe (JS-clicking a hidden top-doc anchor is silently dropped).
-        st.markdown(
-            f'<a href="{api.logout_url()}" target="_top" class="sidebar-logout-btn" '
-            f'title="End the Upstox session and clear tokens">Logout</a>',
-            unsafe_allow_html=True,
+        # Logout: real Streamlit button (no anchor tag in the DOM).
+        # The click triggers JS to set `window.top.location.href` to the
+        # backend's `/api/auth/logout` endpoint, which clears cookies and
+        # redirects to the frontend. The `target="_top"` semantics are
+        # preserved because the iframe sandbox allows top navigation on
+        # user-activation, and the Streamlit button click IS a user click.
+        _top_nav_button(
+            "Logout",
+            api.logout_url(),
+            key="sidebar_logout",
+            type="secondary",
+            use_container_width=True,
+            help="End the Upstox session and clear tokens.",
         )
 
     return page
@@ -1235,13 +1358,19 @@ def render_token_status():
     if not b.get("token_expired"):
         return
     _html(
-        "<div class='ks-banner' style='background:#fee2e2;border-color:#fca5a5;color:#991b1b;'>"
-        "Upstox token expired — the bot cannot trade until you re-login.</div>"
+        f"<div class='ks-banner' style='background:rgba(234,84,85,0.10);"
+        f"border-color:rgba(234,84,85,0.4);color:#fda4af;'>"
+        f"Upstox token expired — the bot cannot trade until you re-login.</div>"
     )
-    st.markdown(
-        f'<a href="{api.login_url()}" target="_top" class="sso-login-btn">'
-        f'Login with Upstox</a>',
-        unsafe_allow_html=True,
+    # Real Streamlit button (no anchor tag in the DOM) — same top-frame
+    # navigation trick as the login/logout buttons.
+    _top_nav_button(
+        "Login with Upstox",
+        api.login_url(),
+        key="token_expired_login",
+        type="primary",
+        use_container_width=True,
+        help="Redirect to Upstox to refresh your session.",
     )
 
 
@@ -1727,13 +1856,23 @@ def _render_purge_leads_dialog(lead_count: int):
 
 
 def _render_lead_card(r: dict, show_note: bool = False):
-    """Render a single lead card. Single-column mobile-first layout.
+    """Render a single lead card. Mobile-first, minimum-viable layout.
 
-    The card shows the LEAD's REASON inline so the user can read it
-    without opening a modal — the most common question ("why was this
-    generated?") should not require a click. The full detail (tool
-    calls, score breakdown, trade row) lives behind the
-    "Why this lead?" button which opens the modal.
+    The card intentionally shows ONLY two things upfront:
+
+      1. **The instrument** — the F&O contract this lead maps to
+         (e.g. ``RELIANCE 30 SEP 26 2900 CE × 500``) plus a tiny
+         direction/status chip so the user can scan the list.
+      2. **The reason** — the single-line explanation of WHY this
+         lead was generated / skipped / placed. This is the
+         information the user actually opens the Leads tab to read.
+
+    Everything else (full strike/expiry/premium breakdown, score
+    percentage + bars, score-component chips, LLM rationale, tool-
+    call log, indicator snapshot, trade row) lives behind the
+    "Why this lead?" button which opens the lead-detail modal. On
+    a phone this keeps each card to ~3 short rows instead of a
+    screen-filling stack that pushes the reason below the fold.
     """
     created_ist = (
         r.get("created_at_ist_label")
@@ -1746,35 +1885,10 @@ def _render_lead_card(r: dict, show_note: bool = False):
 
     symbol = r.get("symbol") or r["underlying"].split("|")[-1]
 
-    # Confidence score
+    # Confidence (still useful as a one-token hint next to the reason
+    # so the user can sort strong vs weak leads at a glance — but we
+    # don't render the bar + label here; the modal owns those).
     pct = int((r.get("confidence") or 0) * 100)
-    bar_color = PROFIT if pct >= 80 else (WARN if pct >= 60 else MUTED)
-    badge_color = "ok" if pct >= 80 else ("warn" if pct >= 60 else "muted")
-    score_label = "High" if pct >= 80 else ("Medium" if pct >= 60 else "Low")
-
-    # Build plan details as key/value pairs for clean wrap-friendly layout
-    plan_pairs = []
-    if r.get("expiry"):
-        plan_pairs.append(("Expiry", r["expiry"]))
-    if r.get("strike_price"):
-        plan_pairs.append(("Strike", _num(r["strike_price"])))
-    if r.get("option_type"):
-        plan_pairs.append(("Opt", r["option_type"]))
-    if r.get("quantity"):
-        plan_pairs.append(("Qty", str(r["quantity"])))
-    if r.get("lot_size"):
-        plan_pairs.append(("Lot", str(r["lot_size"])))
-    if r.get("premium") is not None:
-        plan_pairs.append(("Premium", _num(r["premium"])))
-    if r.get("spot") is not None:
-        plan_pairs.append(("Spot", _num(r["spot"])))
-    if r.get("margin_needed") is not None:
-        plan_pairs.append(("Margin", f"₹{float(r['margin_needed']):,.0f}"))
-
-    plan_html = "".join(
-        f"<div><span class='lbl'>{lbl}</span><span class='val'>{val}</span></div>"
-        for lbl, val in plan_pairs
-    )
 
     instrument_html = _lead_plan_line(r)
 
@@ -1804,62 +1918,31 @@ def _render_lead_card(r: dict, show_note: bool = False):
         "expired": MUTED,
     }.get(status, MUTED)
 
-    note_html = ""
-    if show_note and r.get("note"):
-        note_html = (
-            f"<div class='lead-note'>⚠ <b>Skipped:</b> {r['note']}</div>"
-        )
-    elif r.get("note") and not show_note:
-        note_html = (
-            f"<div class='lead-note' style='background:rgba(34,211,238,.08);"
-            f"border-color:rgba(34,211,238,.35);color:#a5f3fc;'>"
-            f"ℹ {r['note']}</div>"
-        )
-
-    # Top-3 score components as small chips so the user can see at a
-    # glance *what* drove the confidence (pattern fit / volume /
-    # trend alignment, etc).
-    sb_rows = (r.get("score_breakdown") or [])[:3]
-    sb_html = ""
-    if sb_rows:
-        chips = "".join(
-            f"<span class='lead-sb-chip'>"
-            f"<span class='muted'>{_html_escape(str(r_.get('label') or r_.get('key') or '?'))}</span>"
-            f" <b>{float(r_.get('contribution') or 0):.2f}</b>"
-            f"</span>"
-            for r_ in sb_rows
-        )
-        sb_html = (
-            f"<div class='lead-sb-row'>"
-            f"<span class='muted' style='font-size:0.66rem;text-transform:uppercase;"
-            f"letter-spacing:.06em;'>Score</span>{chips}</div>"
-        )
-
-    # Inline reason strip: a thin accent-bordered line at the top of
-    # the body section explaining why this lead exists in plain
-    # English. This is the single most important piece of info on
-    # the card.
+    # Inline reason strip — the single most important line on the
+    # card. Thin accent left-border + label + body, kept short so
+    # it never wraps more than ~2 lines on a phone.
     reason_html = (
         f"<div class='lead-reason' style='border-left-color:{reason_color};'>"
         f"<span class='lead-reason-label' style='color:{reason_color};'>"
-        f"{_html_escape(reason_title)} because</span>"
+        f"{_html_escape(reason_title)}</span>"
         f"<span class='lead-reason-body'>{_html_escape(inline_reason_text)}</span>"
         f"</div>"
     )
 
-    # Tool-call summary strip — show count of tool calls stored in
-    # meta so the user knows there's activity to drill into.
-    tc_list = meta.get("llm_tool_calls") or []
-    tc_count = len(tc_list)
-    tc_strip = ""
+    # Compact meta hint under the reason: "5 tool calls · 78% conf".
+    # Just enough so the user knows there's a richer story behind
+    # the lead, without showing the breakdown upfront.
+    meta_bits: list[str] = []
+    tc_count = len(meta.get("llm_tool_calls") or [])
     if tc_count:
-        tc_strip = (
-            f"<div class='lead-tc-strip'>"
-            f"<span class='muted'>Agent loop:</span> "
-            f"<b>{tc_count}</b> tool call{'s' if tc_count != 1 else ''} "
-            f"captured — open the modal for the full log."
-            f"</div>"
+        meta_bits.append(
+            f"{tc_count} tool call{'s' if tc_count != 1 else ''}"
         )
+    meta_bits.append(f"{pct}% conf")
+    meta_hint = (
+        f"<div class='lead-meta-hint'>"
+        f"{' · '.join(meta_bits)}</div>"
+    )
 
     _html(
         f"""
@@ -1867,52 +1950,45 @@ def _render_lead_card(r: dict, show_note: bool = False):
           <div class='lead-head'>
             <div class='lead-head-left'>
               <div class='lead-symbol'>{symbol}</div>
+              {instrument_html}
+            </div>
+            <div class='lead-head-right'>
               <div class='lead-chips'>
                 {_badge(r['direction'], direction_class)}
                 {_badge(r['status'], status_class)}
-                <span class='badge' style='color:{SECONDARY};background:rgba(34,211,238,.15);'>{r['signal_type']}</span>
-                <span class='badge' style='color:{PRIMARY};background:rgba(99,102,241,.15);'>Signal: {_num(r['signal_level'])}</span>
               </div>
+              <div class='lead-time'>{created_ist} IST</div>
             </div>
-            <div class='lead-time'>{created_ist} IST</div>
           </div>
-          {instrument_html}
-          {f"<div class='lead-plan'>{plan_html}</div>" if plan_pairs else ""}
           {reason_html}
-          {sb_html}
-          <div class='lead-score-row'>
-            <span class='badge {badge_color}' style='flex-shrink:0;'>{pct}%</span>
-            <div class='lead-score-bar'>
-              <div class='conf-bar'>
-                <div class='conf-fill' style='width:{pct}%;background:{bar_color};'></div>
-              </div>
-              <div class='lead-score-meta'><span>Confidence</span><span>{score_label}</span></div>
-            </div>
-          </div>
-          {tc_strip}
-          {note_html}
+          {meta_hint}
         </div>
         """
     )
 
 
 def _render_lead_detail_button(r: dict) -> None:
-    """Primary "Why this lead?" button below each card.
+    """Primary "Details" button below each card.
 
     Full-width, primary-coloured so it can't be missed on mobile. On
     click, opens the lead-detail dialog (`_render_lead_detail_dialog`)
-    which shows the full reason, LLM rationale, tool-call log,
-    indicators, score breakdown, and (if placed) the trade row.
+    which is the only place the full reason, LLM rationale,
+    tool-call log, indicators, score breakdown, and (if placed) the
+    trade row are shown. The card itself is intentionally minimal —
+    see `_render_lead_card`.
     """
     lead_id = r.get("id")
     if not lead_id:
         return
     btn = st.button(
-        "Why this lead?",
+        "Details →",
         key=f"why_lead_{lead_id}",
         type="primary",
         use_container_width=True,
-        help="See the full LLM reasoning, tool calls, score breakdown, and trade (if placed).",
+        help=(
+            "Open the deep-dive view: full LLM reasoning, tool-call log, "
+            "score breakdown, indicator snapshot, and trade (if placed)."
+        ),
     )
     if btn:
         st.session_state["open_lead_dialog"] = int(lead_id)
