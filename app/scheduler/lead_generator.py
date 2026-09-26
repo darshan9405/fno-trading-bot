@@ -37,7 +37,8 @@ CANDLE_LOOKBACK_DAYS = 300
 _RECENT_CAP = 5
 
 
-def _process_one(inst, broker, strategy_cls, strategy_interval, from_date, now):
+def _process_one(inst, broker, strategy_cls, strategy_interval, from_date, now,
+                on_tool_call=None):
     """Worker-thread entrypoint: fetch candles + run the strategy.
 
     A *fresh* strategy instance is built per worker — the LLM detector keeps
@@ -50,7 +51,20 @@ def _process_one(inst, broker, strategy_cls, strategy_interval, from_date, now):
 
     Returns `(instrument, candidates, error)` so the main thread can persist
     without holding the DB session across the network round-trip.
+
+    `on_tool_call(event)` (when provided) is bound to this instrument's
+    symbol and forwarded into the strategy's LLM agent loop so the UI can
+    watch per-tool-call progress live.
     """
+    symbol = getattr(inst, "symbol", "?")
+    per_symbol_cb = None
+    if on_tool_call is not None:
+        def per_symbol_cb(event: dict) -> None:
+            try:
+                on_tool_call(symbol, event)
+            except Exception as cb_err:  # noqa: BLE001
+                # A bad UI hook must never crash a worker thread.
+                log.debug("lead_generator: on_tool_call raised: %s", cb_err)
     try:
         strategy = strategy_cls()
         candles = broker.get_historical_candles(
@@ -68,6 +82,7 @@ def _process_one(inst, broker, strategy_cls, strategy_interval, from_date, now):
             broker=broker,
             today=now.date(),
             lot_size=getattr(inst, "lot_size", 1) or 1,
+            on_tool_call=per_symbol_cb,
         )
         return (inst, candidates, None)
     except Exception as e:  # per-instrument isolation
@@ -112,6 +127,7 @@ def run_lead_generator(
     now=None,
     force: bool = False,
     on_progress: Callable[[dict], None] | None = None,
+    on_tool_call: Callable[[str, dict], None] | None = None,
 ) -> dict | None:
     """Run one lead-generation pass. Returns `{"created": n, "checked": n}` on
     success (or `{"error": ...}` on failure); None when skipped (outside window).
@@ -125,6 +141,12 @@ def run_lead_generator(
     after the pool drains (phase="finalizing"). The callback may be called
     many times in quick succession; callers should keep the callback cheap
     (the manual-job path locks a small dict under the registry lock).
+
+    `on_tool_call(symbol, event)` is invoked from a worker thread every time
+    the LLM agent loop finishes a tool call — used by the manual-job path to
+    stream live LLM activity to the UI's progress panel. Callers must be
+    thread-safe (the manual-job path uses a small lock around the shared
+    progress dict).
     """
     now = now or health_service.now_ist()
     # Fall back to the only built-in strategy that's currently registered.
@@ -217,7 +239,8 @@ def run_lead_generator(
                                 thread_name_prefix="leadgen") as pool:
             futures = {
                 pool.submit(_process_one, inst, broker, strategy_cls,
-                            strategy_interval, from_date, now): inst
+                            strategy_interval, from_date, now,
+                            on_tool_call=on_tool_call): inst
                 for inst in instruments
             }
             try:

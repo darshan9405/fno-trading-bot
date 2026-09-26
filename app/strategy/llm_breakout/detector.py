@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -59,6 +59,7 @@ def detect_one(
     min_confidence: float,
     broker=None,
     today: date | None = None,
+    on_tool_call: Callable[[dict[str, Any]], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Run the full per-instrument pipeline and return validated signals.
 
@@ -70,6 +71,9 @@ def detect_one(
       - agent loop hits max iterations
 
     Never raises — the scheduler must not be crashed by a flaky LLM.
+
+    `on_tool_call(event)` is forwarded into the agent loop so the lead
+    generator can stream per-tool-call progress to the UI.
     """
     if candles is None or candles.empty:
         return []
@@ -126,6 +130,7 @@ def detect_one(
                 today_close=today_close,
                 divergence_pct=divergence_pct,
                 min_confidence=min_confidence,
+                on_tool_call=on_tool_call,
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("llm_breakout: agent loop raised for %s: %s", symbol, exc)

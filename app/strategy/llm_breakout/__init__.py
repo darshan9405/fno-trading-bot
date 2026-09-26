@@ -88,7 +88,8 @@ class LLMBreakoutStrategy(Strategy):
         return build_default_client()
 
     def generate(self, instrument, candles: pd.DataFrame, now, *,
-                 broker=None, today=None, lot_size: int | None = None) -> list[LeadCandidate]:
+                 broker=None, today=None, lot_size: int | None = None,
+                 on_tool_call=None) -> list[LeadCandidate]:
         from app.settings import get_setting
 
         if not bool(get_setting("llm.enabled", True)):
@@ -118,6 +119,7 @@ class LLMBreakoutStrategy(Strategy):
                 min_confidence=min_conf,
                 broker=broker,
                 today=today,
+                on_tool_call=on_tool_call,
             )
         except Exception as exc:  # noqa: BLE001 — never let an LLM error crash the tick
             log.exception("llm_breakout: detect_one raised for %s: %s",

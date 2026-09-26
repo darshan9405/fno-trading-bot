@@ -180,6 +180,40 @@ def _run_in_thread(job: JobState) -> None:
         with _lock:
             job.progress.update(patch)
 
+    # Per-tool-call LLM events fire from a worker thread while a different
+    # instrument is being analyzed. We keep a small ring of the most recent
+    # events (capped) on `job.progress["current_tool_calls"]` so the UI can
+    # show "tool call X just happened" without overwhelming the 2s polling
+    # payload. When the LLM finishes analyzing a symbol the buffer is reset
+    # on the next "analyzing" progress event (which always sets
+    # `current_tool_calls: []`).
+    _LLM_LOG_CAP = 12
+
+    def _on_tool_call(symbol: str, event: dict) -> None:
+        try:
+            with _lock:
+                buf = job.progress.get("current_tool_calls") or []
+                # Tag each entry with the symbol it came from so the UI can
+                # attribute the tool call when the underlying flips mid-call.
+                entry = {
+                    "ts": _now().isoformat(),
+                    "symbol": symbol,
+                    "iter": event.get("iter"),
+                    "name": event.get("name"),
+                    "args": event.get("args"),
+                    "result_keys": event.get("result_keys") or [],
+                }
+                buf.append(entry)
+                if len(buf) > _LLM_LOG_CAP:
+                    del buf[: len(buf) - _LLM_LOG_CAP]
+                job.progress["current_tool_calls"] = buf
+                # Mirror the live underlying so the UI can show "Analysing
+                # RELIANCE · last tool: compute_indicators" without needing
+                # a separate "current" patch.
+                job.progress["current"] = symbol
+        except Exception as e:  # noqa: BLE001
+            log.debug("lead_jobs: _on_tool_call failed: %s", e)
+
     with _lock:
         job.started_at = _now()
 
@@ -189,7 +223,9 @@ def _run_in_thread(job: JobState) -> None:
     # `submit_manual_job`'s pre-flight check and our entry into this thread,
     # `run_lead_generator` returns None; surface that as a busy error.
     try:
-        result = run_lead_generator(force=True, on_progress=_on_progress)
+        result = run_lead_generator(force=True,
+                                   on_progress=_on_progress,
+                                   on_tool_call=_on_tool_call)
     except Exception as e:
         log.exception("manual lead-generator job %s crashed", job.id)
         _finish_job(job, "error", error=str(e) or e.__class__.__name__)

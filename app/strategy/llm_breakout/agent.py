@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -57,6 +57,24 @@ def _safe_int(env_value: int | None, default: int) -> int:
         return int(env_value) if env_value is not None else default
     except (TypeError, ValueError):
         return default
+
+
+def _truncate_for_emit(args: Any, max_len: int = 120) -> Any:
+    """Best-effort short-form of a tool's args for live UI events.
+
+    JSON-encoded args come in as either a `str` (raw `arguments` from the
+    OpenAI chat-completion payload) or a `dict` (some clients pre-parse).
+    We never want to push the full multi-KB option chain into a 2s polling
+    payload — cap the string form at `max_len` chars.
+    """
+    if isinstance(args, str):
+        s = args.strip()
+        return s if len(s) <= max_len else s[: max_len - 1] + "…"
+    try:
+        s = json.dumps(args, default=str)
+        return s if len(s) <= max_len else s[: max_len - 1] + "…"
+    except Exception:
+        return str(args)[:max_len]
 
 
 def _max_iterations() -> int:
@@ -150,6 +168,7 @@ def run_agent_loop(
     today_close: float,
     divergence_pct: float,
     min_confidence: float,
+    on_tool_call: Callable[[dict[str, Any]], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Drive the tool-calling agent loop; return validated signals.
 
@@ -159,6 +178,12 @@ def run_agent_loop(
       - updates llm_health stats on every iteration (so health endpoint
         reflects the new wiring even when the model never returns a final
         answer)
+
+    `on_tool_call(event)` is invoked once per completed tool execution with
+    `{"iter": int, "name": str, "args": <truncated>, "result_keys": [str,...]}`.
+    Used by the lead generator to pipe live LLM activity into the UI's
+    progress panel — must be cheap and non-blocking (it's called from a
+    worker thread).
     """
     tools = _build_toolbox(context)
     tool_schemas = _tool_schemas(tools)
@@ -239,6 +264,23 @@ def run_agent_loop(
             })
             log.info("agent_loop: tool=%s iter=%d result_keys=%s",
                      name, it + 1, list(result.keys())[:5])
+            # Live UI hook: notify callers (lead generator → job progress)
+            # that a tool call just finished. Keep the payload small and
+            # thread-safe (cheap dict, no shared state).
+            if on_tool_call is not None:
+                try:
+                    on_tool_call({
+                        "iter": it + 1,
+                        "name": name,
+                        # Truncate args/result aggressively — UI only needs a
+                        # glance. Full data is still persisted in
+                        # tool_call_log → lead meta for after-the-fact debug.
+                        "args": _truncate_for_emit(args),
+                        "result_keys": list(result.keys())[:6],
+                    })
+                except Exception as cb_err:  # noqa: BLE001
+                    # A bad UI hook must never kill the agent loop.
+                    log.debug("agent_loop: on_tool_call raised: %s", cb_err)
         if it == max_iters - 1:
             log.warning("agent_loop: hit max iterations (%d) for symbol", max_iters)
 

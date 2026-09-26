@@ -25,491 +25,533 @@ import api_client as api
 
 st.set_page_config(page_title="TradePilot", page_icon=":material/show_chart:", layout="centered")
 
-# Palette — dark fintech theme
-PRIMARY = "#6366f1"    # indigo (primary accent / buttons / links)
+# Palette — modern fintech dark theme
+PRIMARY = "#7c3aed"    # violet (primary accent / buttons / links)
+PRIMARY_SOFT = "#a78bfa"
 SECONDARY = "#22d3ee"  # cyan (secondary accent / info)
-PROFIT = "#34d399"     # emerald (positive P&L)
-LOSS = "#fb7185"       # rose (negative P&L)
+PROFIT = "#10b981"     # emerald (positive P&L)
+LOSS = "#f43f5e"       # rose (negative P&L)
 WARN = "#fbbf24"       # amber
 MUTED = "#94a3b8"      # slate (secondary text)
-BG = "#0b1220"         # app background
-CARD = "#131c2e"       # cards
-BORDER = "#243049"     # card borders
+TEXT = "#e2e8f0"       # primary text
+BG = "#0a0e1a"         # app background
+BG_GRAD_TOP = "#0e1322"  # subtle top gradient
+CARD = "#131826"       # cards
+CARD_HOVER = "#1a2138"  # card hover state
+BORDER = "#1f2937"     # card borders
 
 REFRESH_SECS = 5       # dashboard + open trades auto-refresh cadence
 
 
 def _css() -> str:
+    """Modern dark fintech design system.
+
+    Visual language inspired by Robinhood / Coinbase / Delta / Binance —
+    glassy surfaces, vivid accents, generous spacing, animated micro-states.
+    """
     return f"""
     <style>
-    .stApp {{ max-width: 880px; margin: auto; background: {BG}; }}
-    [data-testid="stMetric"] {{
-        background: {CARD}; border: 1px solid {BORDER}; border-radius: 12px;
-        padding: 12px 14px;
+    /* ---------- Global tokens + typography ---------- */
+    :root {{
+      --bg: {BG};
+      --bg-grad-top: {BG_GRAD_TOP};
+      --card: {CARD};
+      --card-hover: {CARD_HOVER};
+      --border: {BORDER};
+      --primary: {PRIMARY};
+      --primary-soft: {PRIMARY_SOFT};
+      --secondary: {SECONDARY};
+      --profit: {PROFIT};
+      --loss: {LOSS};
+      --warn: {WARN};
+      --muted: {MUTED};
+      --text: {TEXT};
     }}
-    [data-testid="stMetricLabel"] {{ color: {MUTED}; }}
-    [data-testid="stMetricValue"] {{ font-size: 1.3rem; color: #e2e8f0; }}
-    [data-testid="stMetric"]:hover {{ border-color: {PRIMARY}66; }}
+    html, body, [class*="css"], .stApp {{
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+                   Roboto, 'Helvetica Neue', Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }}
+    code, .mono, [data-testid="stDataFrame"], .stMarkdown pre {{
+      font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, Consolas, monospace;
+      font-variant-numeric: tabular-nums;
+    }}
+
+    /* ---------- App shell ---------- */
+    .stApp {{
+      max-width: 920px;
+      margin: auto;
+      background:
+        radial-gradient(1200px 600px at 80% -100px, rgba(124,58,237,.10), transparent 60%),
+        radial-gradient(800px 500px at 0% -50px, rgba(34,211,238,.06), transparent 60%),
+        linear-gradient(180deg, {BG_GRAD_TOP} 0%, {BG} 240px);
+      color: {TEXT};
+    }}
+    /* Strip Streamlit's default top header so we can render our own */
+    [data-testid="stHeader"] {{ background: transparent; height: 0; }}
+    footer {{ visibility: hidden; }}
+    #MainMenu {{ visibility: hidden; }}
+
+    /* ---------- Sidebar ---------- */
     [data-testid="stSidebar"] {{
-        background: linear-gradient(180deg, #101a2e 0%, #0d1626 100%);
-        border-right: 1px solid #202b42;
-        padding: 16px 14px;
+      background: linear-gradient(180deg, #0d1220 0%, #0a0e1a 100%);
+      border-right: 1px solid {BORDER};
+      padding: 18px 14px;
     }}
     [data-testid="stSidebar"] h3 {{
-        color: #e2e8f0; font-size: 0.82rem; text-transform: uppercase;
-        letter-spacing: .09em; margin: 16px 4px 8px 4px;
-    }}
-    [data-testid="stSidebar"] .stSidebarHeader {{
-        background: transparent; padding: 0;
+      color: {MUTED}; font-size: 0.7rem; text-transform: uppercase;
+      letter-spacing: .12em; margin: 18px 6px 8px 6px; font-weight: 700;
     }}
     .sidebar-brand {{
-        margin: 0 4px 2px;
-        color: #f1f5f9;
-        font-size: 1.15rem;
-        font-weight: 700;
-        letter-spacing: .01em;
+      margin: 4px 6px 2px; color: #f8fafc;
+      font-size: 1.2rem; font-weight: 800; letter-spacing: -.01em;
+      display: flex; align-items: center; gap: 8px;
+    }}
+    .sidebar-brand .brand-mark {{
+      width: 28px; height: 28px; border-radius: 8px;
+      background: linear-gradient(135deg, {PRIMARY} 0%, {SECONDARY} 100%);
+      display: inline-flex; align-items: center; justify-content: center;
+      box-shadow: 0 4px 12px rgba(124,58,237,.35);
     }}
     .sidebar-subtitle {{
-        margin: 0 4px 14px 4px;
-        color: {MUTED};
-        font-size: .76rem;
+      margin: 0 6px 16px; color: {MUTED}; font-size: .74rem;
     }}
     .sidebar-divider {{
-        border: 0;
-        border-top: 1px solid #202b42;
-        margin: 14px 4px;
-    }}
-    .sidebar-nav {{
-        display: grid;
-        gap: 4px;
+      border: 0; border-top: 1px solid {BORDER}; margin: 14px 6px;
     }}
     [data-testid="stRadio"] label {{
-        display: flex;
-        align-items: center;
-        min-height: 38px;
-        padding: 8px 10px;
-        border: 1px solid transparent;
-        border-radius: 9px;
-        font-size: .86rem;
-        font-weight: 500;
-        color: #b6c1d3;
-        transition: background .15s ease, border-color .15s ease, color .15s ease;
+      display: flex; align-items: center; min-height: 40px;
+      padding: 8px 12px; border: 1px solid transparent; border-radius: 10px;
+      font-size: .9rem; font-weight: 500; color: #b6c1d3;
+      transition: background .15s ease, border-color .15s ease, color .15s ease, transform .1s ease;
     }}
     [data-testid="stRadio"] label:hover {{
-        background: #18243a;
-        color: #e2e8f0;
+      background: rgba(124,58,237,.06); color: {TEXT};
     }}
     [data-testid="stRadio"] label:has(input:checked) {{
-        background: rgba(99, 102, 241, .16);
-        border-color: rgba(99, 102, 241, .55);
-        color: #c7d2fe;
-        box-shadow: inset 3px 0 0 {PRIMARY};
+      background: linear-gradient(90deg, rgba(124,58,237,.18) 0%, rgba(124,58,237,.04) 100%);
+      border-color: rgba(124,58,237,.5);
+      color: #ede9fe;
+      box-shadow: inset 3px 0 0 {PRIMARY};
     }}
     .sidebar-card {{
-        background: #111b2e;
-        border: 1px solid #202b42;
-        border-radius: 10px;
-        padding: 10px 11px;
-        margin: 6px 0;
+      background: rgba(255,255,255,.02);
+      border: 1px solid {BORDER}; border-radius: 12px;
+      padding: 11px 13px; margin: 6px 4px;
+      backdrop-filter: blur(6px);
     }}
     .sidebar-card-title {{
-        color: {MUTED};
-        font-size: .72rem;
-        font-weight: 700;
-        letter-spacing: .07em;
-        text-transform: uppercase;
-        margin-bottom: 7px;
+      color: {MUTED}; font-size: .68rem; font-weight: 700;
+      letter-spacing: .09em; text-transform: uppercase; margin-bottom: 9px;
     }}
     .status-row {{
-        display: flex;
-        align-items: center;
-        gap: 7px;
-        min-height: 20px;
-        font-size: .78rem;
-        color: #cbd5e1;
+      display: flex; align-items: center; gap: 8px;
+      min-height: 22px; font-size: .8rem; color: #cbd5e1;
     }}
-    .status-label {{
-        flex: 1;
-        color: #94a3b8;
-    }}
-    .status-value {{
-        font-weight: 600;
-        white-space: nowrap;
-    }}
+    .status-label {{ flex: 1; color: {MUTED}; }}
+    .status-value {{ font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }}
     .status-dot {{
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        flex-shrink: 0;
-        background: {MUTED};
+      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: {MUTED};
     }}
-    .status-dot.ok {{ background: {PROFIT}; box-shadow: 0 0 7px rgba(52, 211, 153, .55); }}
-    .status-dot.warn {{ background: {WARN}; box-shadow: 0 0 7px rgba(251, 191, 36, .55); }}
-    .status-dot.err {{ background: {LOSS}; box-shadow: 0 0 7px rgba(251, 113, 133, .55); }}
-    .ks-banner {{ border-radius: 10px; padding: 10px 14px; margin: 6px 0;
-                   border: 1px solid; font-weight: 600; }}
-    .badge {{ display:inline-block; border-radius: 999px; padding: 2px 10px;
-              font-size: 0.78rem; font-weight: 600; }}
-    .chip {{ display:inline-block; border-radius: 6px; padding: 3px 10px;
-              font-size: 0.75rem; font-weight: 600; background:{BORDER}; color:{MUTED};
-              margin-right: 6px; }}
-    .chip-active {{ background:{PRIMARY}33; color:{PRIMARY}; border:1px solid {PRIMARY}66; }}
-    .dot {{ width: 12px; height: 12px; border-radius: 50%; display: inline-block;
-               flex-shrink: 0; box-shadow: 0 0 6px rgba(0,0,0,0.4); }}
+    .status-dot.ok {{ background: {PROFIT}; box-shadow: 0 0 8px rgba(16,185,129,.7); }}
+    .status-dot.warn {{ background: {WARN}; box-shadow: 0 0 8px rgba(251,191,36,.7); }}
+    .status-dot.err {{ background: {LOSS}; box-shadow: 0 0 8px rgba(244,63,94,.7); }}
+
+    /* ---------- Top app bar ---------- */
+    .appbar {{
+      position: sticky; top: 0; z-index: 50;
+      display: flex; align-items: center; gap: 12px;
+      padding: 12px 16px; margin: -8px -16px 16px -16px;
+      background: rgba(10,14,26,.7);
+      backdrop-filter: blur(14px) saturate(140%);
+      -webkit-backdrop-filter: blur(14px) saturate(140%);
+      border-bottom: 1px solid {BORDER};
+    }}
+    .appbar-title {{
+      font-size: 1.05rem; font-weight: 700; color: #f8fafc;
+      letter-spacing: -.01em; display: flex; align-items: center; gap: 9px;
+    }}
+    .appbar-title .brand-mark {{
+      width: 26px; height: 26px; border-radius: 8px;
+      background: linear-gradient(135deg, {PRIMARY} 0%, {SECONDARY} 100%);
+      display: inline-flex; align-items: center; justify-content: center;
+      box-shadow: 0 4px 12px rgba(124,58,237,.4);
+    }}
+    .pill {{
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px; border-radius: 999px; font-size: .74rem; font-weight: 600;
+      background: rgba(255,255,255,.04); border: 1px solid {BORDER};
+      color: #cbd5e1; white-space: nowrap;
+    }}
+    .pill.profit {{ background: rgba(16,185,129,.12); border-color: rgba(16,185,129,.4); color: #6ee7b7; }}
+    .pill.loss {{ background: rgba(244,63,94,.12); border-color: rgba(244,63,94,.4); color: #fda4af; }}
+    .pill.warn {{ background: rgba(251,191,36,.12); border-color: rgba(251,191,36,.4); color: #fcd34d; }}
+    .pill.muted {{ color: {MUTED}; }}
+    .pill-dot {{
+      width: 7px; height: 7px; border-radius: 50%;
+    }}
+    .appbar-spacer {{ flex: 1; }}
+    .appbar-meta {{ display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }}
+
+    /* ---------- Hero P&L card ---------- */
+    .hero {{
+      position: relative; overflow: hidden;
+      background:
+        linear-gradient(135deg, rgba(124,58,237,.18) 0%, rgba(34,211,238,.08) 50%, transparent 100%),
+        rgba(255,255,255,.02);
+      border: 1px solid {BORDER}; border-radius: 18px;
+      padding: 22px 24px; margin: 8px 0 16px 0;
+      backdrop-filter: blur(8px);
+    }}
+    .hero::before {{
+      content: ''; position: absolute; inset: 0; pointer-events: none;
+      background: radial-gradient(600px 200px at 100% 0%, rgba(124,58,237,.18), transparent 60%);
+    }}
+    .hero-label {{
+      font-size: .75rem; color: {MUTED}; text-transform: uppercase;
+      letter-spacing: .12em; font-weight: 700;
+    }}
+    .hero-amount {{
+      font-size: 2.6rem; font-weight: 800; line-height: 1.05;
+      letter-spacing: -.02em; margin: 6px 0 4px 0;
+      font-variant-numeric: tabular-nums;
+    }}
+    .hero-amount.profit {{ color: #34d399; text-shadow: 0 0 30px rgba(16,185,129,.25); }}
+    .hero-amount.loss {{ color: #fb7185; text-shadow: 0 0 30px rgba(244,63,94,.25); }}
+    .hero-amount.flat {{ color: {TEXT}; }}
+    .hero-meta {{
+      display: flex; gap: 14px; flex-wrap: wrap;
+      font-size: .82rem; color: {MUTED}; margin-top: 4px;
+    }}
+    .hero-meta b {{ color: {TEXT}; font-weight: 600; }}
+
+    /* ---------- Stat tiles (modernised) ---------- */
+    .stat-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }}
+    .stat-tile {{
+      background: {CARD}; border: 1px solid {BORDER}; border-radius: 14px;
+      padding: 12px 14px; transition: border-color .15s ease, transform .12s ease, background .15s ease;
+    }}
+    .stat-tile:hover {{
+      border-color: rgba(124,58,237,.4); background: {CARD_HOVER};
+      transform: translateY(-1px);
+    }}
+    .stat-label {{
+      color: {MUTED}; font-size: .7rem; text-transform: uppercase;
+      letter-spacing: .08em; font-weight: 700;
+    }}
+    .stat-value {{
+      color: {TEXT}; font-size: 1.2rem; font-weight: 700;
+      margin-top: 4px; font-variant-numeric: tabular-nums;
+    }}
+
+    /* ---------- Badges + chips ---------- */
+    .badge {{
+      display: inline-block; border-radius: 999px; padding: 3px 10px;
+      font-size: 0.75rem; font-weight: 600; letter-spacing: .01em;
+    }}
+    .chip {{
+      display: inline-block; border-radius: 8px; padding: 3px 10px;
+      font-size: 0.75rem; font-weight: 600; background: rgba(255,255,255,.04);
+      color: {MUTED}; margin-right: 6px; border: 1px solid {BORDER};
+    }}
+    .chip-active {{
+      background: rgba(124,58,237,.15); color: {PRIMARY_SOFT};
+      border-color: rgba(124,58,237,.5);
+    }}
+    .dot {{ width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }}
     @keyframes ks-pulse {{
-        0% {{ box-shadow: 0 0 0 0 rgba(251,113,133,0.55); }}
-        70% {{ box-shadow: 0 0 0 9px rgba(251,113,133,0); }}
-        100% {{ box-shadow: 0 0 0 0 rgba(251,113,133,0); }}
+      0% {{ box-shadow: 0 0 0 0 rgba(244,63,94,.55); }}
+      70% {{ box-shadow: 0 0 0 10px rgba(244,63,94,0); }}
+      100% {{ box-shadow: 0 0 0 0 rgba(244,63,94,0); }}
     }}
-    .ks-dot {{ width: 10px; height: 10px; border-radius: 50%; background: {LOSS};
-               display: inline-block; animation: ks-pulse 1.5s infinite; }}
-    .row {{ display:flex; gap:8px; align-items:center; }}
-    .conf-bar {{ height:6px; border-radius:4px; background:{BORDER}; overflow:hidden; }}
-    .conf-fill {{ height:6px; border-radius:4px; }}
-    .sec-title {{ color:{MUTED}; font-size:0.85rem; text-transform:uppercase;
-                   letter-spacing:.05em; margin: 14px 0 6px 0; }}
-    .big-num {{ font-size:1.6rem; font-weight:700; }}
-    .muted {{ color:{MUTED}; font-size:0.85rem; }}
-    .pos-card {{ background:{CARD}; border:1px solid {BORDER}; border-radius:12px;
-                  padding:14px; margin:8px 0; }}
-    .pos-card:hover {{ border-color: {PRIMARY}66; }}
+    .ks-dot {{
+      width: 10px; height: 10px; border-radius: 50%; background: {LOSS};
+      display: inline-block; animation: ks-pulse 1.5s infinite;
+    }}
+    .ks-banner {{
+      border-radius: 12px; padding: 12px 16px; margin: 6px 0;
+      border: 1px solid; font-weight: 600;
+      background: linear-gradient(90deg, rgba(244,63,94,.15) 0%, rgba(244,63,94,.04) 100%);
+    }}
+
+    /* ---------- Position cards (open trades) ---------- */
+    .row {{ display: flex; gap: 8px; align-items: center; }}
+    .conf-bar {{ height: 6px; border-radius: 999px; background: {BORDER}; overflow: hidden; }}
+    .conf-fill {{ height: 6px; border-radius: 999px; transition: width .3s ease; }}
+    .sec-title {{
+      color: {MUTED}; font-size: 0.78rem; text-transform: uppercase;
+      letter-spacing: .1em; margin: 18px 0 8px 0; font-weight: 700;
+      display: flex; align-items: center; gap: 8px;
+    }}
+    .sec-title::before {{
+      content: ''; width: 3px; height: 14px; border-radius: 2px;
+      background: linear-gradient(180deg, {PRIMARY}, {SECONDARY});
+    }}
+    .big-num {{ font-size: 1.6rem; font-weight: 700; font-variant-numeric: tabular-nums; }}
+    .muted {{ color: {MUTED}; font-size: 0.85rem; }}
+    .pos-card {{
+      background: {CARD}; border: 1px solid {BORDER}; border-radius: 14px;
+      padding: 16px; margin: 10px 0;
+      transition: border-color .15s ease, transform .12s ease;
+    }}
+    .pos-card:hover {{ border-color: rgba(124,58,237,.4); transform: translateY(-1px); }}
     .pos-card.up {{ border-left: 3px solid {PROFIT}; }}
     .pos-card.down {{ border-left: 3px solid {LOSS}; }}
     .pos-card.flat {{ border-left: 3px solid {MUTED}; }}
-    .gauge {{ position:relative; width:64px; height:32px; overflow:hidden; }}
-    .gauge-bg {{ position:absolute; bottom:0; left:0; right:0; height:32px;
-                 border-radius:32px 32px 0 0; background:{BORDER}; }}
-    .gauge-fill {{ position:absolute; bottom:0; left:0; right:0; border-radius:32px 32px 0 0; }}
-    .gauge-num {{ position:relative; text-align:center; font-weight:700; font-size:0.85rem;
-                   padding-top:4px; color:#e2e8f0; }}
-    footer, [data-testid="stHeader"] {{ background: transparent; }}
-    .stat-tile {{ background:{CARD}; border:1px solid {BORDER}; border-radius:10px;
-                  padding:10px 12px; }}
-    .stat-label {{ color:{MUTED}; font-size:0.72rem; text-transform:uppercase;
-                   letter-spacing:.04em; }}
-    .stat-value {{ color:#e2e8f0; font-size:1.15rem; font-weight:700; }}
 
-    /* Primary/secondary button accents */
+    /* ---------- Buttons ---------- */
+    [data-testid="stButton"] button {{
+      border-radius: 10px; font-weight: 600;
+      transition: background .15s ease, border-color .15s ease,
+                  box-shadow .15s ease, transform .05s ease;
+    }}
     [data-testid="stButton"] button[kind="primary"] {{
-        background: {PRIMARY}; border-color: {PRIMARY};
+      background: linear-gradient(135deg, {PRIMARY} 0%, #6d28d9 100%);
+      border-color: transparent;
+      box-shadow: 0 4px 14px rgba(124,58,237,.35);
     }}
     [data-testid="stButton"] button[kind="primary"]:hover {{
-        background: #818cf8; border-color: #818cf8;
+      box-shadow: 0 6px 20px rgba(124,58,237,.5);
+      transform: translateY(-1px);
+    }}
+    [data-testid="stButton"] button[kind="primary"]:active {{ transform: translateY(0); }}
+    [data-testid="stButton"] button[kind="secondary"] {{
+      background: rgba(255,255,255,.04); border: 1px solid {BORDER};
+    }}
+    [data-testid="stButton"] button[kind="secondary"]:hover {{
+      background: rgba(255,255,255,.06); border-color: rgba(124,58,237,.4);
+    }}
+    /* Lead Generate button: extra emphasis — bigger, glowing */
+    .lead-toolbar .stButton > button[kind="primary"] {{
+      min-height: 52px; font-size: 1.0rem;
+      box-shadow: 0 6px 22px rgba(124,58,237,.45);
     }}
 
-    /* SSO login: a real <a target="_top"> styled like the primary button.
-       A real user click on a real link is the only cross-frame top-nav
-       pattern that works inside Streamlit's sandboxed iframe — JS-clicking
-       a hidden top-frame anchor is silently dropped by modern browsers.
-       Visually identical to [data-testid="stButton"] button[kind="primary"]. */
+    /* SSO login + sidebar logout — same visual language as primary buttons */
     .sso-login-btn {{
-        display: inline-flex; align-items: center; justify-content: center;
-        gap: 8px; cursor: pointer; user-select: none;
-        background: {PRIMARY}; color: #fff;
-        padding: 0.55rem 1rem; border-radius: 0.5rem;
-        font-weight: 600; font-size: 0.95rem; line-height: 1.2;
-        text-decoration: none; margin: 6px 0; width: 100%;
-        border: 1px solid {PRIMARY};
-        box-shadow: 0 1px 2px rgba(0,0,0,.25);
-        transition: background .15s ease, border-color .15s ease,
-                    box-shadow .15s ease, transform .05s ease;
+      display: inline-flex; align-items: center; justify-content: center;
+      gap: 8px; cursor: pointer; user-select: none;
+      background: linear-gradient(135deg, {PRIMARY} 0%, #6d28d9 100%);
+      color: #fff; padding: 0.65rem 1.1rem; border-radius: 12px;
+      font-weight: 700; font-size: 1rem; line-height: 1.2;
+      text-decoration: none; margin: 8px 0; width: 100%;
+      border: none; box-shadow: 0 6px 20px rgba(124,58,237,.4);
+      transition: box-shadow .15s ease, transform .1s ease;
     }}
     .sso-login-btn:hover {{
-        background: #818cf8; border-color: #818cf8; color: #fff;
-        box-shadow: 0 2px 6px rgba(99,102,241,.35);
+      box-shadow: 0 8px 26px rgba(124,58,237,.55);
+      transform: translateY(-1px); color: #fff;
     }}
-    .sso-login-btn:active {{ transform: translateY(1px); box-shadow: none; }}
-    .sso-login-btn:focus-visible {{
-        outline: 2px solid #818cf8; outline-offset: 2px;
-    }}
-
-    /* Sidebar logout: matches the sidebar button height/weight so the
-       Logout row looks identical to the Refresh-now row above it.
-       Same visual language as [data-testid="stSidebar"] [data-testid="stButton"] button. */
+    .sso-login-btn:active {{ transform: translateY(0); }}
+    .sso-login-btn:focus-visible {{ outline: 2px solid {PRIMARY_SOFT}; outline-offset: 2px; }}
     .sidebar-logout-btn {{
-        display: flex; align-items: center; justify-content: center;
-        gap: 8px; cursor: pointer; user-select: none;
-        background: #18243a; color: #e2e8f0;
-        border: 1px solid transparent; border-radius: 10px;
-        padding: 0 1rem; margin: 4px 0 6px 0;
-        height: 44px;
-        font-size: 1.0rem; font-weight: 600; line-height: 1.2;
-        text-decoration: none;
-        box-sizing: border-box;
-        box-shadow: 0 1px 2px rgba(0,0,0,.2);
-        transition: background .15s ease, border-color .15s ease,
-                    color .15s ease, box-shadow .15s ease, transform .05s ease;
+      display: flex; align-items: center; justify-content: center;
+      gap: 8px; cursor: pointer; user-select: none;
+      background: rgba(255,255,255,.04); color: {TEXT};
+      border: 1px solid {BORDER}; border-radius: 12px;
+      padding: 0 1rem; margin: 4px 0 6px 0; height: 44px;
+      font-size: 1.0rem; font-weight: 600; line-height: 1.2;
+      text-decoration: none; box-sizing: border-box;
+      transition: background .15s ease, border-color .15s ease, color .15s ease;
     }}
     .sidebar-logout-btn:hover {{
-        background: #1f2e4a; border-color: rgba(239, 68, 68, .55); color: #fca5a5;
-        box-shadow: 0 2px 6px rgba(239,68,68,.25);
+      background: rgba(244,63,94,.08); border-color: rgba(244,63,94,.5); color: #fda4af;
     }}
-    .sidebar-logout-btn:active {{ transform: translateY(1px); box-shadow: none; }}
-    .sidebar-logout-btn:focus-visible {{
-        outline: 2px solid rgba(239, 68, 68, .55); outline-offset: 2px;
-    }}
+    .sidebar-logout-btn:focus-visible {{ outline: 2px solid rgba(244,63,94,.5); outline-offset: 2px; }}
 
-    /* Bigger sidebar controls (navigation + buttons) */
+    /* Bigger sidebar controls */
     [data-testid="stSidebar"] [data-testid="stRadio"] label {{
-        font-size: 1.05rem; padding: 8px 8px; border-radius: 8px;
+      font-size: 0.92rem; padding: 9px 12px; border-radius: 10px;
     }}
-    [data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] {{ gap: 2px; }}
+    [data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] {{ gap: 3px; }}
     [data-testid="stSidebar"] [data-testid="stButton"] button {{
-        height: 44px; font-size: 1.0rem; border-radius: 10px; font-weight: 600;
+      height: 44px; font-size: 1.0rem; border-radius: 10px; font-weight: 600;
     }}
     [data-testid="stSidebar"] [data-testid="stExpander"] details {{ border-radius: 10px; }}
-    [data-testid="stSidebar"] h3 {{ margin-bottom: 4px; }}
 
-    /* Compact form rows in Settings */
+    /* Settings form labels — slightly heavier */
     [data-testid="stNumberInput"] label, [data-testid="stSlider"] label,
     [data-testid="stCheckbox"] label, [data-testid="stTextInput"] label,
     [data-testid="stTimeInput"] label, [data-testid="stSelectbox"] label,
     [data-testid="stMultiSelect"] label {{ font-weight: 500; }}
 
-    /* Mobile-friendly improvements for History page */
-    /* Make stat tiles stack vertically on small screens */
-    @media (max-width: 768px) {{
-        .row {{ 
-            flex-wrap: wrap; 
-            gap: 12px; 
-            justify-content: center; 
-        }}
-        .stat-tile {{
-            min-width: 140px;
-            flex: 1 1 140px;
-        }}
-        .stat-value {{
-            font-size: 1rem;
-        }}
-        .stat-label {{
-            font-size: 0.65rem;
-        }}
-    }}
-
-    /* Improve table rendering on mobile */
+    /* ---------- Tables ---------- */
     div[data-testid="stDataFrame"] {{
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
-        margin: 12px 0;
+      background: {CARD}; border: 1px solid {BORDER}; border-radius: 12px;
+      overflow: hidden;
     }}
-    div[data-testid="stDataFrame"] table {{
-        min-width: 100%;
-        font-size: 0.85rem;
-    }}
-    div[data-testid="stDataFrame"] th,
-    div[data-testid="stDataFrame"] td {{
-        padding: 8px 6px !important;
-        white-space: nowrap;
+    div[data-testid="stDataFrame"] table {{ font-size: 0.86rem; }}
+    div[data-testid="stDataFrame"] th {{
+      background: rgba(255,255,255,.02) !important;
+      color: {MUTED} !important; font-weight: 700;
+      text-transform: uppercase; font-size: 0.72rem; letter-spacing: .06em;
     }}
 
-    /* Period selector improvements */
-    div[data-baseweb="select"] > div {{
-        min-height: 36px;
-    }}
-    div[data-baseweb="select"] [role="option"] {{
-        min-height: 32px;
-    }}
-
-    /* Touch-friendly buttons */
-    button[kind="primary"], button[kind="secondary"] {{
-        min-height: 40px;
-        padding: 8px 16px;
-    }}
-
-    /* Charts: full-width, comfortable margin */
+    /* Touch-friendly select + buttons + charts */
+    div[data-baseweb="select"] > div {{ min-height: 38px; }}
+    div[data-baseweb="select"] [role="option"] {{ min-height: 34px; }}
+    button[kind="primary"], button[kind="secondary"] {{ min-height: 42px; padding: 8px 16px; }}
     .stPlotlyChart, .stLineChart, .stAreaChart, .stBarChart {{
-        margin: 16px 0;
-        width: 100% !important;
+      margin: 16px 0; width: 100% !important;
     }}
 
-    /* History page: small bit of inner padding + section dividers */
-    .history-section {{ padding: 0 12px; }}
-    .history-divider {{
-        border: 0; border-top: 1px solid #243049; margin: 16px 0;
-    }}
+    /* ---------- History page ---------- */
+    .history-section {{ padding: 0 4px; }}
+    .history-divider {{ border: 0; border-top: 1px solid {BORDER}; margin: 18px 0; }}
     .history-mobile-header {{
-        font-size: 0.9rem; font-weight: 700; color: #e2e8f0;
-        text-transform: uppercase; letter-spacing: 0.06em;
-        margin: 12px 0 6px 0; padding-bottom: 4px;
-        border-bottom: 2px solid #6366f1;
-    }}
-    .history-section-label {{ display: none; }}
-    @media (max-width: 768px) {{
-        .history-section-label {{ display: block; }}
-        .history-section .stat-tile {{
-            flex: 1 1 140px; min-width: 130px; max-width: 200px;
-        }}
-        .history-section .stat-value {{ font-size: 1.1rem; }}
-        .history-section .stat-label {{
-            font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.04em;
-        }}
-        /* Sticky table header + touch-friendly row height on history tables */
-        div[data-testid="stDataFrame"] {{
-            overflow-x: auto; -webkit-overflow-scrolling: touch;
-            margin: 8px 0; border-radius: 8px; border: 1px solid #243049;
-        }}
-        div[data-testid="stDataFrame"] table {{ min-width: 100%; font-size: 0.8rem; }}
-        div[data-testid="stDataFrame"] th,
-        div[data-testid="stDataFrame"] td {{
-            padding: 10px 6px !important; white-space: nowrap; min-height: 36px;
-        }}
-        div[data-testid="stDataFrame"] thead th {{
-            position: sticky; top: 0; background: #131c2e;
-            font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em;
-        }}
+      font-size: 0.85rem; font-weight: 700; color: {TEXT};
+      text-transform: uppercase; letter-spacing: 0.08em;
+      margin: 14px 0 8px 0; padding-bottom: 6px;
+      border-bottom: 2px solid {PRIMARY};
     }}
 
     /* ---------- Leads page ---------- */
+    .lead-toolbar {{
+      display: flex; flex-direction: column; gap: 8px; margin: 4px 0 14px 0;
+    }}
     .lead-section-header {{
-        display: flex; align-items: center; justify-content: space-between;
-        gap: 10px; margin: 18px 0 10px 0;
-        padding-bottom: 8px; border-bottom: 1px solid {BORDER};
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 10px; margin: 18px 0 10px 0;
+      padding-bottom: 8px; border-bottom: 1px solid {BORDER};
     }}
     .lead-section-title {{
-        font-size: 1.05rem; font-weight: 700; color: #e2e8f0;
-        letter-spacing: .02em;
+      font-size: 1.0rem; font-weight: 700; color: {TEXT}; letter-spacing: -.01em;
     }}
     .lead-section-count {{
-        background: {PRIMARY}22; color: {PRIMARY};
-        border: 1px solid {PRIMARY}55; border-radius: 999px;
-        padding: 3px 12px; font-size: 0.78rem; font-weight: 700;
+      background: rgba(124,58,237,.15); color: {PRIMARY_SOFT};
+      border: 1px solid rgba(124,58,237,.5); border-radius: 999px;
+      padding: 3px 12px; font-size: 0.78rem; font-weight: 700;
+      font-variant-numeric: tabular-nums;
     }}
     .lead-section-count.warn {{
-        background: rgba(251,191,36,.12); color: {WARN}; border-color: rgba(251,191,36,.5);
+      background: rgba(251,191,36,.12); color: {WARN}; border-color: rgba(251,191,36,.5);
     }}
-
     .lead-card {{
-        background: {CARD}; border: 1px solid {BORDER}; border-radius: 12px;
-        padding: 14px; margin: 10px 0;
-        transition: border-color .15s ease;
+      background: {CARD}; border: 1px solid {BORDER}; border-radius: 14px;
+      padding: 16px; margin: 10px 0;
+      transition: border-color .15s ease, transform .12s ease;
     }}
-    .lead-card:hover {{ border-color: {PRIMARY}66; }}
+    .lead-card:hover {{ border-color: rgba(124,58,237,.5); transform: translateY(-1px); }}
     .lead-card.queued {{ border-left: 3px solid {PRIMARY}; }}
     .lead-card.skipped {{ border-left: 3px solid {MUTED}; }}
-
-    .lead-head {{
-        display: flex; justify-content: space-between; align-items: flex-start;
-        gap: 10px;
-    }}
+    .lead-head {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }}
     .lead-head-left {{ flex: 1; min-width: 0; }}
-    .lead-symbol {{
-        font-size: 1.05rem; font-weight: 700; color: #f1f5f9;
-        word-break: break-word;
-    }}
-    .lead-time {{
-        color: {MUTED}; font-size: 0.78rem; white-space: nowrap; flex-shrink: 0;
-        padding-top: 2px;
-    }}
-
+    .lead-symbol {{ font-size: 1.05rem; font-weight: 700; color: #f8fafc; word-break: break-word; }}
+    .lead-time {{ color: {MUTED}; font-size: 0.78rem; white-space: nowrap; flex-shrink: 0; }}
     .lead-chips {{ margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }}
-
     .lead-instrument {{
-        margin-top: 10px;
-        background: #0e1729; border: 1px solid {BORDER};
-        border-radius: 8px; padding: 8px 10px;
-        font-size: 0.84rem; color: #cbd5e1; word-break: break-word;
+      margin-top: 10px; background: rgba(255,255,255,.02);
+      border: 1px solid {BORDER}; border-radius: 10px;
+      padding: 9px 11px; font-size: 0.84rem; color: #cbd5e1; word-break: break-word;
     }}
     .lead-instrument .lbl {{ color: {MUTED}; font-weight: 600; }}
-
     .lead-plan {{
-        display: flex; flex-wrap: wrap; gap: 10px 16px;
-        margin-top: 10px; padding-top: 10px;
-        border-top: 1px dashed {BORDER};
+      display: flex; flex-wrap: wrap; gap: 10px 16px;
+      margin-top: 10px; padding-top: 10px;
+      border-top: 1px dashed {BORDER};
     }}
     .lead-plan > div {{ font-size: 0.84rem; }}
     .lead-plan .lbl {{ color: {MUTED}; font-weight: 600; margin-right: 3px; }}
-    .lead-plan .val {{ color: #e2e8f0; font-weight: 600; }}
-
+    .lead-plan .val {{ color: {TEXT}; font-weight: 600; }}
     .lead-score-row {{
-        display: flex; align-items: center; gap: 10px;
-        margin-top: 12px; padding-top: 10px;
-        border-top: 1px dashed {BORDER};
+      display: flex; align-items: center; gap: 10px;
+      margin-top: 12px; padding-top: 10px;
+      border-top: 1px dashed {BORDER};
     }}
     .lead-score-bar {{ flex: 1; }}
-    .lead-score-meta {{
-        color: {MUTED}; font-size: 0.72rem; margin-top: 3px;
-        display: flex; justify-content: space-between;
-    }}
-
+    .lead-score-meta {{ color: {MUTED}; font-size: 0.72rem; margin-top: 3px; display: flex; justify-content: space-between; }}
     .lead-note {{
-        margin-top: 10px; padding: 9px 11px;
-        background: rgba(251,113,133,.10);
-        border: 1px solid rgba(251,113,133,.35);
-        border-radius: 8px;
-        color: #fecdd3; font-size: 0.82rem;
-        word-break: break-word;
+      margin-top: 10px; padding: 9px 11px;
+      background: rgba(244,63,94,.10); border: 1px solid rgba(244,63,94,.35);
+      border-radius: 10px; color: #fecdd3; font-size: 0.82rem; word-break: break-word;
     }}
 
-    .lead-toolbar {{
-        display: flex; flex-direction: column; gap: 6px;
-        margin: 8px 0 14px 0;
-    }}
-    .lead-toolbar .stButton > button {{ width: 100%; }}
-
-    /* --- Lead-generation live progress panel (rendered inside the 2s
-       polling fragment; CSS lives here so the panel styles stay co-located
-       with the rest of the leads theme). --- */
+    /* Lead-gen live progress panel */
     .lg-panel {{
-        background: {CARD}; border: 1px solid {BORDER}; border-radius: 12px;
-        padding: 12px 14px; margin: 6px 0 12px 0;
+      background: linear-gradient(135deg, rgba(124,58,237,.10) 0%, rgba(34,211,238,.04) 100%);
+      border: 1px solid rgba(124,58,237,.4); border-radius: 14px;
+      padding: 14px 16px; margin: 6px 0 14px 0;
     }}
-    .lg-head {{
-        display: flex; align-items: center; justify-content: space-between;
-        gap: 10px; margin-bottom: 8px;
-    }}
-    .lg-phase {{
-        display: flex; align-items: center; gap: 8px;
-        color: #e2e8f0; font-size: 0.92rem;
-    }}
-    .lg-elapsed {{
-        font-variant-numeric: tabular-nums; font-size: 0.85rem;
-    }}
+    .lg-head {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }}
+    .lg-phase {{ display: flex; align-items: center; gap: 8px; color: {TEXT}; font-size: 0.92rem; }}
+    .lg-elapsed {{ font-variant-numeric: tabular-nums; font-size: 0.85rem; color: {PRIMARY_SOFT}; }}
     .lg-spinner {{
-        display: inline-block; width: 14px; height: 14px;
-        border-radius: 50%;
-        border: 2px solid {BORDER};
-        border-top-color: {PRIMARY};
-        animation: lg-spin 0.9s linear infinite;
+      display: inline-block; width: 14px; height: 14px; border-radius: 50%;
+      border: 2px solid {BORDER}; border-top-color: {PRIMARY};
+      animation: lg-spin 0.9s linear infinite;
     }}
-    @keyframes lg-spin {{
-        to {{ transform: rotate(360deg); }}
+    @keyframes lg-spin {{ to {{ transform: rotate(360deg); }} }}
+    .lg-bar {{ height: 6px; border-radius: 999px; background: rgba(255,255,255,.05); overflow: hidden; margin-bottom: 8px; }}
+    .lg-fill {{ height: 6px; border-radius: 999px; transition: width 0.4s ease; }}
+    .lg-meta {{ display: flex; gap: 14px; flex-wrap: wrap; font-size: 0.78rem; margin-bottom: 8px; color: {MUTED}; }}
+    .lg-current {{ font-size: 0.84rem; margin: 4px 0 8px 0; color: {SECONDARY}; }}
+    .lg-recent {{ display: flex; flex-direction: column; gap: 3px; border-top: 1px solid rgba(255,255,255,.05); padding-top: 8px; }}
+    .lg-recent-row {{ display: flex; align-items: center; gap: 8px; font-size: 0.82rem; padding: 2px 0; }}
+
+    /* LLM activity feed (live tool-call stream during agent loop) */
+    .lg-tool-wrap {{
+      margin: 10px 0 4px 0; padding-top: 8px;
+      border-top: 1px dashed rgba(255,255,255,.08);
     }}
-    .lg-bar {{
-        height: 6px; border-radius: 4px; background: {BORDER}; overflow: hidden;
-        margin-bottom: 8px;
+    .lg-tool-head {{
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: 0.72rem; text-transform: uppercase; letter-spacing: .08em;
+      margin-bottom: 6px;
     }}
-    .lg-fill {{
-        height: 6px; border-radius: 4px;
-        transition: width 0.4s ease;
+    .lg-tool-list {{
+      display: flex; flex-direction: column; gap: 4px;
     }}
-    .lg-meta {{
-        display: flex; gap: 14px; flex-wrap: wrap;
-        font-size: 0.78rem; margin-bottom: 8px;
+    .lg-tool-row {{
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 9px; border: 1px solid; border-radius: 8px;
+      font-size: 0.78rem; line-height: 1.3;
+      transition: background .2s ease, border-color .2s ease;
     }}
-    .lg-current {{
-        font-size: 0.82rem; margin: 4px 0 8px 0;
-        color: {SECONDARY};
+    .lg-tool-pill {{
+      background: rgba(124,58,237,.18); color: {PRIMARY_SOFT};
+      border: 1px solid rgba(124,58,237,.4); border-radius: 999px;
+      padding: 1px 9px; font-size: 0.72rem; font-weight: 700;
+      letter-spacing: .02em; white-space: nowrap; flex-shrink: 0;
     }}
-    .lg-recent {{
-        display: flex; flex-direction: column; gap: 3px;
-        border-top: 1px solid {BORDER}; padding-top: 8px;
+    .lg-tool-args {{
+      flex: 1; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      color: #cbd5e1; font-family: 'JetBrains Mono', 'SF Mono', monospace;
+      font-size: 0.74rem;
     }}
-    .lg-recent-row {{
-        display: flex; align-items: center; gap: 8px;
-        font-size: 0.82rem; padding: 2px 0;
+    .lg-tool-sym {{
+      background: rgba(34,211,238,.12); color: {SECONDARY};
+      border: 1px solid rgba(34,211,238,.3); border-radius: 6px;
+      padding: 1px 7px; font-size: 0.72rem; font-weight: 600;
+      flex-shrink: 0;
     }}
 
+    /* Gauges + small bits */
+    .gauge {{ position: relative; width: 64px; height: 32px; overflow: hidden; }}
+    .gauge-bg {{ position: absolute; bottom: 0; left: 0; right: 0; height: 32px; border-radius: 32px 32px 0 0; background: {BORDER}; }}
+    .gauge-fill {{ position: absolute; bottom: 0; left: 0; right: 0; border-radius: 32px 32px 0 0; }}
+    .gauge-num {{ position: relative; text-align: center; font-weight: 700; font-size: 0.85rem; padding-top: 4px; color: {TEXT}; }}
+
+    /* ---------- Custom scrollbar ---------- */
+    ::-webkit-scrollbar {{ width: 10px; height: 10px; }}
+    ::-webkit-scrollbar-track {{ background: transparent; }}
+    ::-webkit-scrollbar-thumb {{
+      background: rgba(255,255,255,.08); border-radius: 999px;
+      border: 2px solid transparent; background-clip: padding-box;
+    }}
+    ::-webkit-scrollbar-thumb:hover {{ background: rgba(124,58,237,.4); background-clip: padding-box; border: 2px solid transparent; }}
+
+    /* ---------- Responsive ---------- */
     @media (max-width: 768px) {{
-        .lead-section-header {{
-            margin: 14px 0 8px 0; padding-bottom: 6px;
-        }}
-        .lead-section-title {{ font-size: 0.95rem; }}
-        .lead-card {{ padding: 12px; margin: 8px 0; }}
-        .lead-symbol {{ font-size: 1rem; }}
-        .lead-time {{ font-size: 0.74rem; }}
-        .lead-plan {{ gap: 8px 14px; }}
-        .lead-plan > div {{ font-size: 0.8rem; }}
-        .lead-instrument {{ font-size: 0.8rem; padding: 7px 9px; }}
+      .stApp {{ max-width: 100%; }}
+      .hero {{ padding: 18px; }}
+      .hero-amount {{ font-size: 2.1rem; }}
+      .stat-tile {{ padding: 10px 12px; }}
+      .stat-value {{ font-size: 1.05rem; }}
+      .lead-card {{ padding: 13px; }}
+      .lead-symbol {{ font-size: 1rem; }}
+      .row {{ flex-wrap: wrap; gap: 12px; justify-content: flex-start; }}
     }}
     </style>
     """
@@ -666,31 +708,202 @@ def _llm_status_color(llm: dict) -> str:
 # --- auth ----------------------------------------------------------------
 
 def render_login():
-    st.markdown(
-        f"""
-        <div style="text-align:center; padding-top:40px;">
-          <div style="font-size:2rem; font-weight:700; letter-spacing:.02em;">TradePilot</div>
-          <div class="muted" style="margin:6px 0 24px 0;">Automated intraday breakout trading · Upstox</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.caption("Upstox **SSO** login")
+    """Modern fintech landing page shown when no SSO session is present.
+
+    Streamlit's stApp container is reused, but we override the page background
+    (full-bleed radial gradient) and centre a glassmorphism hero card.
+    """
+    st.markdown(_login_css(), unsafe_allow_html=True)
+
     auth_error = st.query_params.get("auth_error")
+    error_html = ""
     if auth_error:
-        st.error(f"SSO failed: {auth_error}")
+        error_html = (
+            f"<div class='login-error'>"
+            f"<span class='login-error-dot'></span>"
+            f"<span>SSO failed: {auth_error}</span>"
+            f"</div>"
+        )
         st.query_params.clear()
 
     # Real <a target="_top"> — a user click on a real link is the only
     # top-frame navigation pattern that works inside Streamlit's sandboxed
     # iframe. JS-clicking a hidden top-doc anchor is silently dropped by
     # modern browsers (no allow-top-navigation).
+    features_html = "".join(
+        f"<li><span class='login-feat-dot'></span>"
+        f"<div><b>{_html_escape(title)}</b>"
+        f"<div class='login-feat-sub'>{_html_escape(sub)}</div></div></li>"
+        for title, sub in [
+            ("LLM in the loop", "Breakout detector calls real-time tools for indicators, news, and option chain."),
+            ("Risk first", "Every position has a bot SL with a tight ratchet trail; a one-tap killswitch squares off."),
+            ("Full audit trail", "Every SL change, fill, and broker mismatch is logged for post-trade review."),
+        ]
+    )
+
     st.markdown(
-        f'<a href="{api.login_url()}" target="_top" class="sso-login-btn">'
-        f'Login with Upstox</a>',
+        f"""
+        <div class='login-shell'>
+          <div class='login-card'>
+            <div class='login-brand'>
+              <div class='login-mark'></div>
+              <div class='login-name'>TradePilot</div>
+            </div>
+            <div class='login-tagline'>
+              Automated intraday breakout trading,
+              <span class='login-grad'>powered by LLMs.</span>
+            </div>
+            {error_html}
+            <a href='{api.login_url()}' target='_top' class='sso-login-btn login-cta'>
+              <svg width='18' height='18' viewBox='0 0 24 24' fill='none'
+                   xmlns='http://www.w3.org/2000/svg' aria-hidden='true'>
+                <path d='M12 2L3 7v6c0 5 3.8 9.4 9 11 5.2-1.6 9-6 9-11V7l-9-5z'
+                      stroke='currentColor' stroke-width='2' stroke-linejoin='round'/>
+                <path d='M9 12l2 2 4-4' stroke='currentColor' stroke-width='2'
+                      stroke-linecap='round' stroke-linejoin='round'/>
+              </svg>
+              Continue with Upstox SSO
+            </a>
+            <div class='login-divider'>
+              <span>What you get</span>
+            </div>
+            <ul class='login-features'>{features_html}</ul>
+            <div class='login-foot'>
+              You'll be redirected to Upstox, then back here.
+              Your tokens never touch this dashboard's storage.
+            </div>
+          </div>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
-    st.caption("You'll be redirected to Upstox, then back to this dashboard.")
+
+
+def _login_css() -> str:
+    """Page-specific CSS for the login surface.
+
+    Kept separate from the main `_css()` so the dashboard styling doesn't
+    bleed in. The login card uses the same design tokens (PRIMARY, SECONDARY,
+    CARD, BORDER) so the two surfaces feel like the same product.
+    """
+    return f"""
+    <style>
+    .stApp {{
+      background:
+        radial-gradient(900px 600px at 18% 12%, rgba(124,58,237,.35), transparent 55%),
+        radial-gradient(700px 500px at 88% 88%, rgba(34,211,238,.22), transparent 55%),
+        radial-gradient(500px 400px at 50% 0%, rgba(244,63,94,.10), transparent 60%),
+        linear-gradient(180deg, {BG_GRAD_TOP} 0%, {BG} 60%);
+      min-height: 100vh;
+    }}
+    [data-testid="stHeader"], footer, #MainMenu {{ display: none !important; }}
+
+    .login-shell {{
+      display: flex; align-items: center; justify-content: center;
+      min-height: calc(100vh - 80px); padding: 24px 16px;
+    }}
+    .login-card {{
+      width: 100%; max-width: 460px;
+      background: rgba(255,255,255,.03);
+      backdrop-filter: blur(18px) saturate(150%);
+      -webkit-backdrop-filter: blur(18px) saturate(150%);
+      border: 1px solid {BORDER};
+      border-radius: 22px;
+      padding: 32px 30px;
+      box-shadow:
+        0 24px 60px rgba(0,0,0,.45),
+        inset 0 1px 0 rgba(255,255,255,.04);
+    }}
+    .login-brand {{
+      display: flex; align-items: center; gap: 12px; margin-bottom: 16px;
+    }}
+    .login-mark {{
+      width: 42px; height: 42px; border-radius: 12px;
+      background: linear-gradient(135deg, {PRIMARY} 0%, {SECONDARY} 100%);
+      box-shadow: 0 8px 24px rgba(124,58,237,.45);
+      position: relative;
+    }}
+    .login-mark::after {{
+      content: ''; position: absolute; inset: 8px;
+      background: rgba(255,255,255,.18);
+      clip-path: polygon(50% 8%, 92% 50%, 50% 92%, 8% 50%);
+      border-radius: 4px;
+    }}
+    .login-name {{
+      font-size: 1.6rem; font-weight: 800; letter-spacing: -.02em;
+      color: #f8fafc;
+    }}
+    .login-tagline {{
+      color: #cbd5e1; font-size: 1.05rem; line-height: 1.45;
+      margin-bottom: 22px; font-weight: 500;
+    }}
+    .login-grad {{
+      background: linear-gradient(90deg, {PRIMARY_SOFT} 0%, {SECONDARY} 100%);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+      font-weight: 600;
+    }}
+    .login-cta {{
+      margin: 6px 0 0 0 !important;
+      padding: 0.85rem 1.1rem !important;
+      font-size: 1.02rem !important;
+      display: inline-flex !important;
+      align-items: center; justify-content: center;
+      gap: 10px;
+    }}
+    .login-error {{
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 12px; margin: 4px 0 14px 0;
+      background: rgba(244,63,94,.10);
+      border: 1px solid rgba(244,63,94,.4); border-radius: 10px;
+      color: #fecdd3; font-size: 0.86rem;
+    }}
+    .login-error-dot {{
+      width: 8px; height: 8px; border-radius: 50%;
+      background: {LOSS};
+      box-shadow: 0 0 8px rgba(244,63,94,.6);
+      flex-shrink: 0;
+    }}
+    .login-divider {{
+      display: flex; align-items: center; gap: 12px;
+      margin: 22px 0 14px 0; color: {MUTED}; font-size: 0.74rem;
+      text-transform: uppercase; letter-spacing: .12em; font-weight: 700;
+    }}
+    .login-divider::before, .login-divider::after {{
+      content: ''; flex: 1; height: 1px; background: {BORDER};
+    }}
+    .login-features {{
+      list-style: none; padding: 0; margin: 0;
+      display: flex; flex-direction: column; gap: 10px;
+    }}
+    .login-features li {{
+      display: flex; align-items: flex-start; gap: 11px;
+      padding: 11px 13px;
+      background: rgba(255,255,255,.025);
+      border: 1px solid {BORDER}; border-radius: 12px;
+    }}
+    .login-feat-dot {{
+      width: 8px; height: 8px; border-radius: 50%;
+      background: linear-gradient(135deg, {PRIMARY} 0%, {SECONDARY} 100%);
+      flex-shrink: 0; margin-top: 7px;
+      box-shadow: 0 0 8px rgba(124,58,237,.4);
+    }}
+    .login-features b {{
+      color: {TEXT}; font-weight: 600; font-size: 0.93rem;
+    }}
+    .login-feat-sub {{
+      color: {MUTED}; font-size: 0.82rem; margin-top: 2px; line-height: 1.4;
+    }}
+    .login-foot {{
+      margin-top: 18px; text-align: center;
+      color: {MUTED}; font-size: 0.78rem; line-height: 1.5;
+    }}
+    @media (max-width: 540px) {{
+      .login-card {{ padding: 26px 22px; border-radius: 18px; }}
+      .login-name {{ font-size: 1.4rem; }}
+      .login-tagline {{ font-size: 0.98rem; }}
+    }}
+    </style>
+    """
 
 
 # --- sidebar -------------------------------------------------------------
@@ -974,14 +1187,7 @@ def render_dashboard():
     # Day-at-a-glance stats (combines open + today's closed)
     _render_day_stats()
 
-    # Header row: section title on the left, Generate button on the right.
-    # The button is also available on the Leads tab — same session_state,
-    # same progress panel — so starting a run from here is equivalent.
-    hdr_l, hdr_r = st.columns([3, 2], vertical_alignment="center")
-    with hdr_l:
-        st.markdown("#### Today's queued signals")
-    with hdr_r:
-        _render_generate_lead_button("dashboard")
+    st.markdown("#### Today's queued signals")
     # The leads API no longer accepts status/date params; fetch the current
     # set and filter for queued on the client. The cleanup scheduler keeps
     # this list small (only active queued signals survive).
@@ -1010,7 +1216,7 @@ def render_dashboard():
             )
             st.dataframe(df, use_container_width=True, hide_index=True, height=min(40 + 35 * len(df), 420))
         else:
-            st.info("No queued signals today. Tap **Generate now** above, or enable more underlyings in **Instruments**.")
+            st.info("No queued signals today. Head to the **Leads** tab and tap **Generate now** to scan underlyings.")
 
 
 def _track_pnl_history(total: float):
@@ -1649,6 +1855,13 @@ def _render_lead_progress_panel(data: dict) -> None:
         if current else ""
     )
 
+    # Live LLM tool-call activity. `current_tool_calls` is appended by
+    # `lead_jobs._on_tool_call` every time the agent loop finishes a tool
+    # execution. Render the last 6, newest-first, with a tiny status pill
+    # so the user can see what the model is reasoning about in real time.
+    tool_calls = progress.get("current_tool_calls") or []
+    tool_html = _render_llm_tool_calls(tool_calls)
+
     _html(
         f"""
         <div class='lg-panel'>
@@ -1668,9 +1881,65 @@ def _render_lead_progress_panel(data: dict) -> None:
             {f"<span style='color:{LOSS};'><b>{errors}</b> errors</span>" if errors else ""}
           </div>
           {current_html}
+          {tool_html}
           <div class='lg-recent'>{rows_html}</div>
         </div>
         """
+    )
+
+
+def _render_llm_tool_calls(tool_calls: list[dict]) -> str:
+    """Render the live LLM agent-loop activity feed.
+
+    Each entry is the compact payload emitted by
+    `agent.run_agent_loop` via `on_tool_call`. We show the tool name as a
+    pill, the (truncated) args, and which underlying the LLM was reasoning
+    about — newest event at the top.
+    """
+    if not tool_calls:
+        return ""
+    # Friendlier labels for the registered tools. Anything not in the map
+    # falls back to its raw name so future tools don't go missing silently.
+    tool_labels = {
+        "compute_indicators": "indicators",
+        "breakout_calc": "breakout calc",
+        "fetch_news": "news",
+        "option_chain_summary": "option chain",
+    }
+
+    def _row(tc: dict, idx: int) -> str:
+        name = tc.get("name") or "?"
+        label = tool_labels.get(name, name)
+        sym = tc.get("symbol") or ""
+        args = tc.get("args") or ""
+        iter_n = tc.get("iter")
+        # First row gets a slightly stronger tint to mark "most recent".
+        is_latest = idx == 0
+        bg = "rgba(124,58,237,.14)" if is_latest else "rgba(255,255,255,.03)"
+        border = "rgba(124,58,237,.5)" if is_latest else "rgba(255,255,255,.05)"
+        sym_html = (
+            f"<span class='lg-tool-sym'>{_html_escape(sym)}</span>" if sym else ""
+        )
+        iter_html = (
+            f"<span class='muted'>iter {iter_n}</span>" if iter_n is not None else ""
+        )
+        return (
+            f"<div class='lg-tool-row' style='background:{bg};border-color:{border};'>"
+            f"<span class='lg-tool-pill'>{_html_escape(label)}</span>"
+            f"<span class='lg-tool-args'>{_html_escape(str(args)[:80])}</span>"
+            f"{sym_html}{iter_html}"
+            f"</div>"
+        )
+
+    rows = "".join(_row(tc, i) for i, tc in enumerate(tool_calls[:6]))
+    return (
+        f"<div class='lg-tool-wrap'>"
+        f"<div class='lg-tool-head'>"
+        f"<span class='muted'>LLM activity</span>"
+        f"<span class='muted' style='font-weight:600;'>{len(tool_calls)} call{'s' if len(tool_calls) != 1 else ''}</span>"
+        f"</div>"
+        f"<div class='lg-tool-list'>{rows}</div>"
+        f"</div>"
     )
 
 
